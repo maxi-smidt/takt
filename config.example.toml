@@ -1,0 +1,24 @@
+[application]
+fullscreen = true
+saved_confirmation_seconds = 2.0
+
+[gpio]
+enabled = true
+pin_bcm = 17
+bounce_seconds = 0.05
+double_press_seconds = 0.60
+
+[buzzer]
+enabled = false
+pin_bcm = 27
+
+[display]
+chart_default_days = 30
+best_runs_limit = 5
+
+[storage]
+database_path = "~/.local/share/takt/takt.db"
+backup_enabled = true
+backup_directory = "~/.local/share/takt/backups"
+backup_retention_days = 30
+
