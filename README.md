@@ -1,6 +1,6 @@
 # TAKT
 
-**TAKT · Feuerwehr-Zeitnahme** ist eine vollständig lokale Stoppuhr für
+**TAKT** ist eine vollständig lokale Stoppuhr für
 Feuerwehr-Training und Bewerbsläufe. Die Anwendung ist für einen Raspberry Pi 3
 mit großem, normalerweise offenem Taster ausgelegt und lässt sich auf einem
 Laptop vollständig simulieren.

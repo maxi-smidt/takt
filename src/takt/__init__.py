@@ -1,4 +1,4 @@
-"""TAKT – lokale Feuerwehr-Zeitnahme."""
+"""TAKT"""
 
 __version__ = "0.1.0"
 

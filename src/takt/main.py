@@ -18,7 +18,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="TAKT Feuerwehr-Zeitnahme")
+    parser = argparse.ArgumentParser(description="TAKT")
     parser.add_argument("--windowed", action="store_true", help="in einem Fenster starten")
     parser.add_argument(
         "--mock-gpio",

@@ -85,7 +85,7 @@ class MainWindow(QMainWindow):
         self._hardware_label = hardware_label
         self._show_mock_button = show_mock_button
         self._show_mock_buzzer = show_mock_buzzer
-        self.setWindowTitle("TAKT · Feuerwehr-Zeitnahme")
+        self.setWindowTitle("TAKT")
         self.resize(1400, 820)
         self.setMinimumSize(1050, 650)
         self.setStyleSheet(APP_STYLE)
@@ -324,10 +324,7 @@ class MainWindow(QMainWindow):
         name_box.setSpacing(0)
         brand = QLabel("TAKT")
         brand.setObjectName("brand")
-        subtitle = QLabel("Feuerwehr-Zeitnahme")
-        subtitle.setObjectName("subtitle")
         name_box.addWidget(brand)
-        name_box.addWidget(subtitle)
         layout.addLayout(name_box)
         layout.addStretch()
         self.date_label = QLabel()
