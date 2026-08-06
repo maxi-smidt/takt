@@ -27,25 +27,37 @@ class SystemPowerService:
     def shutdown(self) -> None:
         if not self.available:
             raise RuntimeError("Herunterfahren ist nur auf einem Raspberry Pi verfügbar.")
-        try:
-            subprocess.run(
-                ["systemctl", "poweroff"],
-                check=True,
-                timeout=10,
-            )
-        except FileNotFoundError as error:
-            raise RuntimeError(
-                "Der Systemdienst zum Herunterfahren wurde nicht gefunden."
-            ) from error
-        except subprocess.TimeoutExpired as error:
-            raise RuntimeError(
-                "Die Anfrage zum Herunterfahren hat zu lange gedauert."
-            ) from error
-        except subprocess.CalledProcessError as error:
+        commands = (
+            ["systemctl", "poweroff"],
+            ["sudo", "-n", "systemctl", "poweroff"],
+        )
+        last_error: subprocess.CalledProcessError | None = None
+        for command in commands:
+            try:
+                subprocess.run(
+                    command,
+                    check=True,
+                    timeout=10,
+                )
+                return
+            except subprocess.CalledProcessError as error:
+                last_error = error
+                continue
+            except FileNotFoundError as error:
+                if command[0] == "systemctl":
+                    raise RuntimeError(
+                        "Der Systemdienst zum Herunterfahren wurde nicht gefunden."
+                    ) from error
+                break
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError(
+                    "Die Anfrage zum Herunterfahren hat zu lange gedauert."
+                ) from error
+        if last_error is not None:
             raise RuntimeError(
                 "Raspberry Pi OS hat die Anfrage abgelehnt. "
                 "Bitte die Berechtigung für systemctl poweroff prüfen."
-            ) from error
+            ) from last_error
 
     @classmethod
     def _read_model(cls) -> str:
@@ -55,4 +67,3 @@ class SystemPowerService:
             except (OSError, UnicodeError):
                 continue
         return ""
-

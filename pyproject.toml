@@ -9,13 +9,15 @@ description = "Offline Feuerwehr-Zeitnahme für Raspberry Pi und Laptop"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = [
-  "PySide6-Essentials>=6.6,<7",
-]
+dependencies = []
 
 [project.optional-dependencies]
+desktop = ["PySide6-Essentials>=6.6,<7"]
 gpio = ["gpiozero>=2.0,<3"]
+server = ["aiohttp>=3.10,<4"]
 dev = [
+  "aiohttp>=3.10,<4",
+  "PySide6-Essentials>=6.6,<7",
   "pytest>=8,<9",
   "pytest-qt>=4.4,<5",
   "ruff>=0.9,<1",
@@ -23,9 +25,14 @@ dev = [
 
 [project.scripts]
 takt = "takt.main:main"
+takt-server = "takt.server_main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"takt" = ["assets/*.wav", "assets/*.mp3"]
+"takt.web" = ["static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

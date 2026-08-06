@@ -52,7 +52,29 @@ class SystemPowerServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Anfrage abgelehnt"):
             service.shutdown()
 
+    @patch.object(SystemPowerService, "_read_model", return_value="Raspberry Pi 3 Model B")
+    @patch("takt.application.system_power_service.platform.system", return_value="Linux")
+    @patch("takt.application.system_power_service.subprocess.run")
+    def test_uses_installer_authorized_fallback_when_direct_request_is_denied(
+        self,
+        run_mock,
+        platform_mock,
+        model_mock,
+    ) -> None:
+        run_mock.side_effect = [
+            subprocess.CalledProcessError(1, ["systemctl", "poweroff"]),
+            None,
+        ]
+        service = SystemPowerService()
+        service.shutdown()
+        self.assertEqual(
+            [call.args[0] for call in run_mock.call_args_list],
+            [
+                ["systemctl", "poweroff"],
+                ["sudo", "-n", "systemctl", "poweroff"],
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-

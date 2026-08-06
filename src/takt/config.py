@@ -31,6 +31,22 @@ class BuzzerConfig:
 
 
 @dataclass(slots=True)
+class ServerConfig:
+    host: str = "0.0.0.0"
+    port: int = 8080
+
+
+@dataclass(slots=True)
+class AudioConfig:
+    enabled: bool = False
+    output: str = "off"
+    delay_seconds: float = 3.0
+    settings_path: Path = field(
+        default_factory=lambda: _expanded("~/.config/takt/audio.json")
+    )
+
+
+@dataclass(slots=True)
 class DisplayConfig:
     chart_default_days: int = 30
     best_runs_limit: int = 5
@@ -53,6 +69,8 @@ class Config:
     application: ApplicationConfig = field(default_factory=ApplicationConfig)
     gpio: GpioConfig = field(default_factory=GpioConfig)
     buzzer: BuzzerConfig = field(default_factory=BuzzerConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
+    audio: AudioConfig = field(default_factory=AudioConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
 
@@ -74,6 +92,8 @@ def load_config(path: Path | None = None) -> Config:
     app = raw.get("application", {})
     gpio = raw.get("gpio", {})
     buzzer = raw.get("buzzer", {})
+    server = raw.get("server", {})
+    audio = raw.get("audio", {})
     display = raw.get("display", {})
     storage = raw.get("storage", {})
 
@@ -92,6 +112,18 @@ def load_config(path: Path | None = None) -> Config:
 
     config.buzzer.enabled = bool(buzzer.get("enabled", config.buzzer.enabled))
     config.buzzer.pin_bcm = int(buzzer.get("pin_bcm", config.buzzer.pin_bcm))
+
+    config.server.host = str(server.get("host", config.server.host))
+    config.server.port = min(max(int(server.get("port", config.server.port)), 1), 65_535)
+
+    config.audio.enabled = bool(audio.get("enabled", config.audio.enabled))
+    output = str(audio.get("output", config.audio.output))
+    config.audio.output = output if output in {"off", "aux", "bluetooth"} else "off"
+    delay = float(audio.get("delay_seconds", config.audio.delay_seconds))
+    config.audio.delay_seconds = min(max(delay, 0.0), 10.0)
+    audio_settings_path = audio.get("settings_path")
+    if audio_settings_path:
+        config.audio.settings_path = _expanded(str(audio_settings_path))
 
     config.display.chart_default_days = int(
         display.get("chart_default_days", config.display.chart_default_days)
@@ -113,4 +145,3 @@ def load_config(path: Path | None = None) -> Config:
         max(int(storage.get("backup_retention_days", 30)), 1), 365
     )
     return config
-

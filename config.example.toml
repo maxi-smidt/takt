@@ -12,6 +12,16 @@ double_press_seconds = 0.60
 enabled = false
 pin_bcm = 27
 
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[audio]
+enabled = false
+output = "off" # "off", "aux" oder "bluetooth"
+delay_seconds = 3.0
+settings_path = "~/.config/takt/audio.json"
+
 [display]
 chart_default_days = 30
 best_runs_limit = 5
@@ -21,4 +31,3 @@ database_path = "~/.local/share/takt/takt.db"
 backup_enabled = true
 backup_directory = "~/.local/share/takt/backups"
 backup_retention_days = 30
-

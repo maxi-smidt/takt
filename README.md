@@ -18,10 +18,66 @@ Der erste funktionsfähige Stand enthält:
 - Einstellungen zur Korrektur von Zuschlägen und zum Löschen fehlerhafter Läufe,
 - Tastatur-, Maus- und Mock-Taster-Steuerung,
 - optionalen sicht- und hörbaren Summer-Mock,
-- eine von der Oberfläche getrennte GPIO-Eingabe.
+- eine von der Oberfläche getrennte GPIO-Eingabe,
+- einen lokalen Webserver mit synchroner Bedienung über mehrere Geräte,
+- eine responsive React-Browser-Oberfläche mit derselben deutschen Bedienlogik,
+- ein optionales Startsignal über AUX oder einen gekoppelten Bluetooth-Lautsprecher
+  mit einstellbarer Startverzögerung,
+- eine automatisierte Raspberry-Pi-Installation mit `takt.local`, Systemdienst
+  und Vollbildstart.
 
-Die Raspberry-Pi-Installation und eine auf echter Hardware geprüfte Autostart-
-Konfiguration folgen in einem späteren Meilenstein.
+## Raspberry Pi mit einem Skript einrichten
+
+Voraussetzung ist **Raspberry Pi OS Desktop 64-bit**. `uname -m` muss
+`aarch64` ausgeben. Das Projekt muss auf dem Pi beispielsweise unter
+`/home/msmidt/takt` liegen.
+
+Im Projektverzeichnis genügt:
+
+```bash
+./scripts/install_raspberry_pi.sh
+```
+
+Alternativ kann der Laptop das Projekt übertragen und anschließend das komplette
+Setup auf dem Pi ausführen. Beim ersten Mal gilt üblicherweise:
+
+```bash
+./scripts/deploy_to_raspberry_pi.sh msmidt@raspberrypi.local
+```
+
+Nach der Einrichtung lautet dieselbe Adresse:
+
+```bash
+./scripts/deploy_to_raspberry_pi.sh msmidt@takt.local
+```
+
+Damit bleibt für Installation und spätere Updates jeweils ein einziger
+Laptop-Befehl. Eventuelle SSH- und `sudo`-Passwortabfragen erscheinen während
+dieses einen Ablaufs.
+
+Das Skript installiert alle System- und Python-Pakete, richtet `lgpio`,
+Bluetooth-Audio, `takt.service`, die feste lokale Adresse, Desktop-Autologin
+und Chromium im Kioskmodus ein. Eine vorhandene Konfiguration oder Laufdaten
+werden nicht überschrieben. Am Ende bietet das Skript den erforderlichen
+Neustart an.
+
+Danach ist TAKT auf Geräten im selben lokalen Netzwerk erreichbar:
+
+```text
+http://takt.local
+```
+
+Die IP-Adresse darf sich ändern; `takt.local` wird über mDNS aufgelöst. Falls
+ein Gerät `.local` nicht unterstützt, empfiehlt sich zusätzlich eine
+DHCP-Reservierung im Router.
+
+Alle Browser und der physische GPIO-Taster steuern denselben autoritativen
+Timerprozess. Änderungen erscheinen über WebSockets unmittelbar auf allen
+verbundenen Bildschirmen. Da jeder Client im lokalen Netz TAKT bedienen und
+auch das Herunterfahren bestätigen kann, gehört TAKT in ein vertrauenswürdiges,
+nicht öffentliches WLAN.
+
+Das Installationsskript kann nach einem Programmupdate erneut ausgeführt werden.
 
 ## Schnellstart auf dem Laptop
 
@@ -41,6 +97,39 @@ Verwerfen einen Statusimpuls und löst zusätzlich den Laptop-Systemton aus.
 Beide Mock-Anzeigen erscheinen nur, wenn die zugehörigen Startargumente gesetzt
 sind.
 
+## Weboberfläche auf dem Laptop testen
+
+Der Webserver lässt sich mit Mock-Taster und Mock-Summer starten:
+
+```bash
+./scripts/launch_web_dev.sh
+```
+
+Anschließend im Browser öffnen:
+
+```text
+http://127.0.0.1:8080
+```
+
+Der Entwicklungsschnellstart bindet den Server absichtlich nur an den Laptop
+selbst. Auf dem Pi übernimmt das Installationsskript den Netzwerkzugriff.
+
+### Browser-Oberfläche weiterentwickeln
+
+Der React-Quellcode liegt unter `webui/`. Die fertig gebauten, vollständig
+offline nutzbaren Dateien werden unter `src/takt/web/static/` abgelegt und
+zusammen mit TAKT auf den Pi übertragen. Der Pi benötigt deshalb weder Node.js
+noch eine Internetverbindung.
+
+Nach Änderungen an der Browser-Oberfläche genügt:
+
+```bash
+./scripts/build_web_ui.sh
+```
+
+Das Skript installiert bei Bedarf die festgeschriebenen Pakete, prüft den
+React-Code und erzeugt anschließend die produktiven Dateien.
+
 ### Startargumente
 
 | Argument | Bedeutung |
@@ -49,6 +138,13 @@ sind.
 | `--mock-gpio` | Verwendet und zeigt den blauen Laptop-Mock-Taster. |
 | `--mock-buzzer` | Simuliert den Summer sichtbar und über den Systemton. |
 | `--database PFAD` | Verwendet für einen isolierten Test eine andere Datendatei. |
+
+`takt-server` unterstützt zusätzlich:
+
+| Argument | Bedeutung |
+|---|---|
+| `--host ADRESSE` | Bindeadresse; produktiv `0.0.0.0`. |
+| `--port PORT` | HTTP-Port; der Installer verwendet Port 80. |
 
 ## Bedienung
 
@@ -78,6 +174,33 @@ können nach einer zusätzlichen Sicherheitsabfrage endgültig gelöscht werden.
 Jede Änderung an einem bereits gespeicherten Lauf muss ausdrücklich bestätigt
 werden.
 
+## Startsignal über AUX oder Bluetooth
+
+Unter **Einstellungen → Startsignal** stehen drei Ausgänge zur Auswahl:
+
+- **Aus** startet den Timer wie bisher sofort.
+- **AUX** verwendet den analogen beziehungsweise aktuell eingerichteten
+  Systemausgang. Ein AUX-Kabel muss nur eingesteckt werden; es gibt kein Pairing.
+- **Bluetooth** sucht nach Lautsprechern in der Nähe und kann das gewählte Gerät
+  koppeln, als vertrauenswürdig speichern und verbinden.
+
+Zusätzlich wird die feste **Wartezeit nach dem Ton** zwischen 0 und 10 Sekunden
+eingestellt. Beim ersten Tasterdruck spielt TAKT das im Projekt enthaltene
+  mitgelieferte, 17,5 Sekunden lange Startsignal vollständig ab, wartet
+  anschließend diese Zeit und startet erst dann die Messung. Während dieser
+  Sequenz werden weitere Tasterdrücke ignoriert.
+Das Stoppen einer laufenden Messung bleibt unverzögert.
+
+Mit **Testton** lässt sich der Ausgang vor dem Lauf prüfen. Ein gespeicherter
+Bluetooth-Lautsprecher wird bei Bedarf vor dem Startsignal erneut verbunden.
+Raspberry Pi OS Desktop verwendet PipeWire; das Installationsskript richtet die
+benötigten Bluetooth-, ALSA- und PulseAudio-Kompatibilitätswerkzeuge ein.
+
+Die unveränderte Quelldatei liegt unter
+`src/takt/assets/start_signal_source.mp3`. Für eine zuverlässige Wiedergabe ohne
+zusätzlichen MP3-Decoder liefert TAKT außerdem
+`src/takt/assets/start_signal.wav` mit demselben Audioinhalt aus.
+
 ## Raspberry Pi sicher herunterfahren
 
 In **Einstellungen → System** steht auf Raspberry-Pi-Hardware die Aktion
@@ -86,10 +209,10 @@ weist auf einen eventuell ungespeicherten Lauf hin und fordert anschließend ein
 geordnetes Herunterfahren über `systemctl poweroff` an. Auf Entwicklungsrechnern
 ist die Schaltfläche deaktiviert.
 
-Wenn Raspberry Pi OS die Anfrage wegen fehlender Berechtigung ablehnt, bleibt
-TAKT geöffnet und zeigt einen Fehler. Die produktive Installationsroutine muss
-die lokale Desktop-Sitzung beziehungsweise deren PolicyKit-Berechtigung für das
-Herunterfahren validieren.
+Das Installationsskript vergibt dafür ausschließlich die passwortlose
+Berechtigung für `systemctl poweroff`; andere Administratorbefehle werden nicht
+freigeschaltet. Wenn Raspberry Pi OS die Anfrage ablehnt, bleibt TAKT geöffnet
+und zeigt einen Fehler.
 
 ## Raspberry-Pi-Taster
 
@@ -103,25 +226,24 @@ GND          ↔ NO
 Die Eingabe ist active-low und verwendet den internen Pull-up-Widerstand.
 Pin, Entprellzeit und Doppeldruckfenster stehen in `config.example.toml`.
 
-## Raspberry-Pi-Deployment
+## Raspberry-Pi-Betrieb prüfen
 
-Der aktuelle Stand ist noch eine Entwicklungsinstallation. `launch_dev.sh` ist
-kein unbeaufsichtigter Raspberry-Pi-Installer; im Repository fehlen derzeit noch
-der produktive Installationsablauf und die Autostart-Unit.
+Der Serverstatus kann bei der Fehlersuche angezeigt werden:
 
-Der vorgesehene Deployment-Ablauf ist:
+```bash
+systemctl status takt.service
+```
 
-1. TAKT und die benötigten Systempakete auf dem Pi installieren.
-2. Eine eigene virtuelle Python-Umgebung für TAKT anlegen.
-3. `config.toml` mit GPIO-Taster und optionalem Summer konfigurieren.
-4. Daten-, Sicherungs- und Protokollverzeichnisse anlegen.
-5. TAKT nach dem Start der grafischen Sitzung automatisch im Vollbild öffnen.
-6. GPIO, Entprellung, Doppeldruck und Neustartverhalten auf echter Hardware prüfen.
+Die letzten Meldungen stehen im Systemprotokoll:
 
-Vor einem produktiven Einsatz muss insbesondere die Verfügbarkeit von PySide6
-auf dem konkret verwendeten Raspberry Pi OS 32-bit Image geprüft werden. Der
-nächste Deployment-Meilenstein umfasst `scripts/install_raspberry_pi.sh`, eine
-Autostart-Konfiguration und dokumentierte Hardwaretests.
+```bash
+journalctl -u takt.service -n 100 --no-pager
+```
+
+TAKT verwendet produktiv ausdrücklich `GPIOZERO_PIN_FACTORY=lgpio`. Der
+Systemdienst startet nach einem Fehler automatisch neu. Der frühere manuelle
+PySide-Autostart wird vom Installationsskript entfernt, damit nur ein Prozess
+GPIO und Datenbank kontrolliert.
 
 ## Konfiguration und Daten
 
@@ -130,6 +252,17 @@ werden. Ohne Datei gelten sichere Standardwerte. Die Laufdaten liegen unter
 `~/.local/share/takt/takt.db`, tägliche Sicherungen unter
 `~/.local/share/takt/backups/` und rotierende Protokolle unter
 `~/.local/state/takt/logs/`.
+
+Der Webserver kann ebenfalls konfiguriert werden:
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 8080
+```
+
+Der installierte Systemdienst überschreibt den Port mit 80, damit
+`http://takt.local` ohne Portangabe funktioniert.
 
 Für einen isolierten Test lässt sich ein anderer Speicherort angeben:
 
@@ -153,7 +286,8 @@ Mit installierten Entwicklungsabhängigkeiten:
 
 ## Noch offen
 
-- Installation und Autostart auf einem echten Raspberry Pi OS 32-bit prüfen,
-- GPIO und optionalen echten Summer in wiederholten Hardware-Zyklen validieren,
+- Installationsskript und Autostart auf dem konkreten Raspberry Pi wiederholt
+  validieren,
+- GPIO-Taster in wiederholten Hardware-Zyklen validieren,
 - visuelle Screenshot-Tests bei 1280×720 und 1920×1080 ergänzen,
-- Single-Instance-Schutz und Anzeige-Wachhaltung ergänzen.
+- optionalen Nur-Anzeige-Zugriff für zusätzliche Netzwerkgeräte ergänzen.
