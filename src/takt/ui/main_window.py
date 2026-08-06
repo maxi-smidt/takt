@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from takt.application.run_curation_service import RunCurationService
+from takt.application.system_power_service import SystemPowerService
 from takt.application.timer_controller import TimerController, TimerSnapshot
 from takt.buzzer import Buzzer, NullBuzzer
 from takt.config import Config
@@ -39,6 +41,8 @@ from takt.persistence.run_repository import SQLiteRunRepository
 from takt.ui.performance_chart import PerformanceChart
 from takt.ui.settings_dialog import SettingsDialog
 from takt.ui.theme import APP_STYLE
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ClickableFrame(QFrame):
@@ -71,6 +75,7 @@ class MainWindow(QMainWindow):
         self.controller = controller
         self.repository = repository
         self.curation_service = RunCurationService(repository)
+        self.system_power_service = SystemPowerService()
         self.config = config
         self.button_input: ButtonInput | None = None
         self.buzzer: Buzzer = NullBuzzer()
@@ -517,6 +522,10 @@ class MainWindow(QMainWindow):
             self,
             toggle_fullscreen=self._toggle_fullscreen,
             is_fullscreen=self.isFullScreen,
+            request_shutdown=self._request_system_shutdown,
+            shutdown_available=self.system_power_service.available,
+            has_unsaved_run=self.controller.state
+            in (TimerState.STOPPED, TimerState.DISCARD_CONFIRMATION),
         )
         dialog.exec()
         if dialog.changed:
@@ -524,6 +533,18 @@ class MainWindow(QMainWindow):
 
     def _toggle_fullscreen(self) -> None:
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
+
+    def _request_system_shutdown(self) -> str | None:
+        try:
+            self.system_power_service.shutdown()
+        except RuntimeError as error:
+            LOGGER.exception("system_shutdown_failed")
+            return str(error)
+        LOGGER.info("system_shutdown_requested")
+        application = QApplication.instance()
+        if application is not None:
+            QTimer.singleShot(0, application.quit)
+        return None
 
     def _set_running_focus(self, active: bool) -> None:
         for widget in (self.today_card, self.best_card, self.chart_card):

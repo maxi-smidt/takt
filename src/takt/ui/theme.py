@@ -146,6 +146,20 @@ QPushButton#danger {
     color: #ff9a9e;
     border-color: #86393d;
 }
+QPushButton#shutdown {
+    color: #ffd0a3;
+    background: #412416;
+    border-color: #a85b24;
+}
+QPushButton#shutdown:hover {
+    background: #57301c;
+    border-color: #d77831;
+}
+QPushButton#shutdown:disabled {
+    color: #667985;
+    background: #101a22;
+    border-color: #273b48;
+}
 QPushButton#adjust {
     color: #ffb517;
     border-color: #ad7410;

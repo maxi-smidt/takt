@@ -31,11 +31,17 @@ class SettingsDialog(QDialog):
         parent: QWidget,
         toggle_fullscreen: Callable[[], None] | None = None,
         is_fullscreen: Callable[[], bool] | None = None,
+        request_shutdown: Callable[[], str | None] | None = None,
+        shutdown_available: bool = False,
+        has_unsaved_run: bool = False,
     ) -> None:
         super().__init__(parent)
         self.curation_service = curation_service
         self.toggle_fullscreen = toggle_fullscreen
         self.is_fullscreen = is_fullscreen
+        self.request_shutdown = request_shutdown
+        self.shutdown_available = shutdown_available
+        self.has_unsaved_run = has_unsaved_run
         self.changed = False
         self.setObjectName("settingsDialog")
         self.setWindowTitle("TAKT · Einstellungen")
@@ -87,6 +93,30 @@ class SettingsDialog(QDialog):
             display_layout.addWidget(self.fullscreen_button)
             self._update_fullscreen_button()
             layout.addWidget(display_card)
+
+        system_card = QFrame()
+        system_card.setObjectName("settingsActionCard")
+        system_layout = QHBoxLayout(system_card)
+        system_layout.setContentsMargins(14, 10, 14, 10)
+        system_label = QLabel("SYSTEM")
+        system_label.setObjectName("metricLabel")
+        system_layout.addWidget(system_label)
+        system_layout.addStretch()
+        self.shutdown_button = QPushButton("RASPBERRY PI HERUNTERFAHREN")
+        self.shutdown_button.setObjectName("shutdown")
+        self.shutdown_button.setEnabled(self.shutdown_available)
+        if self.shutdown_available:
+            self.shutdown_button.setToolTip(
+                "TAKT beenden und den Raspberry Pi sicher herunterfahren"
+            )
+        else:
+            self.shutdown_button.setText("HERUNTERFAHREN · NUR AUF RASPBERRY PI")
+            self.shutdown_button.setToolTip(
+                "Diese Funktion ist auf dem Entwicklungscomputer deaktiviert"
+            )
+        self.shutdown_button.clicked.connect(self._shutdown)
+        system_layout.addWidget(self.shutdown_button)
+        layout.addWidget(system_card)
 
         self.table = QTableWidget(0, 6)
         self.table.setObjectName("settingsTable")
@@ -190,12 +220,14 @@ class SettingsDialog(QDialog):
             return
         corrected_added = Duration(max(0, run.added_time.milliseconds + delta_ms))
         if corrected_added == run.added_time:
+            self.feedback_label.setStyleSheet("")
             self.feedback_label.setText("Der Zuschlag ist bereits bei +00:00.00.")
             return
         if not self._confirm_adjustment(run, corrected_added):
             return
         updated = self.curation_service.adjust_added_time(run.id, delta_ms)
         self.changed = True
+        self.feedback_label.setStyleSheet("")
         self.feedback_label.setText(
             f"Lauf {updated.run_number}: Zuschlag {updated.added_time.format_added()} · "
             f"Gesamtzeit {updated.total_time.format_stopwatch()}"
@@ -208,6 +240,7 @@ class SettingsDialog(QDialog):
             return
         if self.curation_service.delete_run(run.id):
             self.changed = True
+            self.feedback_label.setStyleSheet("")
             self.feedback_label.setText(
                 f"Lauf {run.run_number} vom {run.started_at.astimezone():%d.%m.%Y} wurde gelöscht."
             )
@@ -303,3 +336,62 @@ class SettingsDialog(QDialog):
         is_fullscreen = self.is_fullscreen() if self.is_fullscreen is not None else False
         label = "VOLLBILD BEENDEN" if is_fullscreen else "VOLLBILD AKTIVIEREN"
         self.fullscreen_button.setText(f"{label}  (F11)")
+
+    def _shutdown(self) -> None:
+        if (
+            not self.shutdown_available
+            or self.request_shutdown is None
+            or not self._confirm_shutdown()
+        ):
+            return
+        self.shutdown_button.setEnabled(False)
+        self.shutdown_button.setText("RASPBERRY PI WIRD HERUNTERGEFAHREN …")
+        self.feedback_label.setText(
+            "TAKT wird geschlossen. Strom erst trennen, wenn der Raspberry Pi "
+            "vollständig heruntergefahren ist."
+        )
+        error_message = self.request_shutdown()
+        if error_message is not None:
+            self.shutdown_button.setEnabled(True)
+            self.shutdown_button.setText("RASPBERRY PI HERUNTERFAHREN")
+            self.feedback_label.setStyleSheet("color: #ff8b8f;")
+            self.feedback_label.setText(error_message)
+
+    def _confirm_shutdown(self) -> bool:
+        dialog = QDialog(self)
+        dialog.setObjectName("confirmationDialog")
+        dialog.setWindowTitle("Raspberry Pi herunterfahren")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(500)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(14)
+        title = QLabel("Raspberry Pi wirklich herunterfahren?")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+        message = QLabel(
+            "TAKT wird beendet und Raspberry Pi OS wird geordnet heruntergefahren.\n"
+            "Den Strom erst trennen, wenn der Raspberry Pi vollständig aus ist."
+        )
+        message.setObjectName("subtitle")
+        message.setWordWrap(True)
+        layout.addWidget(message)
+        if self.has_unsaved_run:
+            unsaved_warning = QLabel(
+                "ACHTUNG: Der aktuell gestoppte Lauf wurde noch nicht gespeichert "
+                "und geht beim Herunterfahren verloren."
+            )
+            unsaved_warning.setObjectName("deleteWarning")
+            unsaved_warning.setWordWrap(True)
+            layout.addWidget(unsaved_warning)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        cancel_button = QPushButton("ABBRECHEN")
+        cancel_button.clicked.connect(dialog.reject)
+        shutdown_button = QPushButton("JETZT HERUNTERFAHREN")
+        shutdown_button.setObjectName("shutdown")
+        shutdown_button.clicked.connect(dialog.accept)
+        actions.addWidget(cancel_button)
+        actions.addWidget(shutdown_button)
+        layout.addLayout(actions)
+        return dialog.exec() == QDialog.DialogCode.Accepted

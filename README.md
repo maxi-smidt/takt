@@ -78,6 +78,19 @@ können nach einer zusätzlichen Sicherheitsabfrage endgültig gelöscht werden.
 Jede Änderung an einem bereits gespeicherten Lauf muss ausdrücklich bestätigt
 werden.
 
+## Raspberry Pi sicher herunterfahren
+
+In **Einstellungen → System** steht auf Raspberry-Pi-Hardware die Aktion
+**Raspberry Pi herunterfahren** zur Verfügung. Sie verlangt eine Bestätigung,
+weist auf einen eventuell ungespeicherten Lauf hin und fordert anschließend ein
+geordnetes Herunterfahren über `systemctl poweroff` an. Auf Entwicklungsrechnern
+ist die Schaltfläche deaktiviert.
+
+Wenn Raspberry Pi OS die Anfrage wegen fehlender Berechtigung ablehnt, bleibt
+TAKT geöffnet und zeigt einen Fehler. Die produktive Installationsroutine muss
+die lokale Desktop-Sitzung beziehungsweise deren PolicyKit-Berechtigung für das
+Herunterfahren validieren.
+
 ## Raspberry-Pi-Taster
 
 Der normalerweise offene Taster wird so angeschlossen:
