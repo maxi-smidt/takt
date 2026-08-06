@@ -36,11 +36,28 @@ class DelayedAudioService:
     enabled = True
     delay_seconds = 0.01
 
-    async def play_start_sound(self) -> None:
-        await asyncio.sleep(0)
+    def __init__(self) -> None:
+        self.started = False
+        self.cancelled = False
+
+    async def play_start_sound(self, on_started=None) -> None:
+        self.started = True
+        await asyncio.sleep(0.01)
+        if on_started is not None:
+            on_started()
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
 
     def payload(self) -> dict[str, object]:
-        return {"enabled": True, "output": "aux", "delay_seconds": 0.01}
+        return {
+            "enabled": True,
+            "output": "aux",
+            "delay_milliseconds": 10,
+            "clip_duration_milliseconds": 1_000,
+        }
 
 
 class WebRuntimeTests(unittest.TestCase):
@@ -119,14 +136,24 @@ class WebRuntimeTests(unittest.TestCase):
         asyncio.run(self._exercise_delayed_start())
 
     async def _exercise_delayed_start(self) -> None:
-        self.runtime.audio_service = DelayedAudioService()  # type: ignore[assignment]
+        audio = DelayedAudioService()
+        self.runtime.audio_service = audio  # type: ignore[assignment]
         self.runtime.start()
         try:
             self.assertTrue(self.runtime.primary_press())
             self.assertEqual(self.controller.state, TimerState.READY)
             self.assertTrue(self.runtime.state_payload()["start_sequence"]["active"])
+            await asyncio.sleep(0.005)
+            self.assertEqual(self.controller.state, TimerState.READY)
             await asyncio.sleep(0.03)
             self.assertEqual(self.controller.state, TimerState.RUNNING)
+            self.assertTrue(audio.started)
+            self.assertTrue(self.runtime.state_payload()["sound_playing"])
+
+            self.assertTrue(self.runtime.primary_press())
+            await asyncio.sleep(0)
+            self.assertEqual(self.controller.state, TimerState.STOPPED)
+            self.assertTrue(audio.cancelled)
         finally:
             await self.runtime.close()
 

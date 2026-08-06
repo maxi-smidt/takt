@@ -163,12 +163,12 @@ function ReadyTimer({ state, onPrimary }) {
   const sequence = state.start_sequence;
   if (sequence?.active) {
     const waiting = sequence.phase === "waiting";
-    const seconds = Math.max(0, (sequence.remaining_ms || 0) / 1000).toFixed(1);
+    const seconds = Math.max(0, (sequence.remaining_ms || 0) / 1000).toFixed(3);
     return (
       <div className="start-sequence" role="status" aria-live="polite">
         <Volume2 size={34} strokeWidth={1.8} />
         <strong>{waiting ? seconds : "SIGNAL"}</strong>
-        <span>{waiting ? "SEKUNDEN BIS ZUM START" : "STARTTON WIRD ABGESPIELT"}</span>
+        <span>{waiting ? "SEKUNDEN BIS ZUM START" : "AUDIO WIRD VORBEREITET"}</span>
       </div>
     );
   }
@@ -274,7 +274,9 @@ function TimerPanel({ state, onAction }) {
     ? {
         index: "01",
         title: "STARTSIGNAL",
-        subtitle: startSequence.phase === "waiting" ? "STARTVERZÖGERUNG" : "TON WIRD ABGESPIELT",
+        subtitle: startSequence.phase === "waiting"
+          ? "TON LÄUFT · STARTVERZÖGERUNG"
+          : "AUDIO WIRD VORBEREITET",
         hint: "Bitte warten – die Zeitmessung startet automatisch",
       }
     : STATE_META[state.state] || STATE_META.error;
@@ -594,7 +596,7 @@ function AudioSettingsPanel({ audio, onRequest }) {
   const settingsPayload = {
     enabled: draft.output !== "off",
     output: draft.output,
-    delay_seconds: Number(draft.delay_seconds),
+    delay_milliseconds: Number(draft.delay_milliseconds),
     device_address: selectedAddress || null,
     device_name: (
       audio.devices.find((device) => device.address === selectedAddress)?.name
@@ -651,7 +653,7 @@ function AudioSettingsPanel({ audio, onRequest }) {
           <span>STARTSIGNAL</span>
           <h3>LAUTSPRECHER UND STARTVERZÖGERUNG</h3>
         </div>
-        <p>Der Timer startet erst nach Ton und eingestellter Wartezeit.</p>
+        <p>Der Timer startet während des Tons nach der eingestellten Wartezeit.</p>
       </div>
       <section className="audio-settings">
         <div className="audio-mode-switch" aria-label="Audio-Ausgang">
@@ -671,28 +673,35 @@ function AudioSettingsPanel({ audio, onRequest }) {
           ))}
         </div>
         <label className="audio-delay">
-          <span>WARTEZEIT NACH TON</span>
+          <span>START NACH</span>
           <div>
             <input
               type="number"
               min="0"
-              max="10"
-              step="0.5"
-              value={draft.delay_seconds}
+              max={audio.clip_duration_milliseconds}
+              step="1"
+              value={draft.delay_milliseconds}
               onChange={(event) => setDraft((current) => ({
                 ...current,
-                delay_seconds: event.target.value,
+                delay_milliseconds: event.target.value,
               }))}
             />
-            <strong>SEKUNDEN</strong>
+            <strong>MS</strong>
           </div>
+          <small>
+            {(Number(draft.delay_milliseconds || 0) / 1000).toFixed(3)} s · maximal{" "}
+            {(audio.clip_duration_milliseconds / 1000).toFixed(3)} s
+          </small>
         </label>
         <div className="audio-summary">
           <span>TONDATEI</span>
           <strong>{audio.sound}</strong>
           <small>
             {audio.playback_available
-              ? `Wiedergabe bereit${audio.player ? ` · ${audio.player}` : ""}`
+              ? (
+                  `${(audio.clip_duration_milliseconds / 1000).toFixed(3)} s`
+                  + `${audio.player ? ` · ${audio.player}` : ""}`
+                )
               : "Kein Audioplayer gefunden"}
           </small>
         </div>

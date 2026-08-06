@@ -68,6 +68,7 @@ class WebRuntime:
         self._confirmation_deadline: float | None = None
         self._refresh_task: asyncio.Task[None] | None = None
         self._start_task: asyncio.Task[None] | None = None
+        self._sound_task: asyncio.Task[None] | None = None
         self._start_phase: str | None = None
         self._start_deadline: float | None = None
         self._start_error: str | None = None
@@ -86,6 +87,9 @@ class WebRuntime:
         if self._start_task is not None:
             self._start_task.cancel()
             await asyncio.gather(self._start_task, return_exceptions=True)
+        if self._sound_task is not None:
+            self._sound_task.cancel()
+            await asyncio.gather(self._sound_task, return_exceptions=True)
         for client in tuple(self._clients):
             await client.close(code=1001, message=b"TAKT server shutdown")
 
@@ -108,7 +112,7 @@ class WebRuntime:
         self._start_error = None
         if not self.audio_service.enabled:
             return self.controller.start(source)
-        self._start_phase = "playing"
+        self._start_phase = "preparing"
         self._start_deadline = None
         self._start_task = asyncio.create_task(self._run_start_sequence(source))
         self._schedule_state_broadcast()
@@ -156,6 +160,9 @@ class WebRuntime:
             "remaining_ms": remaining_ms,
             "error": self._start_error,
         }
+        payload["sound_playing"] = (
+            self._sound_task is not None and not self._sound_task.done()
+        )
         return payload
 
     def history_payload(self, chart_days: int | None) -> dict[str, object]:
@@ -187,14 +194,14 @@ class WebRuntime:
         *,
         enabled: bool,
         output: str,
-        delay_seconds: float,
+        delay_milliseconds: int,
         device_address: str | None,
         device_name: str | None,
     ) -> dict[str, object]:
         self.audio_service.update_settings(
             enabled=enabled,
             output=output,
-            delay_seconds=delay_seconds,
+            delay_milliseconds=delay_milliseconds,
             device_address=device_address,
             device_name=device_name,
         )
@@ -322,6 +329,8 @@ class WebRuntime:
 
     def _on_snapshot(self, snapshot: TimerSnapshot) -> None:
         state = snapshot.state
+        if state is TimerState.STOPPED:
+            self._stop_start_sound()
         if state is not self._last_state:
             event = self._signal_for_transition(self._last_state, state)
             self._last_state = state
@@ -354,25 +363,73 @@ class WebRuntime:
                 await asyncio.sleep(0.1)
 
     async def _run_start_sequence(self, source: str) -> None:
+        started_wait: asyncio.Task[bool] | None = None
         try:
-            await self.audio_service.play_start_sound()
-            self._start_phase = "waiting"
             loop = asyncio.get_running_loop()
+            playback_started = asyncio.Event()
+            sound_task = asyncio.create_task(
+                self.audio_service.play_start_sound(playback_started.set)
+            )
+            self._sound_task = sound_task
+            sound_task.add_done_callback(self._on_sound_finished)
+            started_wait = asyncio.create_task(playback_started.wait())
+            done, _ = await asyncio.wait(
+                (sound_task, started_wait),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if sound_task in done and not playback_started.is_set():
+                await sound_task
+                raise RuntimeError("Das Startsignal wurde nicht gestartet.")
+            await started_wait
+            self._start_phase = "waiting"
             self._start_deadline = loop.time() + self.audio_service.delay_seconds
             self._schedule_state_broadcast()
-            await asyncio.sleep(self.audio_service.delay_seconds)
+            while loop.time() < self._start_deadline:
+                if sound_task.done():
+                    error = sound_task.exception()
+                    if error is not None:
+                        raise error
+                remaining = self._start_deadline - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(0.025, remaining))
             if self.controller.state is TimerState.READY and not self._closed:
                 self.controller.start(source)
         except asyncio.CancelledError:
+            self._stop_start_sound()
             raise
         except Exception as error:
             LOGGER.exception("start_sequence_failed")
             self._start_error = str(error)
+            self._stop_start_sound()
         finally:
+            if started_wait is not None and not started_wait.done():
+                started_wait.cancel()
             self._start_phase = None
             self._start_deadline = None
             self._start_task = None
             self._schedule_state_broadcast()
+
+    def _stop_start_sound(self) -> None:
+        task = self._sound_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._sound_task = None
+
+    def _on_sound_finished(self, task: asyncio.Task[None]) -> None:
+        if self._sound_task is task:
+            self._sound_task = None
+        if task.cancelled():
+            self._schedule_state_broadcast()
+            return
+        error = task.exception()
+        if error is not None:
+            LOGGER.error(
+                "start_sound_ended_with_error",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            self._start_error = str(error)
+        self._schedule_state_broadcast()
 
     def _schedule_state_broadcast(self) -> None:
         if not self._clients or self._closed:

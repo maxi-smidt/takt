@@ -19,7 +19,7 @@ port = 8080
 [audio]
 enabled = false
 output = "off" # "off", "aux" oder "bluetooth"
-delay_seconds = 3.0
+delay_milliseconds = 3000
 settings_path = "~/.config/takt/audio.json"
 
 [display]

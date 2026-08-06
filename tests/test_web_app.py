@@ -72,7 +72,7 @@ class WebApplicationTests(unittest.TestCase):
                         json={
                             "enabled": False,
                             "output": "off",
-                            "delay_seconds": 2.5,
+                            "delay_milliseconds": 2_500,
                             "device_address": None,
                             "device_name": None,
                         },
@@ -80,8 +80,8 @@ class WebApplicationTests(unittest.TestCase):
                         self.assertEqual(response.status, 200)
                         audio_settings = await response.json()
                         self.assertEqual(
-                            audio_settings["system"]["audio"]["delay_seconds"],
-                            2.5,
+                            audio_settings["system"]["audio"]["delay_milliseconds"],
+                            2_500,
                         )
 
                     async with client.post(

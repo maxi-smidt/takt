@@ -104,12 +104,12 @@ async def audio_settings(request: web.Request) -> web.Response:
     body = await json_body(request)
     enabled = body.get("enabled")
     output = body.get("output")
-    delay_seconds = body.get("delay_seconds")
+    delay_milliseconds = body.get("delay_milliseconds")
     device_address = body.get("device_address")
     device_name = body.get("device_name")
     if not isinstance(enabled, bool) or not isinstance(output, str):
         raise web.HTTPBadRequest(text="Ungültige Audio-Einstellung.")
-    if not isinstance(delay_seconds, int | float):
+    if not isinstance(delay_milliseconds, int) or isinstance(delay_milliseconds, bool):
         raise web.HTTPBadRequest(text="Ungültige Wartezeit.")
     if device_address is not None and not isinstance(device_address, str):
         raise web.HTTPBadRequest(text="Ungültiges Bluetooth-Gerät.")
@@ -119,7 +119,7 @@ async def audio_settings(request: web.Request) -> web.Response:
         system = await runtime.update_audio_settings(
             enabled=enabled,
             output=output,
-            delay_seconds=float(delay_seconds),
+            delay_milliseconds=delay_milliseconds,
             device_address=device_address,
             device_name=device_name,
         )

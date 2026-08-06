@@ -1141,6 +1141,7 @@ kbd {
   white-space: nowrap;
 }
 
+.audio-delay small,
 .audio-summary small {
   color: var(--muted);
   font-size: 10px;

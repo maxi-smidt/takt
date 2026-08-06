@@ -5,9 +5,11 @@ import json
 import logging
 import re
 import shutil
-from collections.abc import Awaitable, Callable
+import wave
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Protocol
 
 from takt.config import AudioConfig
 
@@ -17,14 +19,22 @@ DEVICE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ADDRESS_PATTERN = re.compile(r"^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$", re.IGNORECASE)
-CommandRunner = Callable[[tuple[str, ...], float], Awaitable[tuple[int, str]]]
+
+
+class CommandRunner(Protocol):
+    async def __call__(
+        self,
+        command: tuple[str, ...],
+        timeout: float,
+        on_started: Callable[[], None] | None = None,
+    ) -> tuple[int, str]: ...
 
 
 @dataclass(slots=True)
 class AudioSettings:
     enabled: bool = False
     output: str = "off"
-    delay_seconds: float = 3.0
+    delay_milliseconds: int = 3_000
     device_address: str | None = None
     device_name: str | None = None
 
@@ -50,17 +60,21 @@ class AudioService:
         self.settings_path = config.settings_path
         self._runner = runner or self._run_command
         self._find = command_finder
+        self._sound_path = (
+            Path(__file__).resolve().parent.parent / "assets" / "start_signal.wav"
+        )
+        self.clip_duration_milliseconds = self._read_clip_duration_milliseconds()
         self.settings = self._load_settings(
             AudioSettings(
                 enabled=config.enabled,
                 output=config.output,
-                delay_seconds=config.delay_seconds,
+                delay_milliseconds=min(
+                    config.delay_milliseconds,
+                    self.clip_duration_milliseconds,
+                ),
             )
         )
         self.devices: list[BluetoothDevice] = []
-        self._sound_path = (
-            Path(__file__).resolve().parent.parent / "assets" / "start_signal.wav"
-        )
 
     @property
     def enabled(self) -> bool:
@@ -68,7 +82,7 @@ class AudioService:
 
     @property
     def delay_seconds(self) -> float:
-        return self.settings.delay_seconds
+        return self.settings.delay_milliseconds / 1000
 
     def payload(self) -> dict[str, object]:
         player = self._player()
@@ -78,6 +92,7 @@ class AudioService:
             "bluetooth_available": self._find("bluetoothctl") is not None,
             "player": Path(player).name if player else None,
             "sound": "TAKT Startsignal",
+            "clip_duration_milliseconds": self.clip_duration_milliseconds,
             "devices": [asdict(device) for device in self.devices],
         }
 
@@ -86,20 +101,23 @@ class AudioService:
         *,
         enabled: bool,
         output: str,
-        delay_seconds: float,
+        delay_milliseconds: int,
         device_address: str | None,
         device_name: str | None,
     ) -> dict[str, object]:
         if output not in {"off", "aux", "bluetooth"}:
             raise ValueError("Ungültiger Audio-Ausgang.")
-        if not 0 <= delay_seconds <= 10:
-            raise ValueError("Die Wartezeit muss zwischen 0 und 10 Sekunden liegen.")
+        if not 0 <= delay_milliseconds <= self.clip_duration_milliseconds:
+            raise ValueError(
+                "Die Wartezeit muss zwischen 0 ms und der Länge des Startsignals "
+                f"({self.clip_duration_milliseconds} ms) liegen."
+            )
         if output == "bluetooth" and device_address:
             self._validate_address(device_address)
         self.settings = AudioSettings(
             enabled=bool(enabled and output != "off"),
             output=output,
-            delay_seconds=round(delay_seconds, 1),
+            delay_milliseconds=delay_milliseconds,
             device_address=device_address or None,
             device_name=device_name or None,
         )
@@ -168,7 +186,10 @@ class AudioService:
         await self._select_bluetooth_sink(address)
         return self.payload()
 
-    async def play_start_sound(self) -> None:
+    async def play_start_sound(
+        self,
+        on_playback_started: Callable[[], None] | None = None,
+    ) -> None:
         player = self._player()
         if player is None:
             raise RuntimeError("Kein Audioplayer ist installiert.")
@@ -182,7 +203,8 @@ class AudioService:
         if not self._sound_path.exists():
             raise RuntimeError("Die Startsignal-Datei wurde nicht gefunden.")
         command = self._play_command(player, self._sound_path)
-        code, output = await self._runner(command, 15)
+        timeout = self.clip_duration_milliseconds / 1000 + 10
+        code, output = await self._runner(command, timeout, on_playback_started)
         if code:
             LOGGER.warning("start_sound_failed command=%s output=%s", command[0], output)
             raise RuntimeError("Das Startsignal konnte nicht abgespielt werden.")
@@ -197,12 +219,19 @@ class AudioService:
             output = str(raw.get("output", defaults.output))
             if output not in {"off", "aux", "bluetooth"}:
                 output = "off"
+            if "delay_milliseconds" in raw:
+                delay_milliseconds = int(raw["delay_milliseconds"])
+            else:
+                delay_milliseconds = round(
+                    float(raw.get("delay_seconds", defaults.delay_milliseconds / 1000))
+                    * 1000
+                )
             return AudioSettings(
                 enabled=bool(raw.get("enabled", defaults.enabled)),
                 output=output,
-                delay_seconds=min(
-                    max(float(raw.get("delay_seconds", defaults.delay_seconds)), 0.0),
-                    10.0,
+                delay_milliseconds=min(
+                    max(delay_milliseconds, 0),
+                    self.clip_duration_milliseconds,
                 ),
                 device_address=raw.get("device_address") or None,
                 device_name=raw.get("device_name") or None,
@@ -218,6 +247,14 @@ class AudioService:
             encoding="utf-8",
         )
         temporary.replace(self.settings_path)
+
+    def _read_clip_duration_milliseconds(self) -> int:
+        try:
+            with wave.open(str(self._sound_path), "rb") as recording:
+                return round(recording.getnframes() / recording.getframerate() * 1000)
+        except (OSError, EOFError, wave.Error, ZeroDivisionError):
+            LOGGER.exception("start_sound_metadata_failed")
+            return 0
 
     def _player(self) -> str | None:
         for command in ("paplay", "pw-play", "afplay", "aplay"):
@@ -279,15 +316,32 @@ class AudioService:
             raise ValueError("Ungültige Bluetooth-Adresse.")
 
     @staticmethod
-    async def _run_command(command: tuple[str, ...], timeout: float) -> tuple[int, str]:
+    async def _run_command(
+        command: tuple[str, ...],
+        timeout: float,
+        on_started: Callable[[], None] | None = None,
+    ) -> tuple[int, str]:
+        process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
+            if on_started is not None:
+                on_started()
             output, _ = await asyncio.wait_for(process.communicate(), timeout)
+        except asyncio.CancelledError:
+            if process is not None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), 1)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
+            raise
         except TimeoutError:
+            assert process is not None
             process.kill()
             await process.wait()
             return 124, "Zeitüberschreitung"

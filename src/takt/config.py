@@ -40,7 +40,7 @@ class ServerConfig:
 class AudioConfig:
     enabled: bool = False
     output: str = "off"
-    delay_seconds: float = 3.0
+    delay_milliseconds: int = 3_000
     settings_path: Path = field(
         default_factory=lambda: _expanded("~/.config/takt/audio.json")
     )
@@ -119,8 +119,14 @@ def load_config(path: Path | None = None) -> Config:
     config.audio.enabled = bool(audio.get("enabled", config.audio.enabled))
     output = str(audio.get("output", config.audio.output))
     config.audio.output = output if output in {"off", "aux", "bluetooth"} else "off"
-    delay = float(audio.get("delay_seconds", config.audio.delay_seconds))
-    config.audio.delay_seconds = min(max(delay, 0.0), 10.0)
+    if "delay_milliseconds" in audio:
+        delay_milliseconds = int(audio["delay_milliseconds"])
+    else:
+        delay_milliseconds = round(
+            float(audio.get("delay_seconds", config.audio.delay_milliseconds / 1000))
+            * 1000
+        )
+    config.audio.delay_milliseconds = max(delay_milliseconds, 0)
     audio_settings_path = audio.get("settings_path")
     if audio_settings_path:
         config.audio.settings_path = _expanded(str(audio_settings_path))

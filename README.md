@@ -79,6 +79,39 @@ nicht öffentliches WLAN.
 
 Das Installationsskript kann nach einem Programmupdate erneut ausgeführt werden.
 
+## Transportpaket für den Raspberry Pi erstellen
+
+Wenn das Projekt per USB-Stick, Netzlaufwerk oder manuell auf den Raspberry Pi
+übertragen werden soll, genügt auf dem Laptop:
+
+```bash
+./scripts/package_for_raspberry_pi.sh
+```
+
+Das Skript baut zuerst die aktuelle React-Oberfläche und prüft anschließend, ob
+Server, Installer und beide Audiodateien vorhanden sind. Danach erstellt es:
+
+```text
+dist/takt-raspberry-pi.tar.gz
+dist/takt-raspberry-pi.tar.gz.sha256
+```
+
+Git-Daten, virtuelle Umgebung, Node-Module, Caches, Screenshots und lokale
+Testdaten werden nicht eingepackt. Das Archiv enthält oben einen Ordner `takt`
+und kann auf dem Raspberry Pi so installiert werden:
+
+```bash
+tar -xzf ~/takt-raspberry-pi.tar.gz -C ~
+cd ~/takt
+./scripts/install_raspberry_pi.sh
+```
+
+Ein eigener Ausgabepfad ist optional:
+
+```bash
+./scripts/package_for_raspberry_pi.sh /Pfad/zum/takt-paket.tar.gz
+```
+
 ## Schnellstart auf dem Laptop
 
 Voraussetzung ist Python 3.11 oder neuer.
@@ -184,12 +217,13 @@ Unter **Einstellungen → Startsignal** stehen drei Ausgänge zur Auswahl:
 - **Bluetooth** sucht nach Lautsprechern in der Nähe und kann das gewählte Gerät
   koppeln, als vertrauenswürdig speichern und verbinden.
 
-Zusätzlich wird die feste **Wartezeit nach dem Ton** zwischen 0 und 10 Sekunden
-eingestellt. Beim ersten Tasterdruck spielt TAKT das im Projekt enthaltene
-  mitgelieferte, 17,5 Sekunden lange Startsignal vollständig ab, wartet
-  anschließend diese Zeit und startet erst dann die Messung. Während dieser
-  Sequenz werden weitere Tasterdrücke ignoriert.
-Das Stoppen einer laufenden Messung bleibt unverzögert.
+Die feste **Startverzögerung** wird in Millisekunden eingestellt. Ihr
+Wertebereich reicht von 0 ms bis zur automatisch erkannten Länge des Clips, beim
+mitgelieferten Signal also bis 17.512 ms. Beim ersten Tasterdruck beginnt das
+Startsignal. Nach der eingestellten Zeit startet die Messung automatisch,
+während der Ton weiterläuft. Der Ton endet entweder mit dem Clip oder sofort,
+wenn die laufende Stoppuhr gestoppt wird. Während der Verzögerung werden weitere
+Tasterdrücke ignoriert.
 
 Mit **Testton** lässt sich der Ausgang vor dem Lauf prüfen. Ein gespeicherter
 Bluetooth-Lautsprecher wird bei Bedarf vor dem Startsignal erneut verbunden.

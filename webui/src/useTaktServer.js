@@ -14,6 +14,7 @@ const EMPTY_STATE = {
   history_revision: 0,
   signal_revision: 0,
   signal: null,
+  sound_playing: false,
   start_sequence: {
     active: false,
     phase: null,
@@ -39,7 +40,8 @@ const EMPTY_SYSTEM = {
   audio: {
     enabled: false,
     output: "off",
-    delay_seconds: 3,
+    delay_milliseconds: 3000,
+    clip_duration_milliseconds: 17512,
     device_address: null,
     device_name: null,
     playback_available: false,

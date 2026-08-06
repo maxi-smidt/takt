@@ -31,6 +31,7 @@ sudo apt-get install -y \
   avahi-daemon \
   bluez \
   curl \
+  pi-bluetooth \
   pulseaudio-utils \
   python3-gpiozero \
   python3-lgpio \
