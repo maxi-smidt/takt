@@ -72,7 +72,10 @@ class GpioButtonInput:
             # some pin factories. React to the first edge immediately instead.
             bounce_time=None,
         )
-        self._button.when_pressed = self._press_debouncer
+        # gpiozero introspects callback functions and does not support arbitrary
+        # callable objects here. A bound method preserves the debouncer while
+        # matching gpiozero's supported callback shape.
+        self._button.when_pressed = self._press_debouncer.__call__
         self.available = True
         LOGGER.info(
             "GPIO button initialized pin_bcm=%s software_debounce_seconds=%s",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 
 from takt.input.gpio_button_input import GpioButtonInput
@@ -44,6 +45,7 @@ class GpioButtonInputTests(unittest.TestCase):
         button = buttons[0]
         self.assertIsNone(button.arguments["bounce_time"])
         assert button.when_pressed is not None
+        inspect.getcallargs(button.when_pressed)
 
         button.when_pressed()
         self.assertEqual(presses, ["press"])
