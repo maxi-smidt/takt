@@ -30,7 +30,7 @@ trap cleanup EXIT
 [[ -r /etc/os-release ]] || fail "/etc/os-release wurde nicht gefunden."
 # shellcheck disable=SC1091
 . /etc/os-release
-[[ "${ID:-}" == "raspbian" || "${ID_LIKE:-}" == *debian* ]] \
+[[ "${ID:-}" == "raspbian" || "${ID:-}" == "debian" || "${ID_LIKE:-}" == *debian* ]] \
   || fail "TAKT unterstützt Raspberry Pi OS (Debian-basiert)."
 [[ -n "$install_home" ]] || fail "Das Benutzerverzeichnis konnte nicht ermittelt werden."
 [[ "$hostname_target" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]] \
