@@ -173,8 +173,6 @@ class AudioServiceTests(unittest.TestCase):
             [
                 (
                     "bluetoothctl",
-                    "--agent",
-                    "NoInputNoOutput",
                     "--timeout",
                     "30",
                     "pair",

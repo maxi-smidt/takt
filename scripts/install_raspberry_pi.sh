@@ -6,6 +6,7 @@ install_user="${SUDO_USER:-$USER}"
 install_home="$(getent passwd "$install_user" | cut -d: -f6)"
 install_uid="$(id -u "$install_user")"
 service_name="takt.service"
+bluetooth_agent_service="takt-bluetooth-agent.service"
 hostname_target="${TAKT_HOSTNAME:-takt}"
 port="${TAKT_PORT:-80}"
 health_url="http://127.0.0.1:$port/health"
@@ -22,6 +23,7 @@ fail() {
 cleanup() {
   [[ -z "${unit_file:-}" ]] || rm -f "$unit_file"
   [[ -z "${sudoers_temp:-}" ]] || rm -f "$sudoers_temp"
+  [[ -z "${bluetooth_agent_unit:-}" ]] || rm -f "$bluetooth_agent_unit"
 }
 trap cleanup EXIT
 
@@ -44,6 +46,7 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommen
   alsa-utils \
   avahi-daemon \
   bluez \
+  bluez-tools \
   curl \
   pi-bluetooth \
   pipewire \
@@ -82,6 +85,30 @@ fi
 sudo usermod -a -G gpio,audio "$install_user"
 sudo systemctl enable --now avahi-daemon bluetooth
 
+say "Headless-Bluetooth-Agent einrichten"
+bluetooth_agent_unit="$(mktemp)"
+{
+  printf '%s\n' \
+    "[Unit]" \
+    "Description=TAKT headless Bluetooth pairing agent" \
+    "After=bluetooth.service" \
+    "Requires=bluetooth.service" \
+    "" \
+    "[Service]" \
+    "Type=simple" \
+    "ExecStart=/usr/bin/bt-agent --capability NoInputNoOutput" \
+    "Restart=on-failure" \
+    "RestartSec=2" \
+    "" \
+    "[Install]" \
+    "WantedBy=multi-user.target"
+} >"$bluetooth_agent_unit"
+sudo install -m 0644 \
+  "$bluetooth_agent_unit" "/etc/systemd/system/$bluetooth_agent_service"
+rm -f "$bluetooth_agent_unit"
+sudo systemctl daemon-reload
+sudo systemctl enable --now "$bluetooth_agent_service"
+
 say "Headless-Audio einrichten"
 # PipeWire is a user service. Lingering starts that user session at boot even
 # when the Lite system has no local login, and also creates /run/user/$uid.
@@ -112,8 +139,8 @@ unit_file="$(mktemp)"
   printf '%s\n' \
     "[Unit]" \
     "Description=TAKT local stopwatch server" \
-    "After=network-online.target bluetooth.target sound.target" \
-    "Wants=network-online.target bluetooth.target" \
+    "After=network-online.target bluetooth.target sound.target $bluetooth_agent_service" \
+    "Wants=network-online.target bluetooth.target $bluetooth_agent_service" \
     "" \
     "[Service]" \
     "Type=simple" \

@@ -59,9 +59,11 @@ dieses einen Ablaufs.
 Das Skript installiert nur die benötigten System- und Python-Pakete, richtet
 `lgpio`, das auf Lite fehlende PipeWire-/Bluetooth-Audio, `takt.service` und
 die lokale Adresse ein. PipeWire läuft über eine dauerhafte Benutzersitzung
-auch dann, wenn niemand am Pi angemeldet ist. Eine vorhandene Konfiguration
-oder Laufdaten werden nicht überschrieben. Alte TAKT-Kiosk-Autostarts werden
-bei einer Migration entfernt. Am Ende bietet das Skript einen Neustart an.
+auch dann, wenn niemand am Pi angemeldet ist. Ein dauerhafter Bluetooth-Agent
+autorisiert das PIN-lose „Just Works“-Pairing von Lautsprechern ohne lokalen
+Desktop. Eine vorhandene Konfiguration oder Laufdaten werden nicht
+überschrieben. Alte TAKT-Kiosk-Autostarts werden bei einer Migration entfernt.
+Am Ende bietet das Skript einen Neustart an.
 
 Danach ist TAKT auf Geräten im selben lokalen Netzwerk erreichbar:
 

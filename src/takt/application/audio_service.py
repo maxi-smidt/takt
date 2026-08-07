@@ -192,19 +192,11 @@ class AudioService:
         # Never pair an already paired device again: BlueZ may remove the
         # existing pairing before starting a new one.
         if not paired:
-            # Lite has no desktop session to provide a Bluetooth agent. Speakers
-            # normally use "Just Works" pairing, for which this headless agent
-            # supplies the required authorization without a PIN prompt.
+            # The installer keeps a default NoInputNoOutput agent running for
+            # headless "Just Works" pairing. bluetoothctl's --agent option is
+            # intentionally ineffective in non-interactive command mode.
             pair_code, pair_output = await self._runner(
-                (
-                    "bluetoothctl",
-                    "--agent",
-                    "NoInputNoOutput",
-                    "--timeout",
-                    "30",
-                    "pair",
-                    address,
-                ),
+                ("bluetoothctl", "--timeout", "30", "pair", address),
                 34,
             )
             if pair_code:
