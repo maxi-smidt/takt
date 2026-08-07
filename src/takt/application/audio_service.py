@@ -19,6 +19,10 @@ DEVICE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ADDRESS_PATTERN = re.compile(r"^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$", re.IGNORECASE)
+ADDRESS_LIKE_NAME_PATTERN = re.compile(
+    r"^(?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2}$",
+    re.IGNORECASE,
+)
 
 
 class CommandRunner(Protocol):
@@ -127,10 +131,10 @@ class AudioService:
     async def scan_bluetooth(self) -> dict[str, object]:
         if self._find("bluetoothctl") is None:
             raise RuntimeError("Bluetooth-Verwaltung ist auf diesem Gerät nicht verfügbar.")
-        # Four seconds is long enough for a nearby speaker in pairing mode while
-        # keeping the settings UI responsive. Known devices are returned by
-        # BlueZ without needing a new scan report.
-        await self._runner(("bluetoothctl", "--timeout", "4", "scan", "on"), 7)
+        # Most speakers advertise their A2DP service over Classic Bluetooth.
+        # A Classic inquiry and name resolution can take well over four seconds,
+        # so scan that transport explicitly and give it enough time to finish.
+        await self._runner(("bluetoothctl", "--timeout", "20", "scan", "bredr"), 24)
         code, output = await self._runner(("bluetoothctl", "devices"), 5)
         if code:
             raise RuntimeError("Bluetooth-Geräte konnten nicht gelesen werden.")
@@ -141,6 +145,7 @@ class AudioService:
             )
             for match in map(DEVICE_PATTERN.match, output.splitlines())
             if match is not None
+            and not self._address_like_name(match.group("name").strip())
         ]
         details = await asyncio.gather(
             *(
@@ -419,6 +424,11 @@ class AudioService:
     def _validate_address(address: str) -> None:
         if not ADDRESS_PATTERN.fullmatch(address):
             raise ValueError("Ungültige Bluetooth-Adresse.")
+
+    @staticmethod
+    def _address_like_name(name: str) -> bool:
+        """Return whether BlueZ has only exposed an address as the device name."""
+        return ADDRESS_LIKE_NAME_PATTERN.fullmatch(name) is not None
 
     @staticmethod
     async def _run_command(

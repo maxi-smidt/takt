@@ -27,7 +27,10 @@ class RecordingRunner:
         if on_started is not None:
             on_started()
         if command == ("bluetoothctl", "devices"):
-            return 0, "Device AA:BB:CC:DD:EE:FF Hallenlautsprecher\n"
+            return 0, (
+                "Device 10:20:30:40:50:60 10-20-30-40-50-60\n"
+                "Device AA:BB:CC:DD:EE:FF Hallenlautsprecher\n"
+            )
         if command[:2] == ("bluetoothctl", "info"):
             return 0, (
                 "Name: Hallenlautsprecher\n"
@@ -115,8 +118,11 @@ class AudioServiceTests(unittest.TestCase):
         self.assertEqual(len(devices), 1)
         self.assertEqual(devices[0]["name"], "Hallenlautsprecher")
         self.assertIn(
-            ("bluetoothctl", "--timeout", "4", "scan", "on"),
+            ("bluetoothctl", "--timeout", "20", "scan", "bredr"),
             self.runner.commands,
+        )
+        self.assertFalse(
+            any(device["name"] == "10-20-30-40-50-60" for device in devices)
         )
 
         await self.service.connect_bluetooth("AA:BB:CC:DD:EE:FF")
