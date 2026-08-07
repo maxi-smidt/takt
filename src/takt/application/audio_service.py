@@ -192,11 +192,27 @@ class AudioService:
         # Never pair an already paired device again: BlueZ may remove the
         # existing pairing before starting a new one.
         if not paired:
-            pair_code, _ = await self._runner(
-                ("bluetoothctl", "--timeout", "15", "pair", address),
-                19,
+            # Lite has no desktop session to provide a Bluetooth agent. Speakers
+            # normally use "Just Works" pairing, for which this headless agent
+            # supplies the required authorization without a PIN prompt.
+            pair_code, pair_output = await self._runner(
+                (
+                    "bluetoothctl",
+                    "--agent",
+                    "NoInputNoOutput",
+                    "--timeout",
+                    "30",
+                    "pair",
+                    address,
+                ),
+                34,
             )
             if pair_code:
+                LOGGER.warning(
+                    "bluetooth_pair_failed address=%s output=%s",
+                    address,
+                    self._single_line_output(pair_output),
+                )
                 raise RuntimeError(
                     "Der Lautsprecher konnte nicht gekoppelt werden. "
                     "Bitte Pairing-Modus prüfen und erneut versuchen."
@@ -429,6 +445,11 @@ class AudioService:
     def _address_like_name(name: str) -> bool:
         """Return whether BlueZ has only exposed an address as the device name."""
         return ADDRESS_LIKE_NAME_PATTERN.fullmatch(name) is not None
+
+    @staticmethod
+    def _single_line_output(output: str) -> str:
+        """Keep command diagnostics useful without writing multiline log records."""
+        return " ".join(output.split())[-1_000:]
 
     @staticmethod
     async def _run_command(

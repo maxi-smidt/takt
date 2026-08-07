@@ -160,7 +160,20 @@ class AudioServiceTests(unittest.TestCase):
             for command in runner.commands
             if "pair" in command
         ]
-        self.assertEqual(len(pair_commands), 1)
+        self.assertEqual(
+            pair_commands,
+            [
+                (
+                    "bluetoothctl",
+                    "--agent",
+                    "NoInputNoOutput",
+                    "--timeout",
+                    "30",
+                    "pair",
+                    "AA:BB:CC:DD:EE:FF",
+                )
+            ],
+        )
         self.assertTrue(runner.connected)
 
 
