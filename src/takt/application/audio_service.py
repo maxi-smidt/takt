@@ -222,6 +222,12 @@ class AudioService:
             trusted = info_code == 0 and self._info_yes(info, "Trusted")
             connected = info_code == 0 and self._info_yes(info, "Connected")
             if not paired:
+                LOGGER.warning(
+                    "bluetooth_pair_not_confirmed address=%s pair_output=%s info=%s",
+                    address,
+                    self._single_line_output(pair_output),
+                    self._single_line_output(info),
+                )
                 raise RuntimeError(
                     "Der Lautsprecher konnte nicht gekoppelt werden. "
                     "Bitte Pairing-Modus prüfen und erneut versuchen."

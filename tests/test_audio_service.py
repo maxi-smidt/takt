@@ -11,9 +11,15 @@ from takt.config import AudioConfig
 
 
 class RecordingRunner:
-    def __init__(self, *, paired: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        paired: bool = True,
+        pair_is_confirmed: bool = True,
+    ) -> None:
         self.commands: list[tuple[str, ...]] = []
         self.paired = paired
+        self.pair_is_confirmed = pair_is_confirmed
         self.trusted = paired
         self.connected = False
 
@@ -40,10 +46,12 @@ class RecordingRunner:
                 f"Connected: {'yes' if self.connected else 'no'}\n"
             )
         if "pair" in command:
-            self.paired = True
-            self.trusted = True
-            self.connected = True
-            return 0, "Pairing successful\n"
+            if self.pair_is_confirmed:
+                self.paired = True
+                self.trusted = True
+                self.connected = True
+                return 0, "Pairing successful\n"
+            return 0, "Attempting to pair\n"
         if "trust" in command:
             self.trusted = True
             return 0, "trust succeeded\n"
@@ -175,6 +183,25 @@ class AudioServiceTests(unittest.TestCase):
             ],
         )
         self.assertTrue(runner.connected)
+
+    def test_unconfirmed_pairing_logs_bluez_diagnostics(self) -> None:
+        runner = RecordingRunner(paired=False, pair_is_confirmed=False)
+        service = AudioService(
+            self.config,
+            runner=runner,
+            command_finder=lambda command: f"/usr/bin/{command}",
+        )
+
+        with self.assertLogs(
+            "takt.application.audio_service",
+            level="WARNING",
+        ) as captured:
+            with self.assertRaisesRegex(RuntimeError, "Pairing-Modus"):
+                asyncio.run(service.connect_bluetooth("AA:BB:CC:DD:EE:FF"))
+
+        self.assertIn("bluetooth_pair_not_confirmed", captured.output[0])
+        self.assertIn("Attempting to pair", captured.output[0])
+        self.assertIn("Paired: no", captured.output[0])
 
 
 if __name__ == "__main__":
