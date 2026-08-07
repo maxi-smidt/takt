@@ -23,14 +23,15 @@ Der erste funktionsfähige Stand enthält:
 - eine responsive React-Browser-Oberfläche mit derselben deutschen Bedienlogik,
 - ein optionales Startsignal über AUX oder einen gekoppelten Bluetooth-Lautsprecher
   mit einstellbarer Startverzögerung,
-- eine automatisierte Raspberry-Pi-Installation mit `takt.local`, Systemdienst
-  und Vollbildstart.
+- eine automatisierte, headless Raspberry-Pi-Installation mit `takt.local`
+  und Systemdienst.
 
 ## Raspberry Pi mit einem Skript einrichten
 
-Voraussetzung ist **Raspberry Pi OS Desktop 64-bit**. `uname -m` muss
-`aarch64` ausgeben. Das Projekt muss auf dem Pi beispielsweise unter
-`/home/msmidt/takt` liegen.
+Empfohlen wird **Raspberry Pi OS Lite 64-bit** (aktuelle stabile Version).
+Ein Desktop, Chromium, Bildschirm, Autologin oder lokal gestartete Oberfläche
+sind nicht erforderlich. `uname -m` muss `aarch64` ausgeben. Das Projekt muss
+auf dem Pi beispielsweise unter `/home/msmidt/takt` liegen.
 
 Im Projektverzeichnis genügt:
 
@@ -55,11 +56,12 @@ Damit bleibt für Installation und spätere Updates jeweils ein einziger
 Laptop-Befehl. Eventuelle SSH- und `sudo`-Passwortabfragen erscheinen während
 dieses einen Ablaufs.
 
-Das Skript installiert alle System- und Python-Pakete, richtet `lgpio`,
-Bluetooth-Audio, `takt.service`, die feste lokale Adresse, Desktop-Autologin
-und Chromium im Kioskmodus ein. Eine vorhandene Konfiguration oder Laufdaten
-werden nicht überschrieben. Am Ende bietet das Skript den erforderlichen
-Neustart an.
+Das Skript installiert nur die benötigten System- und Python-Pakete, richtet
+`lgpio`, das auf Lite fehlende PipeWire-/Bluetooth-Audio, `takt.service` und
+die lokale Adresse ein. PipeWire läuft über eine dauerhafte Benutzersitzung
+auch dann, wenn niemand am Pi angemeldet ist. Eine vorhandene Konfiguration
+oder Laufdaten werden nicht überschrieben. Alte TAKT-Kiosk-Autostarts werden
+bei einer Migration entfernt. Am Ende bietet das Skript einen Neustart an.
 
 Danach ist TAKT auf Geräten im selben lokalen Netzwerk erreichbar:
 
@@ -78,6 +80,9 @@ auch das Herunterfahren bestätigen kann, gehört TAKT in ein vertrauenswürdige
 nicht öffentliches WLAN.
 
 Das Installationsskript kann nach einem Programmupdate erneut ausgeführt werden.
+Der Deployment-Befehl entfernt veraltete Projektdateien auf dem Pi, behält
+virtuelle Umgebung, Konfiguration und Laufdaten und startet den Server nach
+einem erfolgreichen Update ausdrücklich neu.
 
 ## Transportpaket für den Raspberry Pi erstellen
 
@@ -227,8 +232,10 @@ Tasterdrücke ignoriert.
 
 Mit **Testton** lässt sich der Ausgang vor dem Lauf prüfen. Ein gespeicherter
 Bluetooth-Lautsprecher wird bei Bedarf vor dem Startsignal erneut verbunden.
-Raspberry Pi OS Desktop verwendet PipeWire; das Installationsskript richtet die
-benötigten Bluetooth-, ALSA- und PulseAudio-Kompatibilitätswerkzeuge ein.
+Raspberry Pi OS Lite enthält standardmäßig nur ALSA. Das Installationsskript
+ergänzt PipeWire, WirePlumber sowie die benötigten Bluetooth-, ALSA- und
+PulseAudio-Kompatibilitätswerkzeuge und startet die Audio-Benutzersitzung beim
+Booten ohne lokale Anmeldung.
 
 Die unveränderte Quelldatei liegt unter
 `src/takt/assets/start_signal_source.mp3`. Für eine zuverlässige Wiedergabe ohne
