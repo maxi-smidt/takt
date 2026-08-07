@@ -729,7 +729,8 @@ function AudioSettingsPanel({ audio, onRequest }) {
                 )}
                 {audio.devices.map((device) => (
                   <option key={device.address} value={device.address}>
-                    {device.name}{device.connected ? " · verbunden" : ""}
+                    {device.name}
+                    {device.connected ? " · verbunden" : device.paired ? " · gekoppelt" : ""}
                   </option>
                 ))}
               </select>
@@ -751,6 +752,14 @@ function AudioSettingsPanel({ audio, onRequest }) {
             {!audio.bluetooth_available && (
               <div className="audio-note is-warning">
                 Bluetooth-Verwaltung ist nur auf einem eingerichteten Raspberry Pi verfügbar.
+              </div>
+            )}
+            {audio.bluetooth_available && (
+              <div className="audio-note">
+                <Bluetooth size={17} />
+                <span>
+                  Bereits gekoppelte Lautsprecher werden direkt verbunden, ohne sie neu zu koppeln.
+                </span>
               </div>
             )}
           </div>

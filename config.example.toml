@@ -5,6 +5,7 @@ saved_confirmation_seconds = 2.0
 [gpio]
 enabled = true
 pin_bcm = 17
+# Der erste Tastendruck zählt sofort; dieser Wert unterdrückt nur Kontaktprellen.
 bounce_seconds = 0.05
 double_press_seconds = 0.60
 

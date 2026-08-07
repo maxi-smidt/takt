@@ -138,7 +138,9 @@ block = f"""\
 (
   until curl --silent --fail {url}/health >/dev/null; do sleep 1; done
   while true; do
-    {chromium} --kiosk --noerrdialogs --disable-infobars --no-first-run \
+    {chromium} --kiosk --password-store=basic \
+      --user-data-dir="$HOME/.local/share/takt/chromium-kiosk" \
+      --noerrdialogs --disable-infobars --no-first-run \
       --disable-session-crashed-bubble --check-for-update-interval=31536000 {url}
     sleep 2
   done

@@ -279,6 +279,15 @@ Systemdienst startet nach einem Fehler automatisch neu. Der frühere manuelle
 PySide-Autostart wird vom Installationsskript entfernt, damit nur ein Prozess
 GPIO und Datenbank kontrolliert.
 
+Der GPIO-Taster reagiert auf die erste fallende Flanke sofort. Der Wert
+`bounce_seconds` unterdrückt anschließend nur weitere Flanken durch
+Kontaktprellen; er ist keine Mindestdauer für einen Tastendruck.
+
+Die Bluetooth-Suche verwendet ein kurzes Suchfenster und liest gefundene
+Geräte parallel aus. Ein bereits gekoppelter Lautsprecher wird beim Verbinden
+nicht erneut gekoppelt. Dadurch bleiben bestehende Kopplungen erhalten und die
+Verbindung ist im Normalfall deutlich schneller.
+
 ## Konfiguration und Daten
 
 Eine eigene Konfiguration kann unter `~/.config/takt/config.toml` abgelegt

@@ -11,8 +11,11 @@ from takt.config import AudioConfig
 
 
 class RecordingRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, paired: bool = True) -> None:
         self.commands: list[tuple[str, ...]] = []
+        self.paired = paired
+        self.trusted = paired
+        self.connected = False
 
     async def __call__(
         self,
@@ -26,8 +29,23 @@ class RecordingRunner:
         if command == ("bluetoothctl", "devices"):
             return 0, "Device AA:BB:CC:DD:EE:FF Hallenlautsprecher\n"
         if command[:2] == ("bluetoothctl", "info"):
-            return 0, "Paired: yes\nConnected: no\n"
+            return 0, (
+                "Name: Hallenlautsprecher\n"
+                "Alias: Hallenlautsprecher\n"
+                f"Paired: {'yes' if self.paired else 'no'}\n"
+                f"Trusted: {'yes' if self.trusted else 'no'}\n"
+                f"Connected: {'yes' if self.connected else 'no'}\n"
+            )
+        if "pair" in command:
+            self.paired = True
+            self.trusted = True
+            self.connected = True
+            return 0, "Pairing successful\n"
+        if "trust" in command:
+            self.trusted = True
+            return 0, "trust succeeded\n"
         if "connect" in command:
+            self.connected = True
             return 0, "Connection successful\n"
         if command == ("pactl", "list", "short", "sinks"):
             return 0, "42 bluez_output.AA_BB_CC_DD_EE_FF.1 RUNNING\n"
@@ -96,8 +114,16 @@ class AudioServiceTests(unittest.TestCase):
         devices = scan["devices"]
         self.assertEqual(len(devices), 1)
         self.assertEqual(devices[0]["name"], "Hallenlautsprecher")
+        self.assertIn(
+            ("bluetoothctl", "--timeout", "4", "scan", "on"),
+            self.runner.commands,
+        )
 
         await self.service.connect_bluetooth("AA:BB:CC:DD:EE:FF")
+        self.assertFalse(
+            any("pair" in command for command in self.runner.commands),
+            "an already paired speaker must not be paired again",
+        )
         self.service.update_settings(
             enabled=True,
             output="bluetooth",
@@ -112,6 +138,24 @@ class AudioServiceTests(unittest.TestCase):
             self.runner.commands,
         )
         self.assertTrue(any(Path(command[0]).name == "paplay" for command in self.runner.commands))
+
+    def test_new_bluetooth_device_is_paired_once(self) -> None:
+        runner = RecordingRunner(paired=False)
+        service = AudioService(
+            self.config,
+            runner=runner,
+            command_finder=lambda command: f"/usr/bin/{command}",
+        )
+
+        asyncio.run(service.connect_bluetooth("AA:BB:CC:DD:EE:FF"))
+
+        pair_commands = [
+            command
+            for command in runner.commands
+            if "pair" in command
+        ]
+        self.assertEqual(len(pair_commands), 1)
+        self.assertTrue(runner.connected)
 
 
 if __name__ == "__main__":
