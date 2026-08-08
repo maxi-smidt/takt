@@ -22,6 +22,7 @@ def create_web_app(runtime: WebRuntime) -> web.Application:
     app.router.add_post("/api/audio/settings", audio_settings)
     app.router.add_post("/api/audio/scan", audio_scan)
     app.router.add_post("/api/audio/connect", audio_connect)
+    app.router.add_post("/api/audio/forget", audio_forget)
     app.router.add_post("/api/audio/test", audio_test)
     app.router.add_post("/api/confirmations", prepare_confirmation)
     app.router.add_post("/api/confirmations/{token}", confirm)
@@ -145,6 +146,21 @@ async def audio_connect(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text="Bluetooth-Gerät fehlt.")
     try:
         system = await runtime.connect_audio_device(address)
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    except RuntimeError as error:
+        raise web.HTTPServiceUnavailable(text=str(error)) from error
+    return web.json_response({"ok": True, "system": system})
+
+
+async def audio_forget(request: web.Request) -> web.Response:
+    runtime = request.app[RUNTIME_KEY]
+    body = await json_body(request)
+    address = body.get("address")
+    if not isinstance(address, str):
+        raise web.HTTPBadRequest(text="Bluetooth-Gerät fehlt.")
+    try:
+        system = await runtime.forget_audio_device(address)
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error)) from error
     except RuntimeError as error:

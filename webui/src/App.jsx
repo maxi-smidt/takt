@@ -646,6 +646,22 @@ function AudioSettingsPanel({ audio, onRequest }) {
     }
   };
 
+  const forget = async () => {
+    if (!selectedAddress) return;
+    try {
+      await request(
+        "forget",
+        { address: selectedAddress },
+        "Lautsprecher wurde entfernt.",
+      );
+      setSelectedAddress("");
+    } catch {
+      // The German server message is displayed inside the settings panel.
+    }
+  };
+
+  const scanning = busy === "scan" || audio.scanning;
+
   return (
     <>
       <div className="data-section-header audio-section-header">
@@ -739,7 +755,7 @@ function AudioSettingsPanel({ audio, onRequest }) {
                 disabled={!audio.bluetooth_available || Boolean(busy)}
                 onClick={() => request("scan", {}, "Bluetooth-Suche abgeschlossen.").catch(() => {})}
               >
-                <RefreshCw size={14} />{busy === "scan" ? "SUCHE …" : "SUCHEN"}
+                <RefreshCw size={14} />{scanning ? "SUCHE …" : "SUCHEN"}
               </button>
               <button
                 type="button"
@@ -748,7 +764,21 @@ function AudioSettingsPanel({ audio, onRequest }) {
               >
                 <Bluetooth size={14} />{busy === "connect" ? "VERBINDE …" : "VERBINDEN"}
               </button>
+              <button
+                type="button"
+                className="bluetooth-forget"
+                disabled={!selectedAddress || Boolean(busy)}
+                onClick={forget}
+              >
+                <Trash2 size={14} />{busy === "forget" ? "ENTFERNE …" : "ENTFERNEN"}
+              </button>
             </div>
+            {audio.scanning && (
+              <div className="audio-note">
+                <RefreshCw size={17} />
+                <span>Bluetooth-Suche läuft im Hintergrund weiter, neue Geräte erscheinen automatisch.</span>
+              </div>
+            )}
             {!audio.bluetooth_available && (
               <div className="audio-note is-warning">
                 Bluetooth-Verwaltung ist nur auf einem eingerichteten Raspberry Pi verfügbar.

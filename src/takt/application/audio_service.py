@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
 import shutil
 import wave
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
@@ -54,16 +55,60 @@ class BluetoothDevice:
 class AudioService:
     """Controls the start signal and Raspberry Pi audio output."""
 
+    # BlueZ drops "temporary" (unpaired) discovery results roughly 30 s after
+    # discovery ends, so a background scan is kept running while devices
+    # stream into the UI instead of blocking on one long one-shot call.
+    SCAN_DURATION_SECONDS = 15.0
+    SCAN_TIMEOUT_SECONDS = 17.0
+    POLL_INTERVAL_SECONDS = 2.0
+    REDISCOVER_TIMEOUT_SECONDS = 8.0
+    REDISCOVER_POLL_INTERVAL_SECONDS = 1.0
+    PAIR_TIMEOUT_SECONDS = 30.0
+    PAIR_OUTER_TIMEOUT_SECONDS = 34.0
+    CONNECT_ATTEMPT_TIMEOUT_SECONDS = 10.0
+    CONNECT_OUTER_TIMEOUT_SECONDS = 14.0
+    CONNECT_MAX_ATTEMPTS = 3
+    ENSURE_CONNECT_MAX_ATTEMPTS = 2
+    CONNECT_BACKOFF_SECONDS = 1.5
+    SERVICES_RESOLVED_TIMEOUT_SECONDS = 5.0
+    SERVICES_RESOLVED_POLL_INTERVAL_SECONDS = 1.0
+    SINK_WAIT_TIMEOUT_SECONDS = 10.0
+    SINK_POLL_INTERVAL_SECONDS = 0.25
+
+    # Substrings (matched case-insensitively) of bluetoothctl/BlueZ output that
+    # map to an actionable German message instead of a generic failure.
+    _ERROR_TRANSLATIONS: tuple[tuple[tuple[str, ...], str], ...] = (
+        (
+            ("page-timeout", "not available", "no route to host", "host is down"),
+            (
+                "Der Lautsprecher konnte nicht erreicht werden. Bitte prüfen, ob er "
+                "eingeschaltet und in Reichweite ist, und in den Pairing-Modus versetzen."
+            ),
+        ),
+        (
+            ("authenticationfailed", "auth", "rejected"),
+            (
+                "Die Kopplung wurde vom Lautsprecher verweigert. Bitte den Lautsprecher "
+                "in den Pairing-Modus versetzen, TAKT koppelt dann automatisch neu."
+            ),
+        ),
+    )
+    _AUTH_FAILURE_NEEDLES = ("authenticationfailed", "auth", "rejected")
+
     def __init__(
         self,
         config: AudioConfig,
         *,
         runner: CommandRunner | None = None,
         command_finder: Callable[[str], str | None] = shutil.which,
+        scan_process_runner: Callable[[], Awaitable[tuple[int, str]]] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.settings_path = config.settings_path
         self._runner = runner or self._run_command
         self._find = command_finder
+        self._scan_process_runner = scan_process_runner or self._default_scan_process
+        self._sleep = sleep
         self._sound_path = (
             Path(__file__).resolve().parent.parent / "assets" / "start_signal.wav"
         )
@@ -79,6 +124,10 @@ class AudioService:
             )
         )
         self.devices: list[BluetoothDevice] = []
+        self.scanning = False
+        self.on_devices_changed: Callable[[], None] | None = None
+        self._lock = asyncio.Lock()
+        self._discovery_task: asyncio.Task[None] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -98,6 +147,7 @@ class AudioService:
             "sound": "TAKT Startsignal",
             "clip_duration_milliseconds": self.clip_duration_milliseconds,
             "devices": [asdict(device) for device in self.devices],
+            "scanning": self.scanning,
         }
 
     def update_settings(
@@ -131,44 +181,13 @@ class AudioService:
     async def scan_bluetooth(self) -> dict[str, object]:
         if self._find("bluetoothctl") is None:
             raise RuntimeError("Bluetooth-Verwaltung ist auf diesem Gerät nicht verfügbar.")
-        # Most speakers advertise their A2DP service over Classic Bluetooth.
-        # A Classic inquiry and name resolution can take well over four seconds,
-        # so scan that transport explicitly and give it enough time to finish.
-        await self._runner(("bluetoothctl", "--timeout", "20", "scan", "bredr"), 24)
-        code, output = await self._runner(("bluetoothctl", "devices"), 5)
-        if code:
-            raise RuntimeError("Bluetooth-Geräte konnten nicht gelesen werden.")
-        discovered = [
-            (
-                match.group("address").upper(),
-                match.group("name").strip(),
-            )
-            for match in map(DEVICE_PATTERN.match, output.splitlines())
-            if match is not None
-            and not self._address_like_name(match.group("name").strip())
-        ]
-        details = await asyncio.gather(
-            *(
-                self._runner(("bluetoothctl", "info", address), 5)
-                for address, _ in discovered
-            )
-        )
-        self.devices = [
-            BluetoothDevice(
-                address=address,
-                name=self._info_value(info, "Alias")
-                or self._info_value(info, "Name")
-                or name,
-                paired=info_code == 0 and self._info_yes(info, "Paired"),
-                connected=info_code == 0 and self._info_yes(info, "Connected"),
-            )
-            for (address, name), (info_code, info) in zip(
-                discovered,
-                details,
-                strict=True,
-            )
-        ]
-        self._sort_devices()
+        async with self._lock:
+            await self._ensure_adapter_ready()
+            if not self.scanning:
+                self.scanning = True
+                first_poll_done = asyncio.Event()
+                self._discovery_task = asyncio.create_task(self._run_discovery(first_poll_done))
+                await first_poll_done.wait()
         return self.payload()
 
     async def connect_bluetooth(self, address: str) -> dict[str, object]:
@@ -176,88 +195,34 @@ class AudioService:
         if self._find("bluetoothctl") is None:
             raise RuntimeError("Bluetooth-Verwaltung ist auf diesem Gerät nicht verfügbar.")
         address = address.upper()
-        info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
-        paired = info_code == 0 and self._info_yes(info, "Paired")
-        trusted = info_code == 0 and self._info_yes(info, "Trusted")
-        connected = info_code == 0 and self._info_yes(info, "Connected")
-        name = (
-            self._info_value(info, "Alias")
-            or self._info_value(info, "Name")
-            or next(
-                (device.name for device in self.devices if device.address == address),
-                address,
-            )
-        )
+        async with self._lock:
+            await self._ensure_adapter_ready()
+            await self._cancel_discovery()
+            await self._connect_device(address)
+        return self.payload()
 
-        # Never pair an already paired device again: BlueZ may remove the
-        # existing pairing before starting a new one.
-        if not paired:
-            # The installer keeps a default NoInputNoOutput agent running for
-            # headless "Just Works" pairing. bluetoothctl's --agent option is
-            # intentionally ineffective in non-interactive command mode.
-            pair_code, pair_output = await self._runner(
-                ("bluetoothctl", "--timeout", "30", "pair", address),
-                34,
+    async def forget_bluetooth(self, address: str) -> dict[str, object]:
+        self._validate_address(address)
+        if self._find("bluetoothctl") is None:
+            raise RuntimeError("Bluetooth-Verwaltung ist auf diesem Gerät nicht verfügbar.")
+        address = address.upper()
+        async with self._lock:
+            await self._cancel_discovery()
+            await self._runner(("bluetoothctl", "disconnect", address), 8)
+            remove_code, remove_output = await self._runner(
+                ("bluetoothctl", "remove", address), 8
             )
-            if pair_code:
+            if remove_code:
                 LOGGER.warning(
-                    "bluetooth_pair_failed address=%s output=%s",
+                    "bluetooth_remove_failed address=%s output=%s",
                     address,
-                    self._single_line_output(pair_output),
+                    self._single_line_output(remove_output),
                 )
-                raise RuntimeError(
-                    "Der Lautsprecher konnte nicht gekoppelt werden. "
-                    "Bitte Pairing-Modus prüfen und erneut versuchen."
-                )
-            info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
-            paired = info_code == 0 and self._info_yes(info, "Paired")
-            trusted = info_code == 0 and self._info_yes(info, "Trusted")
-            connected = info_code == 0 and self._info_yes(info, "Connected")
-            if not paired:
-                LOGGER.warning(
-                    "bluetooth_pair_not_confirmed address=%s pair_output=%s info=%s",
-                    address,
-                    self._single_line_output(pair_output),
-                    self._single_line_output(info),
-                )
-                raise RuntimeError(
-                    "Der Lautsprecher konnte nicht gekoppelt werden. "
-                    "Bitte Pairing-Modus prüfen und erneut versuchen."
-                )
-
-        if not trusted:
-            trust_code, _ = await self._runner(("bluetoothctl", "trust", address), 6)
-            if trust_code:
-                raise RuntimeError("Der Lautsprecher konnte nicht gespeichert werden.")
-            trusted = True
-
-        if not connected:
-            await self._runner(
-                ("bluetoothctl", "--timeout", "12", "connect", address),
-                16,
-            )
-            check_code, check_info = await self._runner(
-                ("bluetoothctl", "info", address),
-                5,
-            )
-            connected = (
-                check_code == 0 and self._info_yes(check_info, "Connected")
-            )
-            if not connected:
-                raise RuntimeError(
-                    "Der Lautsprecher konnte nicht verbunden werden. "
-                    "Bitte Pairing-Modus prüfen und erneut versuchen."
-                )
-
-        self.settings.device_address = address
-        self.settings.device_name = name
-        self.settings.output = "bluetooth"
-        self.settings.enabled = True
-        self._save_settings()
-        self._remember_device(
-            BluetoothDevice(address, name, paired=paired, connected=True)
-        )
-        await self._select_bluetooth_sink(address, wait_for_sink=True)
+            self.devices = [device for device in self.devices if device.address != address]
+            if self.settings.device_address == address:
+                self.settings.device_address = None
+                self.settings.device_name = None
+                self._save_settings()
         return self.payload()
 
     async def play_start_sound(
@@ -267,16 +232,22 @@ class AudioService:
         player = self._player()
         if player is None:
             raise RuntimeError("Kein Audioplayer ist installiert.")
+        sink: str | None = None
         if self.settings.output == "bluetooth":
             if not self.settings.device_address:
                 raise RuntimeError("Es ist kein Bluetooth-Lautsprecher ausgewählt.")
             await self._ensure_bluetooth_connected(self.settings.device_address)
-            await self._select_bluetooth_sink(self.settings.device_address)
+            sink = await self._select_bluetooth_sink(self.settings.device_address)
+            if sink is None:
+                raise RuntimeError(
+                    "Der Bluetooth-Lautsprecher ist verbunden, aber die Audioausgabe "
+                    "wurde nicht gefunden. Bitte erneut versuchen."
+                )
         elif self.settings.output == "aux":
-            await self._select_aux_sink()
+            sink = await self._select_aux_sink()
         if not self._sound_path.exists():
             raise RuntimeError("Die Startsignal-Datei wurde nicht gefunden.")
-        command = self._play_command(player, self._sound_path)
+        command = self._play_command(player, self._sound_path, sink)
         timeout = self.clip_duration_milliseconds / 1000 + 10
         code, output = await self._runner(command, timeout, on_playback_started)
         if code:
@@ -286,6 +257,390 @@ class AudioService:
     async def test_sound(self) -> dict[str, object]:
         await self.play_start_sound()
         return self.payload()
+
+    async def close(self) -> None:
+        await self._cancel_discovery()
+
+    # -- Adapter ---------------------------------------------------------
+
+    async def _ensure_adapter_ready(self) -> None:
+        if self._find("rfkill") is not None:
+            await self._runner(("rfkill", "unblock", "bluetooth"), 5)
+        code, output = await self._runner(("bluetoothctl", "show"), 5)
+        if code:
+            LOGGER.warning(
+                "bluetooth_adapter_missing output=%s", self._single_line_output(output)
+            )
+            raise RuntimeError(
+                "Bluetooth-Adapter ist nicht verfügbar. Bitte Bluetooth-Hardware und "
+                "Raspberry Pi prüfen."
+            )
+        if "Powered: yes" not in output:
+            await self._runner(("bluetoothctl", "power", "on"), 8)
+            code, output = await self._runner(("bluetoothctl", "show"), 5)
+            if code or "Powered: yes" not in output:
+                LOGGER.warning(
+                    "bluetooth_adapter_not_powered output=%s",
+                    self._single_line_output(output),
+                )
+                raise RuntimeError(
+                    "Bluetooth-Adapter konnte nicht eingeschaltet werden. Bitte "
+                    "Raspberry Pi neu starten oder Bluetooth-Hardware prüfen."
+                )
+
+    # -- Background discovery ---------------------------------------------
+
+    async def _default_scan_process(self) -> tuple[int, str]:
+        return await self._runner(
+            (
+                "bluetoothctl",
+                "--timeout",
+                str(int(self.SCAN_DURATION_SECONDS)),
+                "scan",
+                "bredr",
+            ),
+            self.SCAN_TIMEOUT_SECONDS,
+        )
+
+    async def _run_discovery(self, first_poll_done: asyncio.Event) -> None:
+        scan_task = asyncio.create_task(self._scan_process_runner())
+        try:
+            while not scan_task.done():
+                await self._poll_devices()
+                first_poll_done.set()
+                self._notify_devices_changed()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        asyncio.shield(scan_task), timeout=self.POLL_INTERVAL_SECONDS
+                    )
+            await self._poll_devices()
+        except asyncio.CancelledError:
+            scan_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await scan_task
+            raise
+        finally:
+            first_poll_done.set()
+            self.scanning = False
+            self._discovery_task = None
+            self._notify_devices_changed()
+
+    async def _cancel_discovery(self) -> None:
+        task = self._discovery_task
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _poll_devices(self) -> None:
+        code, output = await self._runner(("bluetoothctl", "devices"), 5)
+        if code:
+            return
+        discovered = [
+            (match.group("address").upper(), match.group("name").strip())
+            for match in map(DEVICE_PATTERN.match, output.splitlines())
+            if match is not None and not self._address_like_name(match.group("name").strip())
+        ]
+        details = await asyncio.gather(
+            *(self._runner(("bluetoothctl", "info", address), 5) for address, _ in discovered)
+        )
+        for (address, name), (info_code, info) in zip(discovered, details, strict=True):
+            if info_code != 0:
+                # Keep whatever we already know about this device rather than
+                # overwriting it with an unknown/failed lookup.
+                continue
+            self._merge_device(
+                BluetoothDevice(
+                    address=address,
+                    name=self._info_value(info, "Alias") or self._info_value(info, "Name") or name,
+                    paired=self._info_yes(info, "Paired"),
+                    connected=self._info_yes(info, "Connected"),
+                )
+            )
+        self._sort_devices()
+
+    def _notify_devices_changed(self) -> None:
+        if self.on_devices_changed is not None:
+            self.on_devices_changed()
+
+    async def _rediscover_device(self, address: str) -> bool:
+        """Run a short targeted discovery burst until `address` appears."""
+        scan_task = asyncio.create_task(self._scan_process_runner())
+        try:
+            elapsed = 0.0
+            while True:
+                info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
+                if self._device_known(info_code, info):
+                    return True
+                if elapsed >= self.REDISCOVER_TIMEOUT_SECONDS:
+                    return False
+                await self._sleep(self.REDISCOVER_POLL_INTERVAL_SECONDS)
+                elapsed += self.REDISCOVER_POLL_INTERVAL_SECONDS
+        finally:
+            scan_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await scan_task
+
+    # -- Connect ------------------------------------------------------------
+
+    async def _connect_device(self, address: str) -> None:
+        info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
+        if not self._device_known(info_code, info):
+            if not await self._rediscover_device(address):
+                LOGGER.warning("bluetooth_device_not_found address=%s", address)
+                raise RuntimeError(
+                    "Der Lautsprecher wurde nicht gefunden. Bitte einschalten und in "
+                    "den Pairing-Modus versetzen, dann erneut verbinden."
+                )
+            info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
+
+        name = (
+            self._info_value(info, "Alias")
+            or self._info_value(info, "Name")
+            or next(
+                (device.name for device in self.devices if device.address == address),
+                address,
+            )
+        )
+
+        # A speaker that has been paired with another phone in the meantime
+        # (JBL speakers in particular) can leave TAKT with a stale pairing.
+        # Auth-class failures are recovered at most once via remove + re-pair.
+        recovered = False
+        while True:
+            paired = info_code == 0 and self._info_yes(info, "Paired")
+            if not paired:
+                # Never re-pair an already paired device: BlueZ may drop the
+                # existing pairing before starting a new one.
+                paired, pair_output = await self._pair_with_retry(address)
+                if not paired:
+                    if not recovered and self._is_auth_failure(pair_output):
+                        recovered = True
+                        await self._recover_pairing(address)
+                        info_code, info = await self._runner(
+                            ("bluetoothctl", "info", address), 5
+                        )
+                        continue
+                    self._raise_translated(
+                        pair_output,
+                        context="pair",
+                        address=address,
+                        event="bluetooth_pair_failed",
+                    )
+                info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
+
+            trusted = info_code == 0 and self._info_yes(info, "Trusted")
+            if not trusted:
+                trust_code, _ = await self._runner(("bluetoothctl", "trust", address), 6)
+                if trust_code:
+                    raise RuntimeError("Der Lautsprecher konnte nicht gespeichert werden.")
+
+            connected = info_code == 0 and self._info_yes(info, "Connected")
+            if not connected:
+                connected, connect_output = await self._connect_with_retries(address)
+                if not connected:
+                    if not recovered and self._is_auth_failure(connect_output):
+                        recovered = True
+                        await self._recover_pairing(address)
+                        info_code, info = await self._runner(
+                            ("bluetoothctl", "info", address), 5
+                        )
+                        continue
+                    self._raise_translated(
+                        connect_output,
+                        context="connect",
+                        address=address,
+                        event="bluetooth_connect_failed",
+                    )
+            break
+
+        self.settings.device_address = address
+        self.settings.device_name = name
+        self.settings.output = "bluetooth"
+        self.settings.enabled = True
+        self._save_settings()
+        self._merge_device(BluetoothDevice(address, name, paired=True, connected=True))
+        self._sort_devices()
+
+        await self._wait_for_services_resolved(address)
+        sink = await self._select_bluetooth_sink(address)
+        if sink is None:
+            raise RuntimeError(
+                "Der Bluetooth-Lautsprecher ist verbunden, aber die Audioausgabe wurde "
+                "nicht gefunden. Bitte erneut versuchen."
+            )
+
+    async def _pair_with_retry(self, address: str) -> tuple[bool, str]:
+        last_output = ""
+        for attempt in range(2):
+            _, pair_output = await self._runner(
+                (
+                    "bluetoothctl",
+                    "--timeout",
+                    str(int(self.PAIR_TIMEOUT_SECONDS)),
+                    "pair",
+                    address,
+                ),
+                self.PAIR_OUTER_TIMEOUT_SECONDS,
+            )
+            last_output = pair_output
+            info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
+            if info_code == 0 and self._info_yes(info, "Paired"):
+                return True, pair_output
+            if attempt == 0:
+                LOGGER.warning(
+                    "bluetooth_pair_attempt_failed address=%s output=%s",
+                    address,
+                    self._single_line_output(pair_output),
+                )
+                await self._sleep(self.CONNECT_BACKOFF_SECONDS)
+        return False, last_output
+
+    async def _recover_pairing(self, address: str) -> None:
+        LOGGER.warning("bluetooth_recovering_pairing address=%s", address)
+        await self._runner(("bluetoothctl", "remove", address), 6)
+        if not await self._rediscover_device(address):
+            return
+        paired, _ = await self._pair_with_retry(address)
+        if paired:
+            await self._runner(("bluetoothctl", "trust", address), 6)
+
+    async def _connect_with_retries(
+        self,
+        address: str,
+        *,
+        attempts: int | None = None,
+    ) -> tuple[bool, str]:
+        attempts = self.CONNECT_MAX_ATTEMPTS if attempts is None else attempts
+        last_output = ""
+        for attempt in range(attempts):
+            _, output = await self._runner(
+                (
+                    "bluetoothctl",
+                    "--timeout",
+                    str(int(self.CONNECT_ATTEMPT_TIMEOUT_SECONDS)),
+                    "connect",
+                    address,
+                ),
+                self.CONNECT_OUTER_TIMEOUT_SECONDS,
+            )
+            last_output = output
+            check_code, check_info = await self._runner(("bluetoothctl", "info", address), 5)
+            if check_code == 0 and self._info_yes(check_info, "Connected"):
+                return True, output
+            if attempt + 1 < attempts:
+                await self._sleep(self.CONNECT_BACKOFF_SECONDS)
+        return False, last_output
+
+    async def _wait_for_services_resolved(self, address: str) -> None:
+        elapsed = 0.0
+        while elapsed < self.SERVICES_RESOLVED_TIMEOUT_SECONDS:
+            code, info = await self._runner(("bluetoothctl", "info", address), 5)
+            if code == 0 and self._info_yes(info, "ServicesResolved"):
+                return
+            await self._sleep(self.SERVICES_RESOLVED_POLL_INTERVAL_SECONDS)
+            elapsed += self.SERVICES_RESOLVED_POLL_INTERVAL_SECONDS
+        LOGGER.warning("bluetooth_services_not_resolved address=%s", address)
+
+    async def _ensure_bluetooth_connected(self, address: str) -> None:
+        async with self._lock:
+            await self._ensure_adapter_ready()
+            await self._cancel_discovery()
+            info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
+            if info_code == 0 and self._info_yes(info, "Connected"):
+                return
+            connected, output = await self._connect_with_retries(
+                address, attempts=self.ENSURE_CONNECT_MAX_ATTEMPTS
+            )
+            if not connected:
+                self._raise_translated(
+                    output,
+                    context="connect",
+                    address=address,
+                    event="bluetooth_ensure_connect_failed",
+                )
+
+    # -- Playback -------------------------------------------------------
+
+    def _player(self) -> str | None:
+        for command in ("paplay", "pw-play", "afplay", "aplay"):
+            path = self._find(command)
+            if path:
+                return path
+        return None
+
+    def _play_command(
+        self,
+        player: str,
+        sound_path: Path,
+        sink: str | None,
+    ) -> tuple[str, ...]:
+        name = Path(player).name
+        if name == "aplay":
+            return (player, "-q", str(sound_path))
+        if name == "afplay":
+            return (player, str(sound_path))
+        if sink and name == "paplay":
+            return (player, f"--device={sink}", str(sound_path))
+        if sink and name == "pw-play":
+            return (player, "--target", sink, str(sound_path))
+        return (player, str(sound_path))
+
+    async def _select_bluetooth_sink(self, address: str) -> str | None:
+        needle = address.replace(":", "_").lower()
+        elapsed = 0.0
+        while True:
+            sink = await self._find_pulse_sink(needle)
+            if sink:
+                await self._runner(("pactl", "set-default-sink", sink), 5)
+                return sink
+            if elapsed >= self.SINK_WAIT_TIMEOUT_SECONDS:
+                return None
+            await self._sleep(self.SINK_POLL_INTERVAL_SECONDS)
+            elapsed += self.SINK_POLL_INTERVAL_SECONDS
+
+    async def _select_aux_sink(self) -> str | None:
+        sink = await self._find_pulse_sink("analog-stereo", "headphones", "bcm2835")
+        if sink:
+            await self._runner(("pactl", "set-default-sink", sink), 5)
+        return sink
+
+    async def _find_pulse_sink(self, *needles: str) -> str | None:
+        if self._find("pactl") is None:
+            return None
+        code, output = await self._runner(("pactl", "list", "short", "sinks"), 5)
+        if code:
+            return None
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            sink = fields[1]
+            lowered = sink.lower()
+            if any(needle.lower() in lowered for needle in needles):
+                return sink
+        return None
+
+    # -- Bookkeeping ------------------------------------------------------
+
+    def _merge_device(self, device: BluetoothDevice) -> None:
+        for index, existing in enumerate(self.devices):
+            if existing.address == device.address:
+                self.devices[index] = device
+                return
+        self.devices.append(device)
+
+    def _sort_devices(self) -> None:
+        selected = self.settings.device_address
+        self.devices.sort(
+            key=lambda device: (
+                device.address != selected,
+                not device.connected,
+                not device.paired,
+                device.name.casefold(),
+            )
+        )
 
     def _load_settings(self, defaults: AudioSettings) -> AudioSettings:
         try:
@@ -330,95 +685,52 @@ class AudioService:
             LOGGER.exception("start_sound_metadata_failed")
             return 0
 
-    def _player(self) -> str | None:
-        for command in ("paplay", "pw-play", "afplay", "aplay"):
-            path = self._find(command)
-            if path:
-                return path
-        return None
+    # -- Error translation --------------------------------------------------
 
-    def _play_command(self, player: str, sound_path: Path) -> tuple[str, ...]:
-        name = Path(player).name
-        if name == "aplay":
-            return (player, "-q", str(sound_path))
-        return (player, str(sound_path))
-
-    async def _ensure_bluetooth_connected(self, address: str) -> None:
-        code, info = await self._runner(("bluetoothctl", "info", address), 5)
-        if code == 0 and "Connected: yes" in info:
-            return
-        await self._runner(
-            ("bluetoothctl", "--timeout", "12", "connect", address),
-            16,
-        )
-        check_code, check_info = await self._runner(
-            ("bluetoothctl", "info", address),
-            5,
-        )
-        if check_code or not self._info_yes(check_info, "Connected"):
-            raise RuntimeError("Der Bluetooth-Lautsprecher ist nicht verbunden.")
-
-    async def _select_bluetooth_sink(
+    def _raise_translated(
         self,
-        address: str,
+        output: str,
         *,
-        wait_for_sink: bool = False,
+        context: str,
+        address: str,
+        event: str,
     ) -> None:
-        attempts = 8 if wait_for_sink else 1
-        for attempt in range(attempts):
-            sink = await self._find_pulse_sink(address.replace(":", "_").lower())
-            if sink:
-                await self._runner(("pactl", "set-default-sink", sink), 5)
-                return
-            if attempt + 1 < attempts:
-                await asyncio.sleep(0.25)
-
-    async def _select_aux_sink(self) -> None:
-        sink = await self._find_pulse_sink(
-            "analog-stereo",
-            "headphones",
-            "bcm2835",
+        LOGGER.warning(
+            "%s address=%s output=%s", event, address, self._single_line_output(output)
         )
-        if sink:
-            await self._runner(("pactl", "set-default-sink", sink), 5)
+        raise RuntimeError(self._translate_error(output, context=context))
 
-    async def _find_pulse_sink(self, *needles: str) -> str | None:
-        if self._find("pactl") is None:
-            return None
-        code, output = await self._runner(("pactl", "list", "short", "sinks"), 5)
-        if code:
-            return None
-        for line in output.splitlines():
-            fields = line.split()
-            if len(fields) < 2:
-                continue
-            sink = fields[1]
-            lowered = sink.lower()
-            if any(needle.lower() in lowered for needle in needles):
-                return sink
-        return None
-
-    def _remember_device(self, selected: BluetoothDevice) -> None:
-        self.devices = [
-            selected,
-            *(
-                device
-                for device in self.devices
-                if device.address != selected.address
+    def _translate_error(self, output: str, *, context: str) -> str:
+        lowered = output.lower()
+        for needles, message in self._ERROR_TRANSLATIONS:
+            if any(needle in lowered for needle in needles):
+                return self._with_diagnostic(message, output)
+        fallback = {
+            "pair": (
+                "Der Lautsprecher konnte nicht gekoppelt werden. Bitte Pairing-Modus "
+                "prüfen und erneut versuchen."
             ),
-        ]
-        self._sort_devices()
+            "connect": (
+                "Der Lautsprecher konnte nicht verbunden werden. Bitte Pairing-Modus "
+                "prüfen und erneut versuchen."
+            ),
+        }.get(context, "Der Bluetooth-Vorgang ist fehlgeschlagen.")
+        return self._with_diagnostic(fallback, output)
 
-    def _sort_devices(self) -> None:
-        selected = self.settings.device_address
-        self.devices.sort(
-            key=lambda device: (
-                device.address != selected,
-                not device.connected,
-                not device.paired,
-                device.name.casefold(),
-            )
-        )
+    def _with_diagnostic(self, message: str, output: str) -> str:
+        diagnostic = self._single_line_output(output)
+        return f"{message} ({diagnostic})" if diagnostic else message
+
+    @classmethod
+    def _is_auth_failure(cls, output: str) -> bool:
+        lowered = output.lower()
+        return any(needle in lowered for needle in cls._AUTH_FAILURE_NEEDLES)
+
+    # -- bluetoothctl output helpers ----------------------------------------
+
+    @staticmethod
+    def _device_known(code: int, info: str) -> bool:
+        return code == 0 and "not available" not in info.lower()
 
     @staticmethod
     def _info_value(info: str, field: str) -> str | None:

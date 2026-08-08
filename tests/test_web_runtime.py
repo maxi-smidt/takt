@@ -59,6 +59,9 @@ class DelayedAudioService:
             "clip_duration_milliseconds": 1_000,
         }
 
+    async def close(self) -> None:
+        pass
+
 
 class WebRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:

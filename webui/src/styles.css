@@ -1173,13 +1173,18 @@ kbd {
 
 .bluetooth-device-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto auto;
+  grid-template-columns: minmax(220px, 1fr) auto auto auto;
   gap: 5px;
 }
 
 .bluetooth-device-row select {
   width: 100%;
   padding: 0 9px;
+}
+
+.bluetooth-forget {
+  border-color: rgb(240 91 98 / 36%);
+  color: #f29196;
 }
 
 .audio-settings-footer {
@@ -1595,7 +1600,7 @@ kbd {
   }
 
   .bluetooth-device-row {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
   }
 
   .bluetooth-device-row select {

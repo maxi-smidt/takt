@@ -1,8 +1,31 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Allow launching with `sudo ./install_raspberry_pi.sh`: re-exec as the
+# invoking normal user before touching anything, so the rest of the script
+# (venv, pip, config files) runs unprivileged as intended and only the
+# explicit `sudo` calls further down elevate individual commands. Without
+# this, running the whole script as root would leave the venv, pip cache and
+# config files root-owned, which the takt.service user can't use afterwards.
+if [[ "$EUID" -eq 0 ]]; then
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    exec sudo -u "$SUDO_USER" -H env \
+      TAKT_HOSTNAME="${TAKT_HOSTNAME:-}" \
+      TAKT_PORT="${TAKT_PORT:-}" \
+      bash "$script_path" "$@"
+  fi
+  printf '\nFEHLER: %s\n' "Bitte dieses Skript nicht direkt als root starten." >&2
+  exit 1
+fi
+
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-install_user="${SUDO_USER:-$USER}"
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  # Support an admin managing another account via `sudo -u <user> ./install...`.
+  install_user="$SUDO_USER"
+else
+  install_user="$USER"
+fi
 install_home="$(getent passwd "$install_user" | cut -d: -f6)"
 install_uid="$(id -u "$install_user")"
 service_name="takt.service"
@@ -24,10 +47,10 @@ cleanup() {
   [[ -z "${unit_file:-}" ]] || rm -f "$unit_file"
   [[ -z "${sudoers_temp:-}" ]] || rm -f "$sudoers_temp"
   [[ -z "${bluetooth_agent_unit:-}" ]] || rm -f "$bluetooth_agent_unit"
+  [[ -z "${bluetooth_conf_temp:-}" ]] || rm -f "$bluetooth_conf_temp"
 }
 trap cleanup EXIT
 
-[[ "$EUID" -ne 0 ]] || fail "Bitte dieses Skript als normaler Benutzer starten, nicht mit sudo."
 [[ "$(uname -m)" == "aarch64" ]] || fail "TAKT benötigt Raspberry Pi OS Lite 64-bit (aarch64)."
 [[ -r /etc/os-release ]] || fail "/etc/os-release wurde nicht gefunden."
 # shellcheck disable=SC1091
@@ -59,6 +82,7 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommen
   python3-pip \
   python3-setuptools \
   python3-venv \
+  rfkill \
   wireplumber
 
 say "TAKT-Umgebung einrichten"
@@ -84,6 +108,63 @@ fi
 
 sudo usermod -a -G gpio,audio "$install_user"
 sudo systemctl enable --now avahi-daemon bluetooth
+sudo rfkill unblock bluetooth || true
+
+say "Bluetooth-Konfiguration härten"
+# A longer TemporaryTimeout keeps unpaired scan results around instead of
+# BlueZ evicting them ~30 s after discovery stops, and AutoEnable powers the
+# adapter back on automatically after a reboot.
+bluetooth_conf="/etc/bluetooth/main.conf"
+bluetooth_conf_temp="$(mktemp)"
+python3 - "$bluetooth_conf" "$bluetooth_conf_temp" <<'PY'
+from pathlib import Path
+import sys
+
+source_path = Path(sys.argv[1])
+target_path = Path(sys.argv[2])
+content = source_path.read_text(encoding="utf-8") if source_path.exists() else ""
+lines = content.splitlines()
+
+
+def ensure_setting(lines: list[str], section: str, key: str, value: str) -> list[str]:
+    section_header = f"[{section}]"
+    setting = f"{key} = {value}"
+    section_start = None
+    for index, line in enumerate(lines):
+        if line.strip() == section_header:
+            section_start = index
+            break
+    if section_start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(section_header)
+        lines.append(setting)
+        return lines
+    section_end = len(lines)
+    for index in range(section_start + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section_end = index
+            break
+    for index in range(section_start + 1, section_end):
+        stripped = lines[index].strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        existing_key = stripped.split("=", 1)[0].strip()
+        if existing_key == key:
+            lines[index] = setting
+            return lines
+    lines.insert(section_end, setting)
+    return lines
+
+
+lines = ensure_setting(lines, "General", "TemporaryTimeout", "300")
+lines = ensure_setting(lines, "Policy", "AutoEnable", "true")
+target_path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+PY
+sudo install -m 0644 "$bluetooth_conf_temp" "$bluetooth_conf"
+rm -f "$bluetooth_conf_temp"
+sudo systemctl restart bluetooth
 
 say "Headless-Bluetooth-Agent einrichten"
 bluetooth_agent_unit="$(mktemp)"
@@ -97,7 +178,7 @@ bluetooth_agent_unit="$(mktemp)"
     "[Service]" \
     "Type=simple" \
     "ExecStart=/usr/bin/bt-agent --capability NoInputNoOutput" \
-    "Restart=on-failure" \
+    "Restart=always" \
     "RestartSec=2" \
     "" \
     "[Install]" \
@@ -158,9 +239,11 @@ unit_file="$(mktemp)"
     "TimeoutStopSec=10" \
     "PrivateTmp=true"
   if ((port < 1024)); then
-    printf '%s\n' \
-      "AmbientCapabilities=CAP_NET_BIND_SERVICE" \
-      "CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
+    # AmbientCapabilities alone is enough to bind the privileged port as a
+    # non-root user. Also setting CapabilityBoundingSet would strip every
+    # other capability from the unit, including the ones setuid sudo needs
+    # to elevate to root for the shutdown button's `sudo systemctl poweroff`.
+    printf '%s\n' "AmbientCapabilities=CAP_NET_BIND_SERVICE"
   fi
   printf '%s\n' \
     "" \
@@ -169,10 +252,14 @@ unit_file="$(mktemp)"
 } >"$unit_file"
 sudo install -m 0644 "$unit_file" "/etc/systemd/system/$service_name"
 
-systemctl_path="$(command -v systemctl)"
 sudoers_file="/etc/sudoers.d/takt-poweroff-$install_user"
 sudoers_temp="$(mktemp)"
-printf '%s ALL=(root) NOPASSWD: %s poweroff\n' "$install_user" "$systemctl_path" >"$sudoers_temp"
+{
+  # usrmerge symlinks /bin to /usr/bin on current Raspberry Pi OS, but sudo
+  # matches the exact path a command is invoked with, so allow both.
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n' "$install_user"
+  printf '%s ALL=(root) NOPASSWD: /bin/systemctl poweroff\n' "$install_user"
+} >"$sudoers_temp"
 sudo visudo -cf "$sudoers_temp"
 sudo install -m 0440 "$sudoers_temp" "$sudoers_file"
 
@@ -220,6 +307,14 @@ if [[ "$ready" != true ]]; then
   sudo systemctl status "$service_name" --no-pager || true
   sudo journalctl -u "$service_name" -n 50 --no-pager || true
   fail "Der TAKT-Server ist nicht erreichbar."
+fi
+
+# Non-destructive check: confirm the passwordless sudo rule for the shutdown
+# button actually applies, without ever powering the device off here.
+if ! sudo -n -l 2>/dev/null | grep -q "systemctl poweroff"; then
+  printf '\nWARNUNG: Die sudo-Berechtigung für "systemctl poweroff" konnte für ' >&2
+  printf 'Benutzer %s nicht bestätigt werden. Der Button "Herunterfahren" in der ' "$install_user" >&2
+  printf 'Weboberfläche könnte fehlschlagen.\n' >&2
 fi
 
 url="http://$hostname_target.local"

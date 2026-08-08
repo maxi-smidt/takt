@@ -54,6 +54,7 @@ class WebRuntime:
         self.buzzer = buzzer
         self.power_service = power_service
         self.audio_service = audio_service or AudioService(config.audio)
+        self.audio_service.on_devices_changed = self._schedule_system_broadcast
         self.curation = RunCurationService(repository)
         self.hardware_label = hardware_label
         self.hardware_available = hardware_available
@@ -90,6 +91,7 @@ class WebRuntime:
         if self._sound_task is not None:
             self._sound_task.cancel()
             await asyncio.gather(self._sound_task, return_exceptions=True)
+        await self.audio_service.close()
         for client in tuple(self._clients):
             await client.close(code=1001, message=b"TAKT server shutdown")
 
@@ -187,6 +189,10 @@ class WebRuntime:
 
     async def connect_audio_device(self, address: str) -> dict[str, object]:
         await self.audio_service.connect_bluetooth(address)
+        return self.system_payload()
+
+    async def forget_audio_device(self, address: str) -> dict[str, object]:
+        await self.audio_service.forget_bluetooth(address)
         return self.system_payload()
 
     async def update_audio_settings(
@@ -435,6 +441,11 @@ class WebRuntime:
         if not self._clients or self._closed:
             return
         asyncio.create_task(self._broadcast({"type": "state", "data": self.state_payload()}))
+
+    def _schedule_system_broadcast(self) -> None:
+        if not self._clients or self._closed:
+            return
+        asyncio.create_task(self._broadcast({"type": "system", "data": self.system_payload()}))
 
     def _schedule_history_broadcast(self) -> None:
         if not self._clients or self._closed:

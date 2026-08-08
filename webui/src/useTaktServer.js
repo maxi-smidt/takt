@@ -126,6 +126,8 @@ export function useTaktServer() {
         } catch {
           // The reconnect loop will refresh the complete data set.
         }
+      } else if (message.type === "system") {
+        setSystem(message.data);
       }
     });
     socket.addEventListener("close", () => {
