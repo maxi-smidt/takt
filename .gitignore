@@ -10,3 +10,6 @@ build/
 .DS_Store
 .idea/
 webui/node_modules/
+.env
+.registry-preview/
+registry-data/

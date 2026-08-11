@@ -104,6 +104,45 @@ Registry auf. Nach der einmaligen Einrichtung ist deshalb kein SSH-Zugriff mehr
 notwendig. TAKT und der physische Taster funktionieren auch dann vollständig
 lokal weiter, wenn WLAN oder Registry vorübergehend nicht verfügbar sind.
 
+### Registry auf Unraid mit Docker starten
+
+Die Registry wird auf Unraid als eigener, nicht privilegierter Container
+betrieben. Datenbank, Releases, Spiegelungen und der lokale Schlüssel bleiben
+außerhalb des Containers unter `/mnt/user/appdata/takt-registry-data` erhalten.
+
+Nach dem Klonen des Repositories im Unraid-Terminal:
+
+```bash
+cd /mnt/user/appdata/takt
+cp .env.example .env
+mkdir -p /mnt/user/appdata/takt-registry-data
+chown 10001:10001 /mnt/user/appdata/takt-registry-data
+```
+
+In `.env` mindestens `TAKT_REGISTRY_ADMIN_PASSWORD` durch ein eigenes langes
+Passwort ersetzen. UID/GID `10001` gehören dem bewusst nicht privilegierten
+Benutzer im Container; die beiden Befehle geben ihm Schreibzugriff auf das
+Registry-Datenverzeichnis. Anschließend Image bauen und Dienst starten:
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+Die Oberfläche ist danach unter `http://UNRAID-IP:8090` erreichbar. Der
+Container startet nach einem NAS-Neustart automatisch wieder. Ein Update der
+Registry erfolgt mit:
+
+```bash
+cd /mnt/user/appdata/takt
+git pull
+docker compose up -d --build
+```
+
+`docker compose down` entfernt nur den Container und das Netzwerk; die unter
+`TAKT_REGISTRY_DATA_PATH` gespeicherten Registry-Daten bleiben erhalten. Der
+Pfad sollte in die normale Unraid-Appdata-Sicherung aufgenommen werden.
+
 ### Registry auf dem Laptop starten
 
 Die Registry benötigt ein Administratorpasswort mit mindestens zehn Zeichen:
