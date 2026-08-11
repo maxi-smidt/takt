@@ -86,6 +86,127 @@ Der Deployment-Befehl entfernt veraltete Projektdateien auf dem Pi, behält
 virtuelle Umgebung, Konfiguration und Laufdaten und startet den Server nach
 einem erfolgreichen Update ausdrücklich neu.
 
+## Mehrere Raspberry Pis zentral verwalten
+
+TAKT enthält eine selbst gehostete **TAKT Fleet Registry**. Sie läuft auf dem
+Laptop beziehungsweise einem ständig eingeschalteten Rechner und bietet eine
+Browser-Oberfläche für:
+
+- Online-/Offline-Status, TAKT-Version, Timerzustand, Speicher und Temperatur,
+- das Hinterlegen mehrerer benannter TAKT-Versionen,
+- die gezielte Installation einer Version auf einem bestimmten Raspberry Pi,
+- Neustart von TAKT und manuellen Neustart des Raspberry Pi,
+- den Fortschritt und das Ergebnis jedes Remote-Auftrags,
+- eine automatisch aktualisierte Kopie der Laufdatenbank jedes Geräts.
+
+Die Raspberry Pis bauen ausschließlich ausgehende HTTP(S)-Verbindungen zur
+Registry auf. Nach der einmaligen Einrichtung ist deshalb kein SSH-Zugriff mehr
+notwendig. TAKT und der physische Taster funktionieren auch dann vollständig
+lokal weiter, wenn WLAN oder Registry vorübergehend nicht verfügbar sind.
+
+### Registry auf dem Laptop starten
+
+Die Registry benötigt ein Administratorpasswort mit mindestens zehn Zeichen:
+
+```bash
+TAKT_REGISTRY_ADMIN_PASSWORD='ein-langes-eigenes-passwort' \
+  ./scripts/launch_registry.sh
+```
+
+Danach ist sie standardmäßig unter `http://127.0.0.1:8090` und über die
+WLAN-IP-Adresse des Rechners auf Port 8090 erreichbar. Der Rechner muss für
+Statusmeldungen, Spiegelungen und Remote-Aufträge eingeschaltet und von den Pis
+erreichbar sein. Soll die Registry ständig verfügbar sein, kann derselbe Dienst
+stattdessen auf einem NAS, Mini-PC oder eigenen Verwaltungs-Pi laufen; bedient
+wird er weiterhin im Browser des Laptops.
+
+Die Registry speichert ihre Daten standardmäßig unter
+`~/.local/share/takt-registry/`:
+
+```text
+registry.db       Geräte, Versionen und Auftragsverlauf
+releases/         hochgeladene TAKT-Pakete
+mirrors/          aktuelle SQLite-Kopie jedes Raspberry Pi
+```
+
+### Raspberry Pi einmalig verbinden
+
+1. In der Registry **Enroll device** wählen und einen einmaligen Code erzeugen.
+2. Eine vom Raspberry Pi erreichbare Registry-Adresse verwenden. `localhost`
+   ist dafür ungeeignet; im lokalen WLAN ist das beispielsweise
+   `http://192.168.1.20:8090`.
+3. Den bestehenden Deployment-Befehl einmal mit Registry-Daten ausführen:
+
+```bash
+TAKT_REGISTRY_URL='http://192.168.1.20:8090' \
+TAKT_ENROLLMENT_CODE='TAKT-...' \
+TAKT_DEVICE_NAME='Bahn 1' \
+TAKT_HOSTNAME='takt-01' \
+  ./scripts/deploy_to_raspberry_pi.sh msmidt@raspberrypi.local
+```
+
+Für weitere Geräte werden ein neuer Code, ein eigener Anzeigename und ein
+eindeutiger Hostname (`takt-02`, `takt-03`, …) verwendet. Identität und
+Zugangsdaten des Agenten bleiben auf dem Pi erhalten. Spätere TAKT-Versionen
+werden nur noch über die Registry installiert.
+
+### Eine bestimmte TAKT-Version installieren
+
+Zuerst das normale Raspberry-Pi-Paket erstellen:
+
+```bash
+./scripts/package_for_raspberry_pi.sh
+```
+
+In der Registry anschließend **Add release** wählen, eine Versionsbezeichnung
+wie `0.2.0` vergeben und `dist/takt-raspberry-pi.tar.gz` hochladen. Auf der Karte
+des gewünschten Pis kann genau diese Version ausgewählt und mit **Install**
+beauftragt werden.
+
+Der Agent:
+
+1. wartet, bis TAKT im Zustand `ready` ist, damit kein laufender oder
+   ungespeicherter Durchgang unterbrochen wird,
+2. lädt das Paket über WLAN, prüft dessen SHA-256-Prüfsumme und bereitet eine
+   getrennte, versionierte Installation vor,
+3. erstellt unmittelbar vorher eine SQLite-Sicherung,
+4. schaltet atomar auf die gewählte Version um und startet nur `takt.service`
+   neu,
+5. prüft Version und `/health`; bei einem Fehler wird automatisch auf die
+   vorige Version zurückgeschaltet.
+
+Die vorhandene Python-Umgebung wird für das Release kopiert. Solange sich die
+Abhängigkeiten nicht ändern, benötigt ein Versionswechsel deshalb nur die
+WLAN-Verbindung zur Registry und keinen Internetzugang. Neue Python- oder
+Systemabhängigkeiten gehören weiterhin in das einmalig beziehungsweise bewusst
+ausgeführte Installationsskript.
+
+### Laufdaten spiegeln
+
+Der Agent erstellt mit der SQLite-Backup-API eine konsistente Momentaufnahme,
+sobald sich die lokale Datenbank geändert hat, und überträgt sie standardmäßig
+innerhalb einer Minute. Die Registry prüft Prüfsumme, SQLite-Integrität und die
+`runs`-Tabelle, bevor sie die bisherige Spiegelung ersetzt. In der Gerätekarte
+werden Zeitpunkt, Größe und Anzahl der gespiegelten Läufe angezeigt; die Kopie
+kann dort als `.sqlite3` heruntergeladen werden.
+
+Das ist bewusst keine gemeinsam beschreibbare Datenbank: Der Raspberry Pi
+bleibt die autoritative Quelle und kann bei einem Netzwerkausfall ohne
+Abhängigkeit von der Registry weiter messen und speichern.
+
+### Netzwerk und Sicherheit
+
+Im vertrauenswürdigen lokalen WLAN kann die Registry zunächst über HTTP
+betrieben werden. Über verschiedene Standorte oder das öffentliche Internet
+darf weder die Registry noch die bisherige, nicht authentifizierte TAKT-Web-API
+direkt freigegeben werden. Dafür ist ein privates WireGuard-/Tailscale-Netz oder
+HTTPS mit einem gültigen Zertifikat vorgesehen. `takt-registry` akzeptiert dazu
+`--tls-certificate` und `--tls-key`.
+
+Die Registry installiert derzeit TAKT-Anwendungsversionen. Vollständige,
+ausfallsichere Raspberry-Pi-OS-Abbilder mit A/B-Rollback sind ein eigener
+Update-Typ und nicht Bestandteil dieses ersten Registry-Stands.
+
 ## Transportpaket für den Raspberry Pi erstellen
 
 Wenn das Projekt per USB-Stick, Netzlaufwerk oder manuell auf den Raspberry Pi

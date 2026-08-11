@@ -8,4 +8,3 @@ class TimerState(Enum):
     SAVED_CONFIRMATION = "saved_confirmation"
     DISCARD_CONFIRMATION = "discard_confirmation"
     ERROR = "error"
-

@@ -13,6 +13,9 @@ if [[ "$EUID" -eq 0 ]]; then
     exec sudo -u "$SUDO_USER" -H env \
       TAKT_HOSTNAME="${TAKT_HOSTNAME:-}" \
       TAKT_PORT="${TAKT_PORT:-}" \
+      TAKT_REGISTRY_URL="${TAKT_REGISTRY_URL:-}" \
+      TAKT_ENROLLMENT_CODE="${TAKT_ENROLLMENT_CODE:-}" \
+      TAKT_DEVICE_NAME="${TAKT_DEVICE_NAME:-}" \
       bash "$script_path" "$@"
   fi
   printf '\nFEHLER: %s\n' "Bitte dieses Skript nicht direkt als root starten." >&2
@@ -29,10 +32,14 @@ fi
 install_home="$(getent passwd "$install_user" | cut -d: -f6)"
 install_uid="$(id -u "$install_user")"
 service_name="takt.service"
+agent_service_name="takt-agent.service"
 bluetooth_agent_service="takt-bluetooth-agent.service"
 hostname_target="${TAKT_HOSTNAME:-takt}"
 port="${TAKT_PORT:-80}"
 health_url="http://127.0.0.1:$port/health"
+registry_url="${TAKT_REGISTRY_URL:-}"
+enrollment_code="${TAKT_ENROLLMENT_CODE:-}"
+device_name="${TAKT_DEVICE_NAME:-$hostname_target}"
 
 say() {
   printf '\nTAKT · %s\n' "$1"
@@ -45,6 +52,7 @@ fail() {
 
 cleanup() {
   [[ -z "${unit_file:-}" ]] || rm -f "$unit_file"
+  [[ -z "${agent_unit_file:-}" ]] || rm -f "$agent_unit_file"
   [[ -z "${sudoers_temp:-}" ]] || rm -f "$sudoers_temp"
   [[ -z "${bluetooth_agent_unit:-}" ]] || rm -f "$bluetooth_agent_unit"
   [[ -z "${bluetooth_conf_temp:-}" ]] || rm -f "$bluetooth_conf_temp"
@@ -65,12 +73,16 @@ trap cleanup EXIT
 
 say "Systempakete für Raspberry Pi OS Lite installieren"
 sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+# libspa-0.2-bluetooth provides PipeWire's A2DP profile handler. It is only a
+# Recommends of pipewire-audio, so --no-install-recommends skips it and BlueZ
+# then rejects every connect with "br-connection-profile-unavailable".
 sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   alsa-utils \
   avahi-daemon \
   bluez \
   bluez-tools \
   curl \
+  libspa-0.2-bluetooth \
   pi-bluetooth \
   pipewire \
   pipewire-alsa \
@@ -104,6 +116,52 @@ config_dir="$install_home/.config/takt"
 mkdir -p "$config_dir"
 if [[ ! -f "$config_dir/config.toml" ]]; then
   cp "$project_dir/config.example.toml" "$config_dir/config.toml"
+fi
+
+release_root="$install_home/.local/share/takt/releases"
+current_link="$install_home/.local/share/takt/current"
+release_environment="$config_dir/release.env"
+mkdir -p "$release_root"
+ln -sfn "$project_dir" "$current_link"
+installed_version="$($project_dir/.venv/bin/python -c 'from takt import __version__; print(__version__)')"
+printf 'TAKT_RELEASE_VERSION=%s\n' "$installed_version" >"$release_environment"
+
+agent_config="$config_dir/agent.toml"
+agent_root="$install_home/.local/share/takt-agent"
+if [[ -n "$registry_url" || -f "$agent_config" ]]; then
+  say "TAKT-Registry-Agent einrichten"
+  mkdir -p "$agent_root"
+  if [[ ! -x "$agent_root/venv/bin/python" ]]; then
+    python3 -m venv --system-site-packages "$agent_root/venv"
+  fi
+  "$agent_root/venv/bin/python" -m pip install \
+    --disable-pip-version-check --upgrade pip setuptools wheel
+  "$agent_root/venv/bin/python" -m pip install \
+    --disable-pip-version-check --upgrade "$project_dir[server]"
+  if [[ ! -f "$agent_config" ]]; then
+    [[ -n "$registry_url" ]] \
+      || fail "TAKT_REGISTRY_URL fehlt für die erstmalige Agent-Einrichtung."
+    [[ -n "$enrollment_code" ]] \
+      || fail "TAKT_ENROLLMENT_CODE fehlt für die erstmalige Agent-Einrichtung."
+    [[ "$registry_url" =~ ^https?://[A-Za-z0-9._:/-]+$ ]] \
+      || fail "TAKT_REGISTRY_URL enthält nicht unterstützte Zeichen."
+    [[ "$enrollment_code" =~ ^[A-Za-z0-9_-]+$ ]] \
+      || fail "TAKT_ENROLLMENT_CODE enthält nicht unterstützte Zeichen."
+    [[ "$device_name" =~ ^[A-Za-z0-9ÄÖÜäöüß._[:space:]-]+$ ]] \
+      || fail "TAKT_DEVICE_NAME enthält nicht unterstützte Zeichen."
+    {
+      printf '%s\n' \
+        "[agent]" \
+        "registry_url = \"$registry_url\"" \
+        "enrollment_code = \"$enrollment_code\"" \
+        "device_name = \"$device_name\"" \
+        "verify_tls = true" \
+        "poll_seconds = 10" \
+        "mirror_seconds = 60" \
+        "health_url = \"$health_url\""
+    } >"$agent_config"
+    chmod 0600 "$agent_config"
+  fi
 fi
 
 sudo usermod -a -G gpio,audio "$install_user"
@@ -191,6 +249,20 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now "$bluetooth_agent_service"
 
 say "Headless-Audio einrichten"
+# WirePlumber gates its Bluetooth monitor on an active logind seat by default.
+# A headless Pi has no seat, so the monitor loads but never registers an A2DP
+# endpoint and BlueZ rejects every connect with "br-connection-profile-unavailable".
+wireplumber_config_dir="$install_home/.config/wireplumber/wireplumber.conf.d"
+mkdir -p "$wireplumber_config_dir"
+{
+  printf '%s\n' \
+    "wireplumber.profiles = {" \
+    "  main = {" \
+    "    monitor.bluez.seat-monitoring = disabled" \
+    "  }" \
+    "}"
+} >"$wireplumber_config_dir/50-takt-bluez.conf"
+
 # PipeWire is a user service. Lingering starts that user session at boot even
 # when the Lite system has no local login, and also creates /run/user/$uid.
 sudo loginctl enable-linger "$install_user"
@@ -203,6 +275,11 @@ if [[ -S "/run/user/$install_uid/bus" ]]; then
     HOME="$install_home" \
     XDG_RUNTIME_DIR="/run/user/$install_uid" \
     systemctl --user enable --now pipewire.socket pipewire-pulse.socket wireplumber.service
+  # Pick up the Bluetooth drop-in when this is a re-run on a running session.
+  sudo -u "$install_user" env \
+    HOME="$install_home" \
+    XDG_RUNTIME_DIR="/run/user/$install_uid" \
+    systemctl --user restart wireplumber.service
 else
   fail "Die PipeWire-Benutzersitzung konnte nicht gestartet werden."
 fi
@@ -228,12 +305,13 @@ unit_file="$(mktemp)"
     "User=$install_user" \
     "Group=$install_user" \
     "SupplementaryGroups=gpio audio" \
-    "WorkingDirectory=$project_dir" \
+    "WorkingDirectory=$current_link" \
+    "EnvironmentFile=-$release_environment" \
     "Environment=HOME=$install_home" \
     "Environment=XDG_RUNTIME_DIR=/run/user/$install_uid" \
     "Environment=GPIOZERO_PIN_FACTORY=lgpio" \
     "Environment=PYTHONUNBUFFERED=1" \
-    "ExecStart=$project_dir/.venv/bin/takt-server --host 0.0.0.0 --port $port" \
+    "ExecStart=$current_link/.venv/bin/python -m takt.server_main --host 0.0.0.0 --port $port" \
     "Restart=on-failure" \
     "RestartSec=2" \
     "TimeoutStopSec=10" \
@@ -252,6 +330,34 @@ unit_file="$(mktemp)"
 } >"$unit_file"
 sudo install -m 0644 "$unit_file" "/etc/systemd/system/$service_name"
 
+if [[ -f "$agent_config" ]]; then
+  agent_unit_file="$(mktemp)"
+  {
+    printf '%s\n' \
+      "[Unit]" \
+      "Description=TAKT fleet registry agent" \
+      "After=network-online.target $service_name" \
+      "Wants=network-online.target" \
+      "" \
+      "[Service]" \
+      "Type=simple" \
+      "User=$install_user" \
+      "Group=$install_user" \
+      "WorkingDirectory=$agent_root" \
+      "Environment=HOME=$install_home" \
+      "Environment=PYTHONUNBUFFERED=1" \
+      "ExecStart=$agent_root/venv/bin/takt-agent --config $agent_config" \
+      "Restart=always" \
+      "RestartSec=5" \
+      "PrivateTmp=true" \
+      "" \
+      "[Install]" \
+      "WantedBy=multi-user.target"
+  } >"$agent_unit_file"
+  sudo install -m 0644 "$agent_unit_file" "/etc/systemd/system/$agent_service_name"
+  rm -f "$agent_unit_file"
+fi
+
 sudoers_file="/etc/sudoers.d/takt-poweroff-$install_user"
 sudoers_temp="$(mktemp)"
 {
@@ -259,6 +365,20 @@ sudoers_temp="$(mktemp)"
   # matches the exact path a command is invoked with, so allow both.
   printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n' "$install_user"
   printf '%s ALL=(root) NOPASSWD: /bin/systemctl poweroff\n' "$install_user"
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart %s\n' \
+    "$install_user" "$service_name"
+  printf '%s ALL=(root) NOPASSWD: /bin/systemctl restart %s\n' \
+    "$install_user" "$service_name"
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl start %s\n' \
+    "$install_user" "$service_name"
+  printf '%s ALL=(root) NOPASSWD: /bin/systemctl start %s\n' \
+    "$install_user" "$service_name"
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl stop %s\n' \
+    "$install_user" "$service_name"
+  printf '%s ALL=(root) NOPASSWD: /bin/systemctl stop %s\n' \
+    "$install_user" "$service_name"
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl reboot\n' "$install_user"
+  printf '%s ALL=(root) NOPASSWD: /bin/systemctl reboot\n' "$install_user"
 } >"$sudoers_temp"
 sudo visudo -cf "$sudoers_temp"
 sudo install -m 0440 "$sudoers_temp" "$sudoers_file"
@@ -267,6 +387,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable "$service_name"
 # enable --now does not restart an already running service after an update.
 sudo systemctl restart "$service_name"
+if [[ -f "$agent_config" ]]; then
+  sudo systemctl enable "$agent_service_name"
+  sudo systemctl restart "$agent_service_name"
+fi
 
 say "Alte lokale Kiosk-Konfiguration entfernen"
 autostart_file="$install_home/.config/labwc/autostart"

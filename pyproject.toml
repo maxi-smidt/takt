@@ -26,6 +26,8 @@ dev = [
 [project.scripts]
 takt = "takt.main:main"
 takt-server = "takt.server_main:main"
+takt-agent = "takt.management.agent:main"
+takt-registry = "takt.registry.server_main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -33,6 +35,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "takt" = ["assets/*.wav", "assets/*.mp3"]
 "takt.web" = ["static/**/*"]
+"takt.registry" = ["static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

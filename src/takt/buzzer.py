@@ -48,4 +48,3 @@ class GpioBuzzer:
 
     def close(self) -> None:
         self._buzzer.close()
-

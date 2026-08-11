@@ -59,6 +59,8 @@ class WebApplicationTests(unittest.TestCase):
                         self.assertEqual(response.status, 200)
                         health = await response.json()
                         self.assertTrue(health["ok"])
+                        self.assertEqual(health["version"], "0.1.0")
+                        self.assertEqual(health["database_schema_version"], 1)
 
                     async with client.get(f"{base_url}/api/bootstrap?days=30") as response:
                         self.assertEqual(response.status, 200)

@@ -23,4 +23,3 @@ class RunCurationService:
 
     def delete_run(self, run_id: int) -> bool:
         return self.repository.delete_run(run_id)
-

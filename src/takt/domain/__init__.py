@@ -5,4 +5,3 @@ from takt.domain.run import Run
 from takt.domain.timer_state import TimerState
 
 __all__ = ["Duration", "Run", "TimerState"]
-

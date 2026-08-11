@@ -30,4 +30,3 @@ class Run:
     @property
     def session_date(self) -> str:
         return self.started_at.astimezone().date().isoformat()
-

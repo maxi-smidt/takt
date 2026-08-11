@@ -5,8 +5,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
-def configure_logging() -> Path:
-    log_path = Path("~/.local/state/takt/logs/takt.log").expanduser()
+def configure_logging(name: str = "takt") -> Path:
+    log_path = Path(f"~/.local/state/takt/logs/{name}.log").expanduser()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter(
         "%(asctime)s %(levelname)s %(name)s %(message)s"

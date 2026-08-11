@@ -4,7 +4,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
 
 export default [
-  { ignores: ["dist", "../src/takt/web/static"] },
+  { ignores: ["dist", "../src/takt/web/static", "../src/takt/registry/static"] },
   {
     files: ["**/*.{js,jsx}"],
     languageOptions: {

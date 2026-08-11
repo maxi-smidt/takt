@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
+from takt import __version__
 from takt.web.runtime import WebRuntime, json_body, parse_chart_days
 
 STATIC_ROOT = Path(__file__).with_name("static")
@@ -37,9 +39,15 @@ async def index(request: web.Request) -> web.FileResponse:
 
 async def health(request: web.Request) -> web.Response:
     runtime = request.app[RUNTIME_KEY]
+    schema_row = runtime.repository.connection.execute(
+        "SELECT version FROM schema_version LIMIT 1"
+    ).fetchone()
     return web.json_response(
         {
             "ok": True,
+            "ready": True,
+            "version": os.environ.get("TAKT_RELEASE_VERSION", __version__),
+            "database_schema_version": int(schema_row[0]) if schema_row else None,
             "state": runtime.controller.state.value,
             "hardware_available": runtime.hardware_available,
         }

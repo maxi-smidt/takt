@@ -23,4 +23,3 @@ def create_daily_backup(
         stale.unlink(missing_ok=True)
         LOGGER.info("old_backup_removed path=%s", stale)
     return target
-

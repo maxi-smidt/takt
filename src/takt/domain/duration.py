@@ -31,4 +31,3 @@ class Duration:
 
     def format_added(self) -> str:
         return f"+{self.format_stopwatch()}"
-

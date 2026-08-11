@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:fleet": "vite --config vite.fleet.config.js",
     "build": "vite build",
+    "build:fleet": "vite build --config vite.fleet.config.js",
     "check": "eslint src"
   },
   "dependencies": {

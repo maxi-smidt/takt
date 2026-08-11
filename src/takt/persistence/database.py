@@ -47,4 +47,3 @@ def connect_database(path: Path) -> sqlite3.Connection:
         connection.execute("INSERT INTO schema_version(version) VALUES (1)")
     connection.commit()
     return connection
-

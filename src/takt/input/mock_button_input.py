@@ -16,4 +16,3 @@ class MockButtonInput:
 
     def close(self) -> None:
         pass
-
