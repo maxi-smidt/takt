@@ -1,0 +1,1 @@
+"""Central TAKT device registry."""
