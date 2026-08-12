@@ -8,9 +8,7 @@ from pathlib import Path
 def configure_logging(name: str = "takt") -> Path:
     log_path = Path(f"~/.local/state/takt/logs/{name}.log").expanduser()
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    formatter = logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     file_handler = RotatingFileHandler(
         log_path,
         maxBytes=2_000_000,

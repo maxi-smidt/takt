@@ -41,6 +41,9 @@ rsync -az \
   --delete-delay \
   --exclude '.git/' \
   --exclude '.venv/' \
+  --exclude '.env' \
+  --exclude '.env.*' \
+  --exclude '.registry-preview/' \
   --exclude '.pytest_cache/' \
   --exclude '.ruff_cache/' \
   --exclude '.mypy_cache/' \
@@ -49,17 +52,24 @@ rsync -az \
   --exclude 'artifacts/' \
   --exclude 'build/' \
   --exclude 'dist/' \
+  --exclude 'registry-data/' \
   --exclude 'identifier.sqlite' \
+  --exclude '*.db' \
+  --exclude '*.sqlite' \
+  --exclude '*.sqlite3' \
+  --exclude '*.pem' \
+  --exclude '*.key' \
   --exclude 'webui/node_modules/' \
   "$project_dir/" \
   "$remote:~/$remote_dir/"
 
 printf '\nTAKT · Raspberry Pi vollständig einrichten\n'
 printf -v registry_url_escaped '%q' "${TAKT_REGISTRY_URL:-}"
+printf -v allow_insecure_http_escaped '%q' "${TAKT_REGISTRY_ALLOW_INSECURE_HTTP:-}"
 printf -v enrollment_code_escaped '%q' "${TAKT_ENROLLMENT_CODE:-}"
 printf -v device_name_escaped '%q' "${TAKT_DEVICE_NAME:-}"
 printf -v hostname_escaped '%q' "${TAKT_HOSTNAME:-}"
 ssh -t "$remote" \
-  "cd ~/$remote_dir && TAKT_REGISTRY_URL=$registry_url_escaped TAKT_ENROLLMENT_CODE=$enrollment_code_escaped TAKT_DEVICE_NAME=$device_name_escaped TAKT_HOSTNAME=$hostname_escaped bash scripts/install_raspberry_pi.sh"
+  "cd ~/$remote_dir && TAKT_REGISTRY_URL=$registry_url_escaped TAKT_REGISTRY_ALLOW_INSECURE_HTTP=$allow_insecure_http_escaped TAKT_ENROLLMENT_CODE=$enrollment_code_escaped TAKT_DEVICE_NAME=$device_name_escaped TAKT_HOSTNAME=$hostname_escaped bash scripts/install_raspberry_pi.sh"
 
 printf '\nFERTIG · Deployment und Server-Neustart waren erfolgreich.\n'

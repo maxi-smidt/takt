@@ -38,22 +38,16 @@ class PerformanceChart(QWidget):
         count = len(self._runs)
 
         def point_for(index: int, milliseconds: int) -> QPointF:
-            offset = (
-                area.width() / 2
-                if count == 1
-                else index * area.width() / (count - 1)
-            )
+            offset = area.width() / 2 if count == 1 else index * area.width() / (count - 1)
             x = area.left() + offset
             y = area.bottom() - (milliseconds / maximum) * area.height()
             return QPointF(x, y)
 
         actual_points = [
-            point_for(index, run.actual_time.milliseconds)
-            for index, run in enumerate(self._runs)
+            point_for(index, run.actual_time.milliseconds) for index, run in enumerate(self._runs)
         ]
         total_points = [
-            point_for(index, run.total_time.milliseconds)
-            for index, run in enumerate(self._runs)
+            point_for(index, run.total_time.milliseconds) for index, run in enumerate(self._runs)
         ]
         for actual, total in zip(actual_points, total_points, strict=True):
             painter.setPen(QPen(QColor("#f1a817"), 4))

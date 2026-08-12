@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 from pathlib import Path
 
@@ -58,6 +59,7 @@ async def _serve(args: argparse.Namespace) -> None:
     )
     power_service = SystemPowerService()
     loop = asyncio.get_running_loop()
+
     def on_mock_buzzer(event: str) -> None:
         LOGGER.info("browser_mock_buzzer event=%s", event)
 
@@ -92,7 +94,14 @@ async def _serve(args: argparse.Namespace) -> None:
         hardware_available=hardware_available,
         show_mock_button=args.mock_gpio,
         show_mock_buzzer=args.mock_buzzer,
+        maintenance_marker=Path(
+            os.environ.get(
+                "TAKT_MAINTENANCE_MARKER",
+                str(config.storage.database_path.parent / "maintenance.json"),
+            )
+        ).expanduser(),
     )
+
     def physical_press() -> None:
         loop.call_soon_threadsafe(runtime.primary_press, "gpio-taster")
 

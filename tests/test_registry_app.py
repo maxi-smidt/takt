@@ -34,6 +34,12 @@ class RegistryApplicationTests(unittest.TestCase):
             base_url = f"http://127.0.0.1:{sockets[0].getsockname()[1]}"
             try:
                 async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
+                    async with client.post(
+                        f"{base_url}/api/session",
+                        data='{"password":"correct-horse-battery"}',
+                        headers={"Content-Type": "text/plain"},
+                    ) as response:
+                        self.assertEqual(response.status, 415)
                     csrf = await self._login(client, base_url)
                     async with client.post(
                         f"{base_url}/api/enrollment-codes",
@@ -41,24 +47,43 @@ class RegistryApplicationTests(unittest.TestCase):
                         headers={"X-CSRF-Token": csrf},
                     ) as response:
                         self.assertEqual(response.status, 201)
-                        enrollment_code = (await response.json())["code"]
+                        enrollment = await response.json()
+                        enrollment_code = enrollment["code"]
+                        self.assertEqual(enrollment["expires_in_minutes"], 60)
 
                     device_id = "12345678-1234-1234-1234-123456789abc"
+                    proposed_token = "a" * 64
+                    enrollment_payload = {
+                        "enrollment_code": enrollment_code,
+                        "device_id": device_id,
+                        "name": "Lane 1",
+                        "hostname": "takt-01",
+                        "device_token": proposed_token,
+                    }
                     async with client.post(
                         f"{base_url}/agent/enroll",
-                        json={
-                            "enrollment_code": enrollment_code,
-                            "device_id": device_id,
-                            "name": "Lane 1",
-                            "hostname": "takt-01",
-                        },
+                        json=enrollment_payload,
                     ) as response:
                         self.assertEqual(response.status, 201)
                         device_token = (await response.json())["device_token"]
+                        self.assertEqual(device_token, proposed_token)
+                    # A lost enrollment response can be retried with the same identity secret.
+                    async with client.post(
+                        f"{base_url}/agent/enroll", json=enrollment_payload
+                    ) as response:
+                        self.assertEqual(response.status, 201)
+                        self.assertEqual((await response.json())["device_token"], proposed_token)
                     agent_headers = {
                         "X-Device-ID": device_id,
                         "Authorization": f"Bearer {device_token}",
                     }
+
+                    async with client.post(
+                        f"{base_url}/agent/heartbeat",
+                        json={"poll_seconds": {"invalid": True}},
+                        headers=agent_headers,
+                    ) as response:
+                        self.assertEqual(response.status, 400)
 
                     async with client.post(
                         f"{base_url}/agent/heartbeat",
@@ -68,6 +93,9 @@ class RegistryApplicationTests(unittest.TestCase):
                             "app_version": "0.1.0",
                             "agent_version": "0.1.0",
                             "health": {"ok": True, "state": "ready"},
+                            "protocol_version": 1,
+                            "agent_session_id": "session-a",
+                            "poll_seconds": 10,
                         },
                         headers=agent_headers,
                     ) as response:
@@ -109,16 +137,44 @@ class RegistryApplicationTests(unittest.TestCase):
                             "hostname": "takt-01",
                             "app_version": "0.1.0",
                             "agent_version": "0.1.0",
+                            "protocol_version": 1,
+                            "agent_session_id": "session-a",
                         },
                         headers=agent_headers,
                     ) as response:
                         claimed = (await response.json())["job"]
                         self.assertEqual(claimed["id"], job["id"])
                         self.assertEqual(claimed["release"]["version"], "0.2.0")
+                        lease_id = claimed["lease_id"]
+
+                    # A second process using the credential cannot take over the active lease.
+                    async with client.post(
+                        f"{base_url}/agent/heartbeat",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "app_version": "0.1.0",
+                            "agent_version": "0.1.0",
+                            "protocol_version": 1,
+                            "agent_session_id": "session-b",
+                        },
+                        headers=agent_headers,
+                    ) as response:
+                        self.assertIsNone((await response.json())["job"])
 
                     async with client.get(
                         f"{base_url}/agent/jobs/{job['id']}/artifact",
                         headers=agent_headers,
+                    ) as response:
+                        self.assertEqual(response.status, 404)
+                    async with client.get(
+                        f"{base_url}/agent/jobs/{job['id']}/artifact",
+                        headers={**agent_headers, "X-Job-Lease": "wrong"},
+                    ) as response:
+                        self.assertEqual(response.status, 404)
+                    async with client.get(
+                        f"{base_url}/agent/jobs/{job['id']}/artifact",
+                        headers={**agent_headers, "X-Job-Lease": lease_id},
                     ) as response:
                         self.assertEqual(response.status, 200)
                         self.assertEqual(await response.read(), release_archive)
@@ -126,6 +182,17 @@ class RegistryApplicationTests(unittest.TestCase):
                     async with client.post(
                         f"{base_url}/agent/jobs/{job['id']}",
                         json={"status": "succeeded", "progress": 100, "message": "healthy"},
+                        headers=agent_headers,
+                    ) as response:
+                        self.assertEqual(response.status, 409)
+                    async with client.post(
+                        f"{base_url}/agent/jobs/{job['id']}",
+                        json={
+                            "status": "succeeded",
+                            "progress": 100,
+                            "message": "healthy",
+                            "lease_id": lease_id,
+                        },
                         headers=agent_headers,
                     ) as response:
                         self.assertEqual(response.status, 200)
@@ -154,6 +221,20 @@ class RegistryApplicationTests(unittest.TestCase):
                     async with client.get(f"{base_url}/api/devices/{device_id}/mirror") as response:
                         self.assertEqual(response.status, 200)
                         self.assertEqual(await response.read(), database_bytes)
+
+                    async with client.post(
+                        f"{base_url}/api/devices/{device_id}/revoke",
+                        json={},
+                        headers={"X-CSRF-Token": csrf},
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertIsNotNone((await response.json())["device"]["revoked_at"])
+                    async with client.post(
+                        f"{base_url}/agent/heartbeat",
+                        json={"agent_session_id": "session-a"},
+                        headers=agent_headers,
+                    ) as response:
+                        self.assertEqual(response.status, 401)
             finally:
                 await runner.cleanup()
                 store.close()

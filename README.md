@@ -95,7 +95,7 @@ Browser-Oberfläche für:
 - Online-/Offline-Status, TAKT-Version, Timerzustand, Speicher und Temperatur,
 - das Hinterlegen mehrerer benannter TAKT-Versionen,
 - die gezielte Installation einer Version auf einem bestimmten Raspberry Pi,
-- Neustart von TAKT und manuellen Neustart des Raspberry Pi,
+- Neustart des TAKT-Dienstes,
 - den Fortschritt und das Ergebnis jedes Remote-Auftrags,
 - eine automatisch aktualisierte Kopie der Laufdatenbank jedes Geräts.
 
@@ -108,26 +108,68 @@ lokal weiter, wenn WLAN oder Registry vorübergehend nicht verfügbar sind.
 
 Die Registry wird auf Unraid als eigener, nicht privilegierter Container
 betrieben. Datenbank, Releases, Spiegelungen und der lokale Schlüssel bleiben
-außerhalb des Containers unter `/mnt/user/appdata/takt-registry-data` erhalten.
+außerhalb des Containers unter `/mnt/user/appdata/takt/registry-data` erhalten.
+Der Unraid-`appdata`-Share sollte einen Pool als **Primary storage** und
+**Secondary storage: None** verwenden. Vor einem bewussten Verschieben mit dem
+Mover muss der Container gestoppt werden.
+
+#### Variante A: Unraid-Docker-Oberfläche
+
+Das Repository enthält `unraid/takt-registry.xml` als Unraid-Template. Es wird
+einmalig registriert mit:
+
+```bash
+mkdir -p /mnt/user/appdata/takt/registry-data
+chown 10001:10001 /mnt/user/appdata/takt/registry-data
+chmod 0700 /mnt/user/appdata/takt/registry-data
+cp /mnt/user/appdata/takt/unraid/takt-registry.xml \
+  /boot/config/plugins/dockerMan/templates-user/my-takt-registry.xml
+```
+
+Danach unter **Docker → Add Container** das Template `takt-registry` auswählen,
+ein langes Adminpasswort setzen und den Datenpfad kontrollieren. Das Template
+nutzt `ghcr.io/maxi-smidt/takt-registry:latest`, läuft als fest definierter
+nicht privilegierter Benutzer und erscheint wie andere Container in der
+Unraid-Oberfläche. Nach dem ersten erfolgreichen GitHub-Workflow muss das
+GHCR-Paket einmalig auf **Public** gestellt und ein anonymer Pull geprüft werden.
+Commit-Tags sind
+unveränderliche Bezugspunkte, während `latest` und `major.minor` bewusst
+weiterwandern.
+
+#### Variante B: Unraid Compose Manager
+
+Unraid bringt Docker Compose nicht nativ mit; diese Variante verwendet das
+Compose-Manager-Plugin. Die Compose-Datei baut auf dem NAS nichts selbst,
+sondern zieht standardmäßig das in GitHub Actions geprüfte Multi-Architektur-
+Image `ghcr.io/maxi-smidt/takt-registry:latest`.
 
 Nach dem Klonen des Repositories im Unraid-Terminal:
 
 ```bash
 cd /mnt/user/appdata/takt
 cp .env.example .env
-mkdir -p /mnt/user/appdata/takt-registry-data
-chown 10001:10001 /mnt/user/appdata/takt-registry-data
+mkdir -p /mnt/user/appdata/takt/registry-data
+chown 10001:10001 /mnt/user/appdata/takt/registry-data
+chmod 0700 /mnt/user/appdata/takt/registry-data
+chmod 0600 .env
 ```
 
 In `.env` mindestens `TAKT_REGISTRY_ADMIN_PASSWORD` durch ein eigenes langes
 Passwort ersetzen. UID/GID `10001` gehören dem bewusst nicht privilegierten
 Benutzer im Container; die beiden Befehle geben ihm Schreibzugriff auf das
-Registry-Datenverzeichnis. Anschließend Image bauen und Dienst starten:
+Registry-Datenverzeichnis. Anschließend Image ziehen und Stack starten:
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose ps
 ```
+
+Im Compose-Manager-Plugin wird dieses Verzeichnis als Stack importiert. Für
+`TAKT_REGISTRY_IMAGE` kann `latest`, ein Versionstag wie `0.2.0` oder ein
+unveränderlicher `sha-...`-Tag eingetragen werden. Mit
+`TAKT_REGISTRY_PULL_POLICY=always` prüft Compose bei jedem Start auf ein
+aktualisiertes Image.
 
 Die Oberfläche ist danach unter `http://UNRAID-IP:8090` erreichbar. Der
 Container startet nach einem NAS-Neustart automatisch wieder. Ein Update der
@@ -136,12 +178,55 @@ Registry erfolgt mit:
 ```bash
 cd /mnt/user/appdata/takt
 git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
+
+Im Compose-Manager entspricht das **Pull** und anschließend **Compose Up**.
+Anwendungscode wird nicht auf dem NAS gebaut; aus dem Klon werden nur
+`compose.yaml` und `.env` für den Stack benötigt.
 
 `docker compose down` entfernt nur den Container und das Netzwerk; die unter
 `TAKT_REGISTRY_DATA_PATH` gespeicherten Registry-Daten bleiben erhalten. Der
-Pfad sollte in die normale Unraid-Appdata-Sicherung aufgenommen werden.
+Pfad sollte in die normale Unraid-Appdata-Sicherung aufgenommen werden. Die
+Registry erstellt zusätzlich täglich eine konsistente Online-Sicherung der
+Metadaten unter `registry-data/backups/`. Für ein vollständiges externes Backup
+einschließlich Releases und Spiegelhistorie den Container während des
+Appdata-Backups stoppen oder ein Backup-Werkzeug verwenden, das Container
+automatisch anhält.
+
+Diagnosebefehle:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 registry
+curl --fail http://127.0.0.1:8090/health
+```
+
+Der Healthcheck prüft Datenbank- und Schema-Zugriff sowie die letzte
+konsistente Sicherung. Docker-Logs rotieren automatisch.
+
+### Automatisch veröffentlichte Artefakte
+
+Der Workflow `.github/workflows/registry-image.yml` läuft auf `main`, auf
+Versionstags (`v*`) und manuell:
+
+- Ruff, Pytest, ESLint und der Registry-UI-Build müssen zuerst erfolgreich
+  sein.
+- Danach wird `ghcr.io/maxi-smidt/takt-registry` für `linux/amd64` und
+  `linux/arm64` veröffentlicht. `latest` folgt `main`; zusätzlich gibt es
+  `sha-...` und bei Versionstags beispielsweise `0.2.0` sowie `0.2`.
+- Das Raspberry-Pi-Paket wird zusammen mit Prüfsumme und JSON-Manifest für 30
+  Tage als Actions-Artefakt abgelegt.
+- `compose.yaml`, die Environment-Vorlage und das Unraid-XML werden zusätzlich
+  als kleiner Unraid-Stack-Artefakt veröffentlicht.
+- Ein Tag wie `v0.2.0` muss exakt zur Version in `pyproject.toml` passen und
+  erzeugt eine dauerhafte GitHub Release mit Pi-Paket, Prüfsumme, Manifest,
+  Unraid-Stack-Dateien und dem exakten Digest des Registry-Images.
+
+Vor dem ersten Unraid-Pull muss das einmalig erzeugte GHCR-Paket in GitHub auf
+**Public** gestellt werden. Danach benötigt der Unraid-Stack keine GitHub-
+Anmeldedaten.
 
 ### Registry auf dem Laptop starten
 
@@ -165,12 +250,14 @@ Die Registry speichert ihre Daten standardmäßig unter
 ```text
 registry.db       Geräte, Versionen und Auftragsverlauf
 releases/         hochgeladene TAKT-Pakete
-mirrors/          aktuelle SQLite-Kopie jedes Raspberry Pi
+mirrors/          versionierte SQLite-Snapshots der Raspberry Pis
+backups/          tägliche konsistente Registry-Metadaten-Sicherungen
 ```
 
 ### Raspberry Pi einmalig verbinden
 
-1. In der Registry **Enroll device** wählen und einen einmaligen Code erzeugen.
+1. In der Registry **Enroll device** wählen, Gerätename, Hostname, SSH-Benutzer,
+   Pi-Adresse und Registry-Adresse eintragen und den erzeugten Befehl kopieren.
 2. Eine vom Raspberry Pi erreichbare Registry-Adresse verwenden. `localhost`
    ist dafür ungeeignet; im lokalen WLAN ist das beispielsweise
    `http://192.168.1.20:8090`.
@@ -178,11 +265,24 @@ mirrors/          aktuelle SQLite-Kopie jedes Raspberry Pi
 
 ```bash
 TAKT_REGISTRY_URL='http://192.168.1.20:8090' \
+TAKT_REGISTRY_ALLOW_INSECURE_HTTP='true' \
 TAKT_ENROLLMENT_CODE='TAKT-...' \
 TAKT_DEVICE_NAME='Bahn 1' \
 TAKT_HOSTNAME='takt-01' \
   ./scripts/deploy_to_raspberry_pi.sh msmidt@raspberrypi.local
 ```
+
+Der Agent lehnt eine entfernte HTTP-Adresse standardmäßig ab. Bei einer
+HTTP-Adresse zeigt der Assistent deshalb eine gesonderte Warnung und erzeugt
+die `TAKT_REGISTRY_ALLOW_INSECURE_HTTP`-Zeile erst nach ausdrücklicher
+Bestätigung. Sie ist nur für HTTP über ein privates VPN oder ein bewusst
+isoliertes, vertrauenswürdiges LAN gedacht; bei HTTPS entfällt sie.
+
+Der Code ist 60 Minuten gültig. Das Installationsskript meldet den Agenten
+direkt nach dem Erstellen seiner Umgebung an, bevor die langsamere Audio- und
+Systemkonfiguration weiterläuft. Die Pi-Seite erzeugt ihren Geräteschlüssel vor
+der Anmeldung; geht die Antwort verloren, kann dieselbe Anmeldung sicher
+wiederholt werden. Nach Erfolg wird der Einmalcode aus `agent.toml` entfernt.
 
 Für weitere Geräte werden ein neuer Code, ein eigener Anzeigename und ein
 eindeutiger Hostname (`takt-02`, `takt-03`, …) verwendet. Identität und
@@ -197,22 +297,38 @@ Zuerst das normale Raspberry-Pi-Paket erstellen:
 ./scripts/package_for_raspberry_pi.sh
 ```
 
-In der Registry anschließend **Add release** wählen, eine Versionsbezeichnung
-wie `0.2.0` vergeben und `dist/takt-raspberry-pi.tar.gz` hochladen. Auf der Karte
-des gewünschten Pis kann genau diese Version ausgewählt und mit **Install**
+Vor dem Paketieren muss die Version in `pyproject.toml` stimmen. In der Registry
+anschließend **Add release** wählen, exakt dieselbe Versionsbezeichnung wie
+`0.2.0` vergeben und `dist/takt-raspberry-pi.tar.gz` hochladen. Abweichende
+Paket- und Eingabeversionen weist die Registry zurück. Auf der Karte des
+gewünschten Pis kann genau diese Version ausgewählt und mit **Install**
 beauftragt werden.
 
 Der Agent:
 
 1. wartet, bis TAKT im Zustand `ready` ist, damit kein laufender oder
    ungespeicherter Durchgang unterbrochen wird,
-2. lädt das Paket über WLAN, prüft dessen SHA-256-Prüfsumme und bereitet eine
-   getrennte, versionierte Installation vor,
+2. lädt das Paket über WLAN fortsetzbar in eine `.part`-Datei, prüft Größe und
+   SHA-256-Prüfsumme und bereitet eine getrennte, versionierte Installation vor,
 3. erstellt unmittelbar vorher eine SQLite-Sicherung,
-4. schaltet atomar auf die gewählte Version um und startet nur `takt.service`
+4. erwirbt eine lokale Maintenance-Sperre, die atomar nur im Zustand `ready`
+   gelingt; ein kurzlebiger, dauerhafter Marker hält diese Sperre auch über den
+   Neustart hinweg und blockiert Browser- und GPIO-Starts,
+5. schaltet atomar auf die gewählte Version um und startet nur `takt.service`
    neu,
-5. prüft Version und `/health`; bei einem Fehler wird automatisch auf die
-   vorige Version zurückgeschaltet.
+6. prüft Version und `/health`; bei einem Fehler werden Symlink,
+   Versionsdatei und Laufdatenbank auf den vorigen Stand zurückgesetzt.
+
+Jede Aktivierungsphase wird vor dem nächsten Schritt fsync-sicher protokolliert.
+Nach Prozessabsturz oder Stromausfall setzt der Agent deshalb vor dem nächsten
+Registry-Auftrag entweder die gesunde Version fort oder stellt Version,
+Datenbank und Dienst automatisch auf den vorigen Stand zurück.
+
+Remote-Aufträge verwenden kurze, erneuerbare Leases. Der Agent speichert das
+Endergebnis lokal, bis die Registry es bestätigt. WLAN-Ausfälle können dadurch
+weder einen fertigen Auftrag vergessen noch einen Neustart unbemerkt doppelt
+ausführen. Reconnects verwenden exponentielles Backoff mit Zufallsanteil, damit
+nach einem NAS-Neustart nicht alle Pis gleichzeitig anfragen.
 
 Die vorhandene Python-Umgebung wird für das Release kopiert. Solange sich die
 Abhängigkeiten nicht ändern, benötigt ein Versionswechsel deshalb nur die
@@ -225,7 +341,10 @@ ausgeführte Installationsskript.
 Der Agent erstellt mit der SQLite-Backup-API eine konsistente Momentaufnahme,
 sobald sich die lokale Datenbank geändert hat, und überträgt sie standardmäßig
 innerhalb einer Minute. Die Registry prüft Prüfsumme, SQLite-Integrität und die
-`runs`-Tabelle, bevor sie die bisherige Spiegelung ersetzt. In der Gerätekarte
+`runs`-Tabelle, bevor sie sie als unveränderlichen, per SHA-256 adressierten
+Snapshot ablegt. Die letzten 48 Snapshots plus bis zu 30 tägliche Stände je Pi
+bleiben erhalten; ein Upload überschreibt daher niemals die einzige gute Kopie.
+In der Gerätekarte
 werden Zeitpunkt, Größe und Anzahl der gespiegelten Läufe angezeigt; die Kopie
 kann dort als `.sqlite3` heruntergeladen werden.
 
@@ -241,6 +360,20 @@ darf weder die Registry noch die bisherige, nicht authentifizierte TAKT-Web-API
 direkt freigegeben werden. Dafür ist ein privates WireGuard-/Tailscale-Netz oder
 HTTPS mit einem gültigen Zertifikat vorgesehen. `takt-registry` akzeptiert dazu
 `--tls-certificate` und `--tls-key`.
+
+HTTP überträgt Adminpasswort, Gerätetoken und Spiegelungsdaten unverschlüsselt.
+Die SHA-256-Prüfung erkennt Übertragungsfehler, authentifiziert über HTTP aber
+keinen Release: Ein Angreifer im Netz könnte Auftrag und Paket gemeinsam
+ersetzen. Remote-Installationen dürfen deshalb nur über HTTPS oder ein privates
+VPN ausgeführt werden.
+Der Pi-Agent verweigert Nicht-Loopback-HTTP daher ohne die explizite
+Konfiguration `allow_insecure_http = true`. Diese Option bestätigt nur das
+bewusst akzeptierte Risiko; sie macht HTTP nicht sicher.
+Für einen dauerhaften Betrieb ist deshalb auch im WLAN HTTPS oder ein privates
+Tailscale-/WireGuard-Netz vorzuziehen. Hinter einem HTTPS-Reverse-Proxy muss
+`TAKT_REGISTRY_SECURE_COOKIES=true` gesetzt werden. Für eine private CA kann im
+Pi-`agent.toml` `ca_bundle = "/pfad/ca.pem"` gesetzt werden; `verify_tls = false`
+ist nur für eine kurzzeitige Diagnose gedacht.
 
 Die Registry installiert derzeit TAKT-Anwendungsversionen. Vollständige,
 ausfallsichere Raspberry-Pi-OS-Abbilder mit A/B-Rollback sind ein eigener

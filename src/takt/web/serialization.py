@@ -84,10 +84,7 @@ def serialize_history(
     return {
         "today": [serialize_run(run) for run in today],
         "today_count": len(today),
-        "best": [
-            {**serialize_run(run), "rank": rank}
-            for rank, run in enumerate(best, start=1)
-        ],
+        "best": [{**serialize_run(run), "rank": rank} for rank, run in enumerate(best, start=1)],
         "chart": [serialize_run(run) for run in chart],
         "all": [serialize_run(run) for run in all_runs],
         "chart_days": chart_days,

@@ -109,9 +109,7 @@ class AudioService:
         self._find = command_finder
         self._scan_process_runner = scan_process_runner or self._default_scan_process
         self._sleep = sleep
-        self._sound_path = (
-            Path(__file__).resolve().parent.parent / "assets" / "start_signal.wav"
-        )
+        self._sound_path = Path(__file__).resolve().parent.parent / "assets" / "start_signal.wav"
         self.clip_duration_milliseconds = self._read_clip_duration_milliseconds()
         self.settings = self._load_settings(
             AudioSettings(
@@ -209,9 +207,7 @@ class AudioService:
         async with self._lock:
             await self._cancel_discovery()
             await self._runner(("bluetoothctl", "disconnect", address), 8)
-            remove_code, remove_output = await self._runner(
-                ("bluetoothctl", "remove", address), 8
-            )
+            remove_code, remove_output = await self._runner(("bluetoothctl", "remove", address), 8)
             if remove_code:
                 LOGGER.warning(
                     "bluetooth_remove_failed address=%s output=%s",
@@ -268,9 +264,7 @@ class AudioService:
             await self._runner(("rfkill", "unblock", "bluetooth"), 5)
         code, output = await self._runner(("bluetoothctl", "show"), 5)
         if code:
-            LOGGER.warning(
-                "bluetooth_adapter_missing output=%s", self._single_line_output(output)
-            )
+            LOGGER.warning("bluetooth_adapter_missing output=%s", self._single_line_output(output))
             raise RuntimeError(
                 "Bluetooth-Adapter ist nicht verfügbar. Bitte Bluetooth-Hardware und "
                 "Raspberry Pi prüfen."
@@ -418,9 +412,7 @@ class AudioService:
                     if not recovered and self._is_auth_failure(pair_output):
                         recovered = True
                         await self._recover_pairing(address)
-                        info_code, info = await self._runner(
-                            ("bluetoothctl", "info", address), 5
-                        )
+                        info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
                         continue
                     self._raise_translated(
                         pair_output,
@@ -443,9 +435,7 @@ class AudioService:
                     if not recovered and self._is_auth_failure(connect_output):
                         recovered = True
                         await self._recover_pairing(address)
-                        info_code, info = await self._runner(
-                            ("bluetoothctl", "info", address), 5
-                        )
+                        info_code, info = await self._runner(("bluetoothctl", "info", address), 5)
                         continue
                     self._raise_translated(
                         connect_output,
@@ -652,8 +642,7 @@ class AudioService:
                 delay_milliseconds = int(raw["delay_milliseconds"])
             else:
                 delay_milliseconds = round(
-                    float(raw.get("delay_seconds", defaults.delay_milliseconds / 1000))
-                    * 1000
+                    float(raw.get("delay_seconds", defaults.delay_milliseconds / 1000)) * 1000
                 )
             return AudioSettings(
                 enabled=bool(raw.get("enabled", defaults.enabled)),
@@ -695,9 +684,7 @@ class AudioService:
         address: str,
         event: str,
     ) -> None:
-        LOGGER.warning(
-            "%s address=%s output=%s", event, address, self._single_line_output(output)
-        )
+        LOGGER.warning("%s address=%s output=%s", event, address, self._single_line_output(output))
         raise RuntimeError(self._translate_error(output, context=context))
 
     def _translate_error(self, output: str, *, context: str) -> str:

@@ -49,9 +49,8 @@ class ClickableFrame(QFrame):
     clicked = Signal()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if (
-            event.button() == Qt.MouseButton.LeftButton
-            and self.rect().contains(event.position().toPoint())
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
+            event.position().toPoint()
         ):
             self.clicked.emit()
             event.accept()
@@ -400,14 +399,10 @@ class MainWindow(QMainWindow):
         adjust_row.addWidget(adjust_label, 0, 0, 1, 4)
         self.subtract_ten_button = QPushButton("−10 s")
         self.subtract_ten_button.setObjectName("subtract")
-        self.subtract_ten_button.clicked.connect(
-            lambda: self.controller.subtract_time(10_000)
-        )
+        self.subtract_ten_button.clicked.connect(lambda: self.controller.subtract_time(10_000))
         self.subtract_five_button = QPushButton("−5 s")
         self.subtract_five_button.setObjectName("subtract")
-        self.subtract_five_button.clicked.connect(
-            lambda: self.controller.subtract_time(5_000)
-        )
+        self.subtract_five_button.clicked.connect(lambda: self.controller.subtract_time(5_000))
         add_five = QPushButton("+5 s")
         add_five.setObjectName("adjust")
         add_five.clicked.connect(lambda: self.controller.add_time(5_000))
@@ -494,9 +489,7 @@ class MainWindow(QMainWindow):
             button.setToolTip(f"Diagrammzeitraum: {label} Tage" if days else "Alle Läufe")
             button.setChecked(days == self._chart_days)
             button.clicked.connect(
-                lambda checked=False, selected_days=days: self._set_chart_period(
-                    selected_days
-                )
+                lambda checked=False, selected_days=days: self._set_chart_period(selected_days)
             )
             self.period_group.addButton(button)
             period_switch.addWidget(button)
@@ -645,9 +638,7 @@ class MainWindow(QMainWindow):
     def _update_clock(self) -> None:
         now = self.controller.clock.now().astimezone()
         days = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
-        self.date_label.setText(
-            f"{days[now.weekday()]}, {now:%d.%m.%Y}   ·   {now:%H:%M:%S}"
-        )
+        self.date_label.setText(f"{days[now.weekday()]}, {now:%d.%m.%Y}   ·   {now:%H:%M:%S}")
 
     def _fill_today_table(self, runs: list[Run]) -> None:
         rows = [
@@ -691,9 +682,7 @@ class MainWindow(QMainWindow):
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.horizontalHeader().setStretchLastSection(True)
-        table.horizontalHeader().setSectionResizeMode(
-            table.horizontalHeader().ResizeMode.Stretch
-        )
+        table.horizontalHeader().setSectionResizeMode(table.horizontalHeader().ResizeMode.Stretch)
         table.verticalHeader().setVisible(False)
         table.setShowGrid(False)
         table.setAlternatingRowColors(True)

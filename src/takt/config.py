@@ -41,9 +41,7 @@ class AudioConfig:
     enabled: bool = False
     output: str = "off"
     delay_milliseconds: int = 3_000
-    settings_path: Path = field(
-        default_factory=lambda: _expanded("~/.config/takt/audio.json")
-    )
+    settings_path: Path = field(default_factory=lambda: _expanded("~/.config/takt/audio.json"))
 
 
 @dataclass(slots=True)
@@ -54,13 +52,9 @@ class DisplayConfig:
 
 @dataclass(slots=True)
 class StorageConfig:
-    database_path: Path = field(
-        default_factory=lambda: _expanded("~/.local/share/takt/takt.db")
-    )
+    database_path: Path = field(default_factory=lambda: _expanded("~/.local/share/takt/takt.db"))
     backup_enabled: bool = True
-    backup_directory: Path = field(
-        default_factory=lambda: _expanded("~/.local/share/takt/backups")
-    )
+    backup_directory: Path = field(default_factory=lambda: _expanded("~/.local/share/takt/backups"))
     backup_retention_days: int = 30
 
 
@@ -123,8 +117,7 @@ def load_config(path: Path | None = None) -> Config:
         delay_milliseconds = int(audio["delay_milliseconds"])
     else:
         delay_milliseconds = round(
-            float(audio.get("delay_seconds", config.audio.delay_milliseconds / 1000))
-            * 1000
+            float(audio.get("delay_seconds", config.audio.delay_milliseconds / 1000)) * 1000
         )
     config.audio.delay_milliseconds = max(delay_milliseconds, 0)
     audio_settings_path = audio.get("settings_path")
@@ -134,9 +127,7 @@ def load_config(path: Path | None = None) -> Config:
     config.display.chart_default_days = int(
         display.get("chart_default_days", config.display.chart_default_days)
     )
-    config.display.best_runs_limit = min(
-        max(int(display.get("best_runs_limit", 5)), 1), 25
-    )
+    config.display.best_runs_limit = min(max(int(display.get("best_runs_limit", 5)), 1), 25)
 
     database_path = storage.get("database_path")
     if database_path:

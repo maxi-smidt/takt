@@ -24,7 +24,8 @@ RUN python -m pip wheel --wheel-dir /wheels ".[server]"
 FROM python:3.12-slim AS registry
 
 LABEL org.opencontainers.image.title="TAKT Fleet Registry" \
-      org.opencontainers.image.description="Self-hosted management and data-mirror service for TAKT Raspberry Pis"
+      org.opencontainers.image.description="Self-hosted management and data-mirror service for TAKT Raspberry Pis" \
+      org.opencontainers.image.source="https://github.com/maxi-smidt/takt"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

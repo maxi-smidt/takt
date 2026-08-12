@@ -11,7 +11,7 @@ from takt.application.timer_controller import TimerController
 from takt.buzzer import NullBuzzer
 from takt.config import Config
 from takt.persistence.run_repository import SQLiteRunRepository
-from takt.web.app import STATIC_ROOT, create_web_app
+from takt.web.app import STATIC_ROOT, _is_loopback_address, create_web_app
 from takt.web.runtime import WebRuntime
 from tests.helpers import FakeClock
 
@@ -25,6 +25,12 @@ class UnavailablePowerService:
 
 
 class WebApplicationTests(unittest.TestCase):
+    def test_maintenance_address_filter_accepts_only_ip_loopback_addresses(self) -> None:
+        self.assertTrue(_is_loopback_address("127.0.0.1"))
+        self.assertTrue(_is_loopback_address("::1"))
+        self.assertFalse(_is_loopback_address("192.168.1.20"))
+        self.assertFalse(_is_loopback_address("localhost"))
+
     def test_health_bootstrap_and_timer_action(self) -> None:
         asyncio.run(self._exercise_application())
 
@@ -57,6 +63,16 @@ class WebApplicationTests(unittest.TestCase):
                 async with ClientSession() as client:
                     async with client.get(f"{base_url}/health") as response:
                         self.assertEqual(response.status, 200)
+                        self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+                        self.assertIn(
+                            "frame-ancestors 'none'",
+                            response.headers["Content-Security-Policy"],
+                        )
+                        self.assertEqual(
+                            response.headers["X-Content-Type-Options"],
+                            "nosniff",
+                        )
+                        self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
                         health = await response.json()
                         self.assertTrue(health["ok"])
                         self.assertEqual(health["version"], "0.1.0")
@@ -87,12 +103,89 @@ class WebApplicationTests(unittest.TestCase):
                         )
 
                     async with client.post(
+                        f"{base_url}/internal/maintenance/acquire",
+                        json={
+                            "request_id": "install-job-1",
+                            "owner": "takt-agent",
+                            "reason": "Install release 0.2.0",
+                            "ttl_seconds": 30,
+                        },
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                        maintenance = await response.json()
+                        lease_token = maintenance["lease_token"]
+                        self.assertTrue(maintenance["maintenance"]["held"])
+
+                    async with client.post(
+                        f"{base_url}/internal/maintenance/acquire",
+                        json={
+                            "request_id": "install-job-1",
+                            "owner": "takt-agent",
+                            "ttl_seconds": 30,
+                        },
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                        replay = await response.json()
+                        self.assertTrue(replay["reused"])
+                        self.assertEqual(replay["lease_token"], lease_token)
+
+                    async with client.post(
+                        f"{base_url}/api/action",
+                        json={"action": "primary"},
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                        action = await response.json()
+                        self.assertFalse(action["ok"])
+                        self.assertEqual(action["state"]["state"], "ready")
+
+                    async with client.post(
+                        f"{base_url}/api/action",
+                        data='{"action":"primary"}',
+                        headers={"Content-Type": "text/plain"},
+                    ) as response:
+                        self.assertEqual(response.status, 415)
+
+                    async with client.post(
+                        f"{base_url}/api/action",
+                        json={"action": "primary"},
+                        headers={"Origin": "https://attacker.example"},
+                    ) as response:
+                        self.assertEqual(response.status, 403)
+
+                    async with client.post(
+                        f"{base_url}/internal/maintenance/release",
+                        json={"lease_token": "incorrect-token"},
+                    ) as response:
+                        self.assertEqual(response.status, 403)
+
+                    async with client.post(
+                        f"{base_url}/internal/maintenance/release",
+                        json={"lease_token": lease_token},
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                        released = await response.json()
+                        self.assertTrue(released["released"])
+                        self.assertFalse(released["maintenance"]["held"])
+
+                    async with client.post(
                         f"{base_url}/api/action",
                         json={"action": "primary"},
                     ) as response:
                         self.assertEqual(response.status, 200)
                         action = await response.json()
                         self.assertEqual(action["state"]["state"], "running")
+
+                    async with client.post(
+                        f"{base_url}/internal/maintenance/acquire",
+                        json={
+                            "request_id": "install-job-while-running",
+                            "owner": "takt-agent",
+                        },
+                    ) as response:
+                        self.assertEqual(response.status, 409)
+                        conflict = await response.json()
+                        self.assertFalse(conflict["acquired"])
+                        self.assertEqual(conflict["maintenance"]["timer_state"], "running")
 
                     async with client.get(base_url) as response:
                         self.assertEqual(response.status, 200)
@@ -101,9 +194,7 @@ class WebApplicationTests(unittest.TestCase):
                         self.assertIn("./assets/", page)
 
                     javascript_asset = next((STATIC_ROOT / "assets").glob("*.js"))
-                    async with client.get(
-                        f"{base_url}/assets/{javascript_asset.name}"
-                    ) as response:
+                    async with client.get(f"{base_url}/assets/{javascript_asset.name}") as response:
                         self.assertEqual(response.status, 200)
                         self.assertIn("javascript", response.content_type)
             finally:
