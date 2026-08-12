@@ -29,6 +29,7 @@ import {
   Zap,
 } from "lucide-react";
 import "./styles.css";
+import { wifiNetworkError } from "./wifiValidation.js";
 
 async function request(url, options = {}, csrf = "") {
   const headers = { ...options.headers };
@@ -365,8 +366,13 @@ function WifiModal({ device, csrf, onClose, onCreated }) {
   const [busy, setBusy] = useState(false);
   const submit = async (event) => {
     event.preventDefault();
-    setBusy(true);
     setError("");
+    const validationError = wifiNetworkError(ssid, password);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setBusy(true);
     try {
       await request(
         `/api/devices/${device.id}/wifi-networks`,
@@ -394,7 +400,6 @@ function WifiModal({ device, csrf, onClose, onCreated }) {
             autoFocus
             value={ssid}
             onChange={(event) => setSsid(event.target.value)}
-            maxLength={32}
             required
           />
         </label>
@@ -404,8 +409,6 @@ function WifiModal({ device, csrf, onClose, onCreated }) {
             autoComplete="new-password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            minLength={8}
-            maxLength={64}
             required
           />
         </label>
