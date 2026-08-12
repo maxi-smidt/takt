@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -100,6 +101,52 @@ class RegistryStorageTests(unittest.TestCase):
                 self.assertEqual(secret_count, 0)
             finally:
                 store.close()
+
+    def test_backup_without_job_secret_key_starts_and_fails_only_affected_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source"
+            restored = root / "restored"
+            device_id = "12345678-1234-1234-1234-123456789abc"
+            store = RegistryStore(source)
+            try:
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token="a" * 64,
+                )
+                store.update_heartbeat(
+                    device_id,
+                    {
+                        "protocol_version": 1,
+                        "capabilities": ["wifi-profile-v1"],
+                        "poll_seconds": 10,
+                    },
+                )
+                job = store.create_wifi_job(device_id, "Timing Hall", "durable-secret")
+                backup = store.backup_database(label="restore-test")
+            finally:
+                store.close()
+
+            restored.mkdir()
+            shutil.copy2(backup, restored / "registry.db")
+            restored_store = RegistryStore(restored)
+            try:
+                self.assertTrue(restored_store.health()["ok"])
+                self.assertIsNone(restored_store.claim_next_job(device_id, "session-a"))
+                failed = restored_store.get_job(job["id"])
+                assert failed is not None
+                self.assertEqual(failed["status"], "failed")
+                self.assertEqual(failed["message"], "Stored Wi-Fi credential is unavailable")
+                secret_count = restored_store.connection.execute(
+                    "SELECT COUNT(*) FROM job_secrets"
+                ).fetchone()[0]
+                self.assertEqual(secret_count, 0)
+            finally:
+                restored_store.close()
 
     def test_missing_duplicate_mirror_blob_is_repaired(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

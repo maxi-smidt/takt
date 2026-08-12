@@ -331,15 +331,21 @@ class ManagementAgentTests(unittest.TestCase):
             config.wifi_helper_path = root / "takt-wifi-helper"
             config.wifi_helper_path.write_text("helper", encoding="utf-8")
             config.wifi_helper_path.chmod(0o755)
-            agent = TaktAgent(config)
             with (
                 patch("takt.management.agent.shutil.which", return_value="/usr/bin/nmcli"),
                 patch("takt.management.agent.subprocess.run") as run,
             ):
                 run.return_value.returncode = 0
+                agent = TaktAgent(config)
                 self.assertTrue(agent._wifi_profile_capable())
+                self.assertTrue(agent._wifi_profile_capable())
+                run.assert_called_once()
+
                 run.return_value.returncode = 3
-                self.assertFalse(agent._wifi_profile_capable())
+                another_agent = TaktAgent(config)
+                self.assertFalse(another_agent._wifi_profile_capable())
+                self.assertFalse(another_agent._wifi_profile_capable())
+                self.assertEqual(run.call_count, 2)
 
     @staticmethod
     def _config(root: Path, database_path: Path) -> AgentConfig:

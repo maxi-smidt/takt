@@ -301,6 +301,7 @@ class TaktAgent:
         self._connection_recoveries = 0
         self._active_job: dict[str, Any] | None = None
         self._recovery_error: str | None = None
+        self._wifi_profile_capability = self._probe_wifi_profile_capability()
 
     async def run(self, *, once: bool = False, enroll_only: bool = False) -> None:
         ssl_option: ssl.SSLContext | bool | None = None
@@ -602,6 +603,9 @@ class TaktAgent:
             raise RuntimeError("Wi-Fi profile helper failed.")
 
     def _wifi_profile_capable(self) -> bool:
+        return self._wifi_profile_capability
+
+    def _probe_wifi_profile_capability(self) -> bool:
         if (
             not self.config.wifi_helper_path.is_file()
             or not os.access(self.config.wifi_helper_path, os.X_OK)

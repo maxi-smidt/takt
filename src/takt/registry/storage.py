@@ -153,14 +153,6 @@ class RegistryStore:
         self._ensure_column("jobs", "lease_expires_at", "TEXT")
         self._ensure_column("jobs", "lease_owner_session", "TEXT")
         self._ensure_column("devices", "revoked_at", "TEXT")
-        if self.connection.execute("SELECT 1 FROM job_secrets LIMIT 1").fetchone():
-            try:
-                self._job_secret_cipher = JobSecretCipher(
-                    self.job_secret_key_path, create=False
-                )
-            except JobSecretError:
-                self.connection.close()
-                raise
         self.connection.execute(
             """
             UPDATE jobs SET status = 'queued', claimed_at = NULL,

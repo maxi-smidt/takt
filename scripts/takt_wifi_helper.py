@@ -83,9 +83,8 @@ def apply_wifi_profile(
         raise WifiHelperError("Managed profile path is unsafe.")
     previous = target.read_bytes() if target.exists() else None
     if previous is not None:
-        expected = {MANAGED_MARKER, f"id={profile_id}\n", f"uuid={profile_uuid}\n"}
         text = previous.decode("utf-8", errors="replace")
-        if not all(marker in text for marker in expected):
+        if f"uuid={profile_uuid}" not in text.splitlines():
             raise WifiHelperError("Managed profile path is occupied.")
 
     _atomic_write(target, content)
@@ -143,7 +142,6 @@ def render_profile(profile_id: str, profile_uuid: str, ssid: str, password: str)
             "\n[wifi]\n",
             "mode=infrastructure\n",
             f"ssid={_keyfile_value(ssid)}\n",
-            "security=wifi-security\n",
             "\n[wifi-security]\n",
             "key-mgmt=wpa-psk\n",
             f"psk={_keyfile_value(password)}\n",

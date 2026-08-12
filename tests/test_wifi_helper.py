@@ -19,8 +19,13 @@ class WifiHelperTests(unittest.TestCase):
                 first = apply_wifi_profile(
                     request, connection_directory=root, nmcli=Path("/usr/bin/nmcli")
                 )
+                rewritten = first.read_text(encoding="utf-8").replace(
+                    "# Managed by TAKT Fleet\n", ""
+                )
+                first.write_text(rewritten, encoding="utf-8")
+                changed = {**request, "password": "replacement-secret"}
                 second = apply_wifi_profile(
-                    request, connection_directory=root, nmcli=Path("/usr/bin/nmcli")
+                    changed, connection_directory=root, nmcli=Path("/usr/bin/nmcli")
                 )
             self.assertEqual(first, second)
             self.assertEqual(list(root.glob("*.nmconnection")), [first])
@@ -28,7 +33,8 @@ class WifiHelperTests(unittest.TestCase):
             content = first.read_text(encoding="utf-8")
             self.assertIn("autoconnect-priority=0\n", content)
             self.assertIn(r"ssid=\s\sHall\\$WiFi", content)
-            self.assertIn(r"psk=pa$$ word\\123", content)
+            self.assertIn("psk=replacement-secret\n", content)
+            self.assertNotIn("\nsecurity=", content)
             self.assertEqual(run.call_count, 2)
             for call in run.call_args_list:
                 self.assertEqual(call.args[0][1:3], ["connection", "load"])
