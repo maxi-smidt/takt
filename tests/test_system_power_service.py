@@ -20,7 +20,7 @@ class SystemPowerServiceTests(unittest.TestCase):
         service = SystemPowerService()
         service.shutdown()
         run_mock.assert_called_once_with(
-            ["sudo", "-n", "systemctl", "poweroff"],
+            ["sudo", "-n", "/usr/sbin/shutdown", "-h", "now"],
             check=True,
             timeout=10,
             capture_output=True,
@@ -42,7 +42,9 @@ class SystemPowerServiceTests(unittest.TestCase):
     @patch("takt.application.system_power_service.platform.system", return_value="Linux")
     @patch(
         "takt.application.system_power_service.subprocess.run",
-        side_effect=subprocess.CalledProcessError(1, ["sudo", "-n", "systemctl", "poweroff"]),
+        side_effect=subprocess.CalledProcessError(
+            1, ["sudo", "-n", "/usr/sbin/shutdown", "-h", "now"]
+        ),
     )
     def test_reports_denied_poweroff_request(
         self,
@@ -57,14 +59,15 @@ class SystemPowerServiceTests(unittest.TestCase):
     @patch.object(SystemPowerService, "_read_model", return_value="Raspberry Pi 3 Model B")
     @patch("takt.application.system_power_service.platform.system", return_value="Linux")
     @patch("takt.application.system_power_service.subprocess.run")
-    def test_falls_back_to_plain_systemctl_when_sudo_is_denied(
+    def test_falls_back_to_systemctl_when_shutdown_is_denied(
         self,
         run_mock,
         platform_mock,
         model_mock,
     ) -> None:
         run_mock.side_effect = [
-            subprocess.CalledProcessError(1, ["sudo", "-n", "systemctl", "poweroff"]),
+            subprocess.CalledProcessError(1, ["sudo", "-n", "/usr/sbin/shutdown", "-h", "now"]),
+            subprocess.CalledProcessError(1, ["sudo", "-n", "/sbin/shutdown", "-h", "now"]),
             None,
         ]
         service = SystemPowerService()
@@ -72,8 +75,9 @@ class SystemPowerServiceTests(unittest.TestCase):
         self.assertEqual(
             [call.args[0] for call in run_mock.call_args_list],
             [
-                ["sudo", "-n", "systemctl", "poweroff"],
-                ["systemctl", "poweroff"],
+                ["sudo", "-n", "/usr/sbin/shutdown", "-h", "now"],
+                ["sudo", "-n", "/sbin/shutdown", "-h", "now"],
+                ["sudo", "-n", "/usr/bin/systemctl", "poweroff"],
             ],
         )
 
@@ -83,7 +87,7 @@ class SystemPowerServiceTests(unittest.TestCase):
         "takt.application.system_power_service.subprocess.run",
         side_effect=subprocess.CalledProcessError(
             1,
-            ["sudo", "-n", "systemctl", "poweroff"],
+            ["sudo", "-n", "/usr/sbin/shutdown", "-h", "now"],
             output="",
             stderr="sudo: a password is required\n",
         ),

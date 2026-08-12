@@ -30,13 +30,14 @@ class SystemPowerService:
     def shutdown(self) -> None:
         if not self.available:
             raise RuntimeError("Herunterfahren ist nur auf einem Raspberry Pi verfügbar.")
-        # The installer sets up a passwordless sudo rule for exactly this
-        # command, which is what actually works when takt.service runs
-        # without a logind session (polkit would otherwise demand interactive
-        # authentication for a plain, unprivileged `systemctl poweroff`).
+        # Raspberry Pi OS' shutdown helper reliably reaches halt on older Pi
+        # models as well. The installer grants passwordless sudo for these
+        # exact commands because the web service has no interactive session.
         commands = (
-            ["sudo", "-n", "systemctl", "poweroff"],
-            ["systemctl", "poweroff"],
+            ["sudo", "-n", "/usr/sbin/shutdown", "-h", "now"],
+            ["sudo", "-n", "/sbin/shutdown", "-h", "now"],
+            ["sudo", "-n", "/usr/bin/systemctl", "poweroff"],
+            ["sudo", "-n", "/bin/systemctl", "poweroff"],
         )
         last_error: subprocess.CalledProcessError | None = None
         last_diagnostic = ""
@@ -60,12 +61,8 @@ class SystemPowerService:
                     last_diagnostic,
                 )
                 continue
-            except FileNotFoundError as error:
-                if command[0] == "systemctl":
-                    raise RuntimeError(
-                        "Der Systemdienst zum Herunterfahren wurde nicht gefunden."
-                    ) from error
-                LOGGER.warning("shutdown_command_missing command=%s", command[0])
+            except FileNotFoundError:
+                LOGGER.warning("shutdown_command_missing command=%s", command[2])
                 continue
             except subprocess.TimeoutExpired as error:
                 raise RuntimeError(
@@ -74,7 +71,7 @@ class SystemPowerService:
         if last_error is not None:
             message = (
                 "Raspberry Pi OS hat die Anfrage abgelehnt. "
-                "Bitte die Berechtigung für systemctl poweroff prüfen."
+                "Bitte die sudo-Berechtigung für shutdown -h now prüfen."
             )
             if last_diagnostic:
                 message = f"{message} ({last_diagnostic})"

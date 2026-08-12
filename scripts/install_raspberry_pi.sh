@@ -375,6 +375,8 @@ sudoers_temp="$(mktemp)"
 {
   # usrmerge symlinks /bin to /usr/bin on current Raspberry Pi OS, but sudo
   # matches the exact path a command is invoked with, so allow both.
+  printf '%s ALL=(root) NOPASSWD: /usr/sbin/shutdown -h now\n' "$install_user"
+  printf '%s ALL=(root) NOPASSWD: /sbin/shutdown -h now\n' "$install_user"
   printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n' "$install_user"
   printf '%s ALL=(root) NOPASSWD: /bin/systemctl poweroff\n' "$install_user"
   printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart %s\n' \
@@ -447,8 +449,8 @@ fi
 
 # Non-destructive check: confirm the passwordless sudo rule for the shutdown
 # button actually applies, without ever powering the device off here.
-if ! sudo -n -l 2>/dev/null | grep -q "systemctl poweroff"; then
-  printf '\nWARNUNG: Die sudo-Berechtigung für "systemctl poweroff" konnte für ' >&2
+if ! sudo -n -l 2>/dev/null | grep -q "shutdown -h now"; then
+  printf '\nWARNUNG: Die sudo-Berechtigung für "shutdown -h now" konnte für ' >&2
   printf 'Benutzer %s nicht bestätigt werden. Der Button "Herunterfahren" in der ' "$install_user" >&2
   printf 'Weboberfläche könnte fehlschlagen.\n' >&2
 fi
