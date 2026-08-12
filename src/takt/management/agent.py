@@ -345,7 +345,10 @@ class TaktAgent:
                         delay,
                         error,
                     )
-                    await asyncio.sleep(delay)
+                    if self._recovery_error:
+                        await self._wait_with_recovery_heartbeats(session, delay)
+                    else:
+                        await asyncio.sleep(delay)
                     continue
                 if once:
                     return
@@ -413,13 +416,26 @@ class TaktAgent:
     async def _report_recovery_failure(self, session: ClientSession) -> None:
         status = await self._status(session)
         async with session.post(
-            f"{self.config.registry_url}/agent/heartbeat",
+            f"{self.config.registry_url}/agent/status",
             json=status,
             headers=self._headers(),
             timeout=ClientTimeout(total=25, connect=10, sock_read=15),
         ) as response:
             if response.status != 200:
                 raise RuntimeError(f"Recovery failure heartbeat failed: {await response.text()}")
+
+    async def _wait_with_recovery_heartbeats(self, session: ClientSession, delay: float) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + delay
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(self.config.poll_seconds, remaining))
+            if loop.time() >= deadline:
+                return
+            with contextlib.suppress(Exception):
+                await self._report_recovery_failure(session)
 
     async def _status(self, session: ClientSession) -> dict[str, Any]:
         health: dict[str, Any] = {"ok": False, "state": "unreachable"}

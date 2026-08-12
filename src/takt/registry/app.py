@@ -108,6 +108,7 @@ def create_registry_app(
     app.router.add_get("/api/devices/{device_id}/mirror", download_mirror)
     app.router.add_post("/agent/enroll", agent_enroll)
     app.router.add_post("/agent/heartbeat", agent_heartbeat)
+    app.router.add_post("/agent/status", agent_status)
     app.router.add_post("/agent/jobs/{job_id}", agent_job_update)
     app.router.add_get("/agent/jobs/{job_id}/artifact", agent_artifact)
     app.router.add_post("/agent/mirror", agent_mirror)
@@ -351,6 +352,19 @@ async def agent_heartbeat(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "job": job,
+            "protocol_version": PROTOCOL_VERSION,
+            "server_time": utc_iso(),
+        }
+    )
+
+
+async def agent_status(request: web.Request) -> web.Response:
+    """Record telemetry without leasing work to an agent that cannot execute it."""
+    device_id = _device(request)
+    body = _heartbeat_payload(await _json(request, max_bytes=JSON_LIMIT))
+    request.app[STORE_KEY].update_heartbeat(device_id, body)
+    return web.json_response(
+        {
             "protocol_version": PROTOCOL_VERSION,
             "server_time": utc_iso(),
         }

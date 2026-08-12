@@ -131,6 +131,33 @@ class RegistryApplicationTests(unittest.TestCase):
                         job = (await response.json())["job"]
 
                     async with client.post(
+                        f"{base_url}/agent/status",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "protocol_version": 1,
+                            "agent_session_id": "session-a",
+                            "poll_seconds": 10,
+                            "update_recovery": {
+                                "stuck": True,
+                                "phase": "activated",
+                                "error": "manual repair is required",
+                            },
+                        },
+                        headers=agent_headers,
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertNotIn("job", await response.json())
+                    unclaimed = store.get_job(job["id"])
+                    assert unclaimed is not None
+                    self.assertEqual(unclaimed["status"], "queued")
+                    self.assertEqual(unclaimed["attempt"], 0)
+                    self.assertEqual(
+                        store.get_device(device_id)["status"]["update_recovery"]["phase"],
+                        "activated",
+                    )
+
+                    async with client.post(
                         f"{base_url}/agent/heartbeat",
                         json={
                             "name": "Lane 1",

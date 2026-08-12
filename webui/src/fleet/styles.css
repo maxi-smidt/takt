@@ -72,6 +72,7 @@ input:focus, select:focus { border-color: var(--green); }
 .device-card { border: 1px solid var(--line); background: linear-gradient(160deg, #121d1b, #0d1615); position: relative; overflow: hidden; }
 .device-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--red); }
 .device-card.is-online::before { background: var(--green); }
+.device-card.has-recovery::before { background: var(--amber); }
 .device-card > header { display: flex; gap: 14px; align-items: center; padding: 20px 22px; border-bottom: 1px solid var(--line); }
 .device-icon { width: 39px; height: 39px; display: grid; place-items: center; background: #1c2b28; border: 1px solid #30423e; }
 .device-title { min-width: 0; }
@@ -100,6 +101,11 @@ input:focus, select:focus { border-color: var(--green); }
 .connection-row small { display: block; margin-top: 3px; color: var(--muted); letter-spacing: 0; }
 .connection-row strong { margin-left: auto; font-size: 8px; letter-spacing: .1em; }
 .connection-row.connection-warning { color: var(--amber); background: #211b10; }
+.recovery-row { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid #66502a; color: var(--amber); background: #2a2112; }
+.recovery-row svg { flex: none; }
+.recovery-row span { min-width: 0; color: #f6d38d; font-size: 9px; letter-spacing: .09em; }
+.recovery-row small { display: block; margin-top: 4px; color: #d5b878; overflow-wrap: anywhere; letter-spacing: 0; line-height: 1.45; }
+.recovery-row strong { flex: none; margin-left: auto; font-size: 8px; letter-spacing: .1em; }
 .update-control { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 17px 20px; }
 .update-control label { color: var(--muted); font-size: 8px; letter-spacing: .1em; }
 .update-control select { display: block; margin-top: 7px; padding: 9px 10px; font-size: 10px; }

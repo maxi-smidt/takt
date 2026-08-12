@@ -202,6 +202,48 @@ class ManagementAgentTests(unittest.TestCase):
                 {"stuck": True, "error": "manual repair is required", "phase": "activated"},
             )
 
+    def test_recovery_reporting_uses_status_only_endpoint(self) -> None:
+        class Response:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def text(self) -> str:
+                return "ok"
+
+        class Session:
+            def __init__(self) -> None:
+                self.url = ""
+
+            def get(self, *_args, **_kwargs):
+                raise OSError("TAKT is unavailable")
+
+            def post(self, url, *_args, **_kwargs):
+                self.url = url
+                return Response()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            agent._recovery_error = "manual repair is required"
+            session = Session()
+            asyncio.run(agent._report_recovery_failure(session))  # type: ignore[arg-type]
+            self.assertEqual(session.url, "http://registry.test/agent/status")
+
+    def test_recovery_backoff_keeps_status_heartbeats_flowing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = self._config(root, root / "takt.db")
+            config.poll_seconds = 0.02
+            agent = TaktAgent(config)
+            with patch.object(agent, "_report_recovery_failure", AsyncMock()) as report:
+                asyncio.run(agent._wait_with_recovery_heartbeats(object(), 0.12))  # type: ignore[arg-type]
+            self.assertGreaterEqual(report.await_count, 2)
+
     def test_service_restart_keeps_persistent_maintenance_until_healthy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

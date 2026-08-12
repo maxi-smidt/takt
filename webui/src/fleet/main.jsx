@@ -20,6 +20,7 @@ import {
   RefreshCw,
   RotateCcw,
   Server,
+  TriangleAlert,
   Terminal,
   Upload,
   Wifi,
@@ -362,6 +363,7 @@ function DeviceCard({ device, releases, onJob, onRevoke }) {
   const effectiveReleaseId = releaseId || releases[0]?.id || "";
   const status = device.status || {};
   const health = status.health || {};
+  const updateRecovery = status.update_recovery?.stuck ? status.update_recovery : null;
   const diskFree = status.disk_free_bytes;
   const protocolVersion = status.protocol_version;
   const protocolOk = protocolVersion === 1;
@@ -374,11 +376,11 @@ function DeviceCard({ device, releases, onJob, onRevoke }) {
     status.registry_transport === "insecure-http-opt-in" ? "HTTP opt-in" : status.registry_transport,
   ].filter(Boolean);
   return (
-    <article className={`device-card ${device.online ? "is-online" : "is-offline"} ${device.revoked_at ? "is-revoked" : ""}`}>
+    <article className={`device-card ${device.online ? "is-online" : "is-offline"} ${updateRecovery ? "has-recovery" : ""} ${device.revoked_at ? "is-revoked" : ""}`}>
       <header>
         <div className="device-icon"><Server size={19} /></div>
         <div className="device-title">
-          <div><span className="status-dot" />{device.revoked_at ? "REVOKED" : device.online ? "ONLINE" : "OFFLINE"}</div>
+          <div><span className="status-dot" />{device.revoked_at ? "REVOKED" : updateRecovery ? "REPAIR REQUIRED" : device.online ? "ONLINE" : "OFFLINE"}</div>
           <h3>{device.name}</h3>
           <small>{device.hostname}</small>
         </div>
@@ -395,6 +397,16 @@ function DeviceCard({ device, releases, onJob, onRevoke }) {
         <span>AGENT LINK<small>{connectionParts.join(" · ")}</small></span>
         <strong>{protocolOk ? "COMPATIBLE" : protocolLegacy ? "UPDATE VIA SSH" : "WAITING FOR HEARTBEAT"}</strong>
       </div>
+      {updateRecovery && (
+        <div className="recovery-row" role="alert">
+          <TriangleAlert size={16} />
+          <span>
+            UPDATE RECOVERY BLOCKED
+            <small>{updateRecovery.phase || "unknown"} · {updateRecovery.error || "Manual repair is required."}</small>
+          </span>
+          <strong>MANUAL REPAIR</strong>
+        </div>
+      )}
       <div className="mirror-row">
         <div>
           <Database size={15} />
@@ -412,14 +424,14 @@ function DeviceCard({ device, releases, onJob, onRevoke }) {
           </select>
         </label>
         <button
-          disabled={!device.online || protocolLegacy || !effectiveReleaseId || device.revoked_at}
+          disabled={!device.online || protocolLegacy || !effectiveReleaseId || updateRecovery || device.revoked_at}
           title={protocolLegacy ? "Update the Pi agent once via SSH before remote installs" : ""}
           onClick={() => onJob(device, "install_release", { release_id: effectiveReleaseId })}
         ><CloudDownload size={16} /> INSTALL</button>
       </div>
       <footer>
-        <button disabled={!device.online || device.revoked_at} onClick={() => onJob(device, "mirror_now")}><Database size={14} /> MIRROR NOW</button>
-        <button disabled={!device.online || protocolLegacy || device.revoked_at} onClick={() => onJob(device, "restart_takt")}><RotateCcw size={14} /> RESTART</button>
+        <button disabled={!device.online || updateRecovery || device.revoked_at} onClick={() => onJob(device, "mirror_now")}><Database size={14} /> MIRROR NOW</button>
+        <button disabled={!device.online || protocolLegacy || updateRecovery || device.revoked_at} onClick={() => onJob(device, "restart_takt")}><RotateCcw size={14} /> RESTART</button>
         <button className="danger-action" disabled={device.revoked_at} onClick={() => onRevoke(device)}><Ban size={14} /> REVOKE</button>
       </footer>
     </article>

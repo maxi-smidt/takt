@@ -82,6 +82,7 @@ class WebRuntime:
         self.show_mock_button = show_mock_button
         self.show_mock_buzzer = show_mock_buzzer
         self.maintenance_marker = maintenance_marker
+        self._maintenance_marker_error_logged = False
         self.history_revision = 0
         self.signal_revision = 0
         self.last_signal: str | None = None
@@ -531,9 +532,11 @@ class WebRuntime:
     def _persistent_maintenance_active(self) -> bool:
         marker = self.maintenance_marker
         if marker is None or not marker.is_file():
+            self._maintenance_marker_error_logged = False
             return False
         try:
             payload = json.loads(marker.read_text(encoding="utf-8"))
+            self._maintenance_marker_error_logged = False
             if float(payload.get("expires_at", 0)) <= time.time():
                 marker.unlink(missing_ok=True)
                 LOGGER.warning("persistent_maintenance_expired marker=%s", marker)
@@ -541,24 +544,41 @@ class WebRuntime:
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             try:
                 age = max(0.0, time.time() - marker.stat().st_mtime)
-            except OSError:
+            except OSError as error:
+                if not self._maintenance_marker_error_logged:
+                    LOGGER.error(
+                        "persistent_maintenance_marker_unreadable marker=%s error=%s",
+                        marker,
+                        error,
+                    )
+                    self._maintenance_marker_error_logged = True
                 return True
             if age > 30 * 60:
                 try:
                     marker.unlink(missing_ok=True)
-                except OSError:
+                except OSError as error:
+                    if not self._maintenance_marker_error_logged:
+                        LOGGER.error(
+                            "persistent_maintenance_marker_cleanup_failed marker=%s error=%s",
+                            marker,
+                            error,
+                        )
+                        self._maintenance_marker_error_logged = True
                     return True
+                self._maintenance_marker_error_logged = False
                 LOGGER.error(
                     "persistent_maintenance_invalid_marker_expired marker=%s age_seconds=%.0f",
                     marker,
                     age,
                 )
                 return False
-            LOGGER.error(
-                "persistent_maintenance_invalid_marker marker=%s age_seconds=%.0f",
-                marker,
-                age,
-            )
+            if not self._maintenance_marker_error_logged:
+                LOGGER.error(
+                    "persistent_maintenance_invalid_marker marker=%s age_seconds=%.0f",
+                    marker,
+                    age,
+                )
+                self._maintenance_marker_error_logged = True
             return True
         return True
 

@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from takt.application.timer_controller import TimerController
 from takt.config import Config
@@ -213,6 +213,18 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertFalse(self.runtime.maintenance_status()["held"])
         self.assertFalse(marker.exists())
         self.assertTrue(self.runtime.primary_press("gpio-taster"))
+
+    def test_unreadable_maintenance_marker_logs_once_and_fails_closed(self) -> None:
+        marker = MagicMock()
+        marker.is_file.return_value = True
+        marker.read_text.side_effect = PermissionError("not readable")
+        marker.stat.side_effect = PermissionError("not statable")
+        self.runtime.maintenance_marker = marker
+        with self.assertLogs("takt.web.runtime", level="ERROR") as logs:
+            self.assertTrue(self.runtime.maintenance_status()["held"])
+            self.assertTrue(self.runtime.maintenance_status()["held"])
+        messages = [message for message in logs.output if "marker_unreadable" in message]
+        self.assertEqual(len(messages), 1)
 
     def test_audio_signal_delays_timer_start(self) -> None:
         asyncio.run(self._exercise_delayed_start())
