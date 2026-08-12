@@ -14,6 +14,7 @@ if [[ "$EUID" -eq 0 ]]; then
       TAKT_HOSTNAME="${TAKT_HOSTNAME:-}" \
       TAKT_PORT="${TAKT_PORT:-}" \
       TAKT_REGISTRY_URL="${TAKT_REGISTRY_URL:-}" \
+      TAKT_REGISTRY_ALLOW_INSECURE_HTTP="${TAKT_REGISTRY_ALLOW_INSECURE_HTTP:-}" \
       TAKT_ENROLLMENT_CODE="${TAKT_ENROLLMENT_CODE:-}" \
       TAKT_DEVICE_NAME="${TAKT_DEVICE_NAME:-}" \
       bash "$script_path" "$@"
@@ -38,6 +39,7 @@ hostname_target="${TAKT_HOSTNAME:-takt}"
 port="${TAKT_PORT:-80}"
 health_url="http://127.0.0.1:$port/health"
 registry_url="${TAKT_REGISTRY_URL:-}"
+allow_insecure_http="${TAKT_REGISTRY_ALLOW_INSECURE_HTTP:-false}"
 enrollment_code="${TAKT_ENROLLMENT_CODE:-}"
 device_name="${TAKT_DEVICE_NAME:-$hostname_target}"
 
@@ -128,6 +130,7 @@ printf 'TAKT_RELEASE_VERSION=%s\n' "$installed_version" >"$release_environment"
 
 agent_config="$config_dir/agent.toml"
 agent_root="$install_home/.local/share/takt-agent"
+agent_needs_enrollment=false
 if [[ -n "$registry_url" || -f "$agent_config" ]]; then
   say "TAKT-Registry-Agent einrichten"
   mkdir -p "$agent_root"
@@ -145,6 +148,8 @@ if [[ -n "$registry_url" || -f "$agent_config" ]]; then
       || fail "TAKT_ENROLLMENT_CODE fehlt für die erstmalige Agent-Einrichtung."
     [[ "$registry_url" =~ ^https?://[A-Za-z0-9._:/-]+$ ]] \
       || fail "TAKT_REGISTRY_URL enthält nicht unterstützte Zeichen."
+    [[ "$allow_insecure_http" == "true" || "$allow_insecure_http" == "false" ]] \
+      || fail "TAKT_REGISTRY_ALLOW_INSECURE_HTTP muss true oder false sein."
     [[ "$enrollment_code" =~ ^[A-Za-z0-9_-]+$ ]] \
       || fail "TAKT_ENROLLMENT_CODE enthält nicht unterstützte Zeichen."
     [[ "$device_name" =~ ^[A-Za-z0-9ÄÖÜäöüß._[:space:]-]+$ ]] \
@@ -156,11 +161,18 @@ if [[ -n "$registry_url" || -f "$agent_config" ]]; then
         "enrollment_code = \"$enrollment_code\"" \
         "device_name = \"$device_name\"" \
         "verify_tls = true" \
+        "allow_insecure_http = $allow_insecure_http" \
         "poll_seconds = 10" \
         "mirror_seconds = 60" \
         "health_url = \"$health_url\""
     } >"$agent_config"
     chmod 0600 "$agent_config"
+    agent_needs_enrollment=true
+  fi
+  if [[ "$agent_needs_enrollment" == true ]]; then
+    say "Raspberry Pi sofort bei der TAKT-Registry anmelden"
+    "$agent_root/venv/bin/takt-agent" --config "$agent_config" --enroll-only \
+      || fail "Die Anmeldung bei der Registry ist fehlgeschlagen. URL, WLAN und Code prüfen."
   fi
 fi
 

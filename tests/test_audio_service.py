@@ -274,9 +274,7 @@ class AudioServiceTests(unittest.TestCase):
             ("bluetoothctl", "--timeout", "15", "scan", "bredr"),
             self.runner.commands,
         )
-        self.assertFalse(
-            any(device["name"] == "10-20-30-40-50-60" for device in devices)
-        )
+        self.assertFalse(any(device["name"] == "10-20-30-40-50-60" for device in devices))
         self.assertFalse(self.service.payload()["scanning"])
 
         await self.service.connect_bluetooth("AA:BB:CC:DD:EE:FF")
@@ -376,9 +374,7 @@ class AudioServiceTests(unittest.TestCase):
                 asyncio.run(service.connect_bluetooth("AA:BB:CC:DD:EE:FF"))
 
         self.assertTrue(any("bluetooth_connect_failed" in line for line in captured.output))
-        self.assertTrue(
-            any("br-connection-page-timeout" in line for line in captured.output)
-        )
+        self.assertTrue(any("br-connection-page-timeout" in line for line in captured.output))
 
     def test_auth_failure_on_connect_triggers_remove_and_repair_recovery(self) -> None:
         runner = ScriptedRunner(
@@ -500,9 +496,7 @@ class AudioServiceTests(unittest.TestCase):
         )
 
     def test_error_translation_for_page_timeout(self) -> None:
-        message = self.service._translate_error(
-            "br-connection-page-timeout", context="connect"
-        )
+        message = self.service._translate_error("br-connection-page-timeout", context="connect")
         self.assertIn("Reichweite", message)
         self.assertIn("br-connection-page-timeout", message)
 

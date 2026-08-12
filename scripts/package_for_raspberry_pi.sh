@@ -54,12 +54,16 @@ say "Sauberes Raspberry-Pi-Paket erstellen"
   COPYFILE_DISABLE=1 tar \
     --exclude="$project_name/.git" \
     --exclude="$project_name/.venv" \
+    --exclude="$project_name/.env" \
+    --exclude="$project_name/.env.*" \
     --exclude="$project_name/dist" \
     --exclude="$project_name/build" \
     --exclude="$project_name/.pytest_cache" \
     --exclude="$project_name/.ruff_cache" \
     --exclude="$project_name/.mypy_cache" \
     --exclude="$project_name/.idea" \
+    --exclude="$project_name/.registry-preview" \
+    --exclude="$project_name/registry-data" \
     --exclude="$project_name/artifacts" \
     --exclude="$project_name/identifier.sqlite" \
     --exclude="$project_name/webui/node_modules" \
@@ -67,6 +71,11 @@ say "Sauberes Raspberry-Pi-Paket erstellen"
     --exclude="*.pyc" \
     --exclude="*.pyo" \
     --exclude="*.egg-info" \
+    --exclude="*.db" \
+    --exclude="*.sqlite" \
+    --exclude="*.sqlite3" \
+    --exclude="*.pem" \
+    --exclude="*.key" \
     --exclude=".DS_Store" \
     -czf "$temporary_archive" \
     "$project_name"

@@ -13,9 +13,7 @@ from takt.persistence.run_repository import SQLiteRunRepository
 class RunRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
-        self.repository = SQLiteRunRepository(
-            Path(self.temporary_directory.name) / "runs.db"
-        )
+        self.repository = SQLiteRunRepository(Path(self.temporary_directory.name) / "runs.db")
         self.base = datetime(2026, 8, 5, 9, 0, tzinfo=UTC)
 
     def tearDown(self) -> None:

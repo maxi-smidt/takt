@@ -1,21 +1,33 @@
 services:
   registry:
-    image: takt-registry:local
-    build:
-      context: .
-      target: registry
+    image: "${TAKT_REGISTRY_IMAGE:-ghcr.io/maxi-smidt/takt-registry:latest}"
+    pull_policy: "${TAKT_REGISTRY_PULL_POLICY:-always}"
     container_name: takt-registry
+    user: "10001:10001"
     restart: unless-stopped
     init: true
     ports:
-      - "${TAKT_REGISTRY_PORT:-8090}:8090"
+      - "${TAKT_REGISTRY_BIND_ADDRESS:-0.0.0.0}:${TAKT_REGISTRY_PORT:-8090}:8090"
     environment:
       TAKT_REGISTRY_ADMIN_PASSWORD: "${TAKT_REGISTRY_ADMIN_PASSWORD:?Set TAKT_REGISTRY_ADMIN_PASSWORD in .env}"
+      TAKT_REGISTRY_SECURE_COOKIES: "${TAKT_REGISTRY_SECURE_COOKIES:-false}"
     volumes:
-      - "${TAKT_REGISTRY_DATA_PATH:-./registry-data}:/data"
+      - type: bind
+        source: "${TAKT_REGISTRY_DATA_PATH:-./registry-data}"
+        target: /data
+        bind:
+          create_host_path: false
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
     security_opt:
       - no-new-privileges:true
-    stop_grace_period: 20s
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stop_grace_period: 60s

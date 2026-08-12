@@ -1,26 +1,38 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
 
 from takt import __version__
-from takt.web.runtime import WebRuntime, json_body, parse_chart_days
+from takt.web.runtime import (
+    MaintenanceLeaseMismatch,
+    MaintenanceUnavailable,
+    WebRuntime,
+    json_body,
+    parse_chart_days,
+)
 
 STATIC_ROOT = Path(__file__).with_name("static")
 RUNTIME_KEY = web.AppKey("runtime", WebRuntime)
 
 
 def create_web_app(runtime: WebRuntime) -> web.Application:
-    app = web.Application(client_max_size=128 * 1024)
+    app = web.Application(client_max_size=128 * 1024, middlewares=[same_origin_requests])
     app[RUNTIME_KEY] = runtime
+    app.on_response_prepare.append(_set_security_headers)
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/api/bootstrap", bootstrap)
     app.router.add_get("/api/history", history)
     app.router.add_get("/api/events", events)
     app.router.add_post("/api/action", action)
+    app.router.add_get("/internal/maintenance", maintenance_status)
+    app.router.add_post("/internal/maintenance/acquire", maintenance_acquire)
+    app.router.add_post("/internal/maintenance/release", maintenance_release)
     app.router.add_post("/api/audio/settings", audio_settings)
     app.router.add_post("/api/audio/scan", audio_scan)
     app.router.add_post("/api/audio/connect", audio_connect)
@@ -33,23 +45,38 @@ def create_web_app(runtime: WebRuntime) -> web.Application:
     return app
 
 
+async def _set_security_headers(
+    request: web.Request,
+    response: web.StreamResponse,
+) -> None:
+    del request
+    response.headers["Content-Security-Policy"] = (
+        "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+    )
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+
+
 async def index(request: web.Request) -> web.FileResponse:
     return web.FileResponse(STATIC_ROOT / "index.html")
 
 
 async def health(request: web.Request) -> web.Response:
     runtime = request.app[RUNTIME_KEY]
+    maintenance = runtime.maintenance_status()
     schema_row = runtime.repository.connection.execute(
         "SELECT version FROM schema_version LIMIT 1"
     ).fetchone()
     return web.json_response(
         {
             "ok": True,
-            "ready": True,
+            "ready": not maintenance["held"],
             "version": os.environ.get("TAKT_RELEASE_VERSION", __version__),
             "database_schema_version": int(schema_row[0]) if schema_row else None,
             "state": runtime.controller.state.value,
             "hardware_available": runtime.hardware_available,
+            "maintenance": maintenance,
         }
     )
 
@@ -79,6 +106,7 @@ async def history(request: web.Request) -> web.Response:
 
 
 async def events(request: web.Request) -> web.WebSocketResponse:
+    _require_same_origin(request)
     runtime = request.app[RUNTIME_KEY]
     socket = web.WebSocketResponse(heartbeat=20, max_msg_size=8 * 1024)
     await socket.prepare(request)
@@ -106,6 +134,61 @@ async def action(request: web.Request) -> web.Response:
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error)) from error
     return web.json_response({"ok": changed, "state": runtime.state_payload()})
+
+
+async def maintenance_status(request: web.Request) -> web.Response:
+    _require_loopback(request)
+    return web.json_response({"maintenance": request.app[RUNTIME_KEY].maintenance_status()})
+
+
+async def maintenance_acquire(request: web.Request) -> web.Response:
+    _require_loopback(request)
+    body = await json_body(request)
+    request_id = body.get("request_id")
+    owner = body.get("owner")
+    reason = body.get("reason", "")
+    ttl_seconds = body.get("ttl_seconds", 30)
+    if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
+        raise web.HTTPBadRequest(text="A request_id of at most 128 characters is required.")
+    if not isinstance(owner, str) or not owner or len(owner) > 80:
+        raise web.HTTPBadRequest(text="An owner of at most 80 characters is required.")
+    if not isinstance(reason, str) or len(reason) > 200:
+        raise web.HTTPBadRequest(text="Maintenance reason may contain at most 200 characters.")
+    if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool):
+        raise web.HTTPBadRequest(text="ttl_seconds must be an integer.")
+    try:
+        result = request.app[RUNTIME_KEY].acquire_maintenance(
+            request_id=request_id,
+            owner=owner,
+            reason=reason,
+            ttl_seconds=ttl_seconds,
+        )
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    except MaintenanceUnavailable as error:
+        return web.json_response(
+            {
+                "acquired": False,
+                "error": str(error),
+                "maintenance": request.app[RUNTIME_KEY].maintenance_status(),
+            },
+            status=409,
+        )
+    return web.json_response(result)
+
+
+async def maintenance_release(request: web.Request) -> web.Response:
+    _require_loopback(request)
+    body = await json_body(request)
+    lease_token = body.get("lease_token")
+    if not isinstance(lease_token, str) or not lease_token or len(lease_token) > 128:
+        raise web.HTTPBadRequest(text="A valid lease_token is required.")
+    runtime = request.app[RUNTIME_KEY]
+    try:
+        released = runtime.release_maintenance(lease_token)
+    except MaintenanceLeaseMismatch as error:
+        raise web.HTTPForbidden(text=str(error)) from error
+    return web.json_response({"released": released, "maintenance": runtime.maintenance_status()})
 
 
 async def audio_settings(request: web.Request) -> web.Response:
@@ -217,3 +300,36 @@ async def confirm(request: web.Request) -> web.Response:
     except RuntimeError as error:
         raise web.HTTPInternalServerError(text=str(error)) from error
     return web.json_response(response)
+
+
+def _require_loopback(request: web.Request) -> None:
+    transport = request.transport
+    peer = transport.get_extra_info("peername") if transport is not None else None
+    address = peer[0] if isinstance(peer, tuple) and peer else None
+    if not isinstance(address, str) or not _is_loopback_address(address):
+        raise web.HTTPForbidden(text="Maintenance control is only available on localhost.")
+
+
+@web.middleware
+async def same_origin_requests(request: web.Request, handler) -> web.StreamResponse:
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.path.startswith("/api/"):
+        _require_same_origin(request)
+    return await handler(request)
+
+
+def _require_same_origin(request: web.Request) -> None:
+    if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+        raise web.HTTPForbidden(text="Cross-site requests are not allowed.")
+    origin = request.headers.get("Origin")
+    if not origin:
+        return
+    parsed = urlsplit(origin)
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != request.host.lower():
+        raise web.HTTPForbidden(text="Cross-origin requests are not allowed.")
+
+
+def _is_loopback_address(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address.partition("%")[0]).is_loopback
+    except ValueError:
+        return False

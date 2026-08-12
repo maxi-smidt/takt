@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from takt.application.timer_controller import TimerController
 from takt.config import Config
 from takt.domain.timer_state import TimerState
 from takt.persistence.run_repository import SQLiteRunRepository
-from takt.web.runtime import WebRuntime
+from takt.web.runtime import MaintenanceLeaseMismatch, MaintenanceUnavailable, WebRuntime
 from tests.helpers import FakeClock
 
 
@@ -135,6 +139,93 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertTrue(self.runtime.primary_press())
         self.assertEqual(self.controller.state, TimerState.RUNNING)
 
+    def test_maintenance_lease_is_idempotent_and_blocks_every_start_source(self) -> None:
+        lease = self.runtime.acquire_maintenance(
+            request_id="install-job-1",
+            owner="takt-agent",
+            reason="Install release 0.2.0",
+            ttl_seconds=30,
+        )
+        replay = self.runtime.acquire_maintenance(
+            request_id="install-job-1",
+            owner="takt-agent",
+            reason="Install release 0.2.0",
+            ttl_seconds=30,
+        )
+
+        self.assertTrue(lease["acquired"])
+        self.assertFalse(lease["reused"])
+        self.assertTrue(replay["reused"])
+        self.assertEqual(replay["lease_token"], lease["lease_token"])
+        self.assertFalse(self.runtime.primary_press("web"))
+        self.assertFalse(self.runtime.primary_press("gpio-taster"))
+        self.assertEqual(self.controller.state, TimerState.READY)
+        self.assertTrue(self.runtime.maintenance_status()["held"])
+
+        with self.assertRaises(MaintenanceUnavailable):
+            self.runtime.acquire_maintenance(
+                request_id="restart-job-2",
+                owner="takt-agent",
+            )
+        with self.assertRaises(MaintenanceLeaseMismatch):
+            self.runtime.release_maintenance("not-the-lease-token")
+
+        self.assertTrue(self.runtime.release_maintenance(str(lease["lease_token"])))
+        self.assertFalse(self.runtime.release_maintenance(str(lease["lease_token"])))
+        self.assertTrue(self.runtime.primary_press("gpio-taster"))
+        self.assertEqual(self.controller.state, TimerState.RUNNING)
+        with self.assertRaises(MaintenanceUnavailable):
+            self.runtime.acquire_maintenance(
+                request_id="install-job-3",
+                owner="takt-agent",
+            )
+
+    def test_expired_maintenance_lease_fails_open_for_local_timing(self) -> None:
+        with patch("takt.web.runtime.time.monotonic", return_value=100.0):
+            self.runtime.acquire_maintenance(
+                request_id="abandoned-install",
+                owner="takt-agent",
+                ttl_seconds=5,
+            )
+            self.assertFalse(self.runtime.primary_press())
+
+        with patch("takt.web.runtime.time.monotonic", return_value=105.1):
+            self.assertFalse(self.runtime.maintenance_status()["held"])
+            self.assertTrue(self.runtime.primary_press())
+            self.assertEqual(self.controller.state, TimerState.RUNNING)
+
+    def test_persistent_maintenance_marker_survives_server_restart(self) -> None:
+        marker = Path(self.temporary_directory.name) / "maintenance.json"
+        marker.write_text(json.dumps({"expires_at": time.time() + 60}), encoding="utf-8")
+        self.runtime.maintenance_marker = marker
+        self.assertTrue(self.runtime.maintenance_status()["held"])
+        self.assertFalse(self.runtime.primary_press("gpio-taster"))
+        marker.unlink()
+        self.assertFalse(self.runtime.maintenance_status()["held"])
+        self.assertTrue(self.runtime.primary_press("gpio-taster"))
+
+    def test_corrupt_old_maintenance_marker_is_recoverable(self) -> None:
+        marker = Path(self.temporary_directory.name) / "maintenance.json"
+        marker.write_text("{truncated", encoding="utf-8")
+        old = time.time() - 31 * 60
+        os.utime(marker, (old, old))
+        self.runtime.maintenance_marker = marker
+        self.assertFalse(self.runtime.maintenance_status()["held"])
+        self.assertFalse(marker.exists())
+        self.assertTrue(self.runtime.primary_press("gpio-taster"))
+
+    def test_unreadable_maintenance_marker_logs_once_and_fails_closed(self) -> None:
+        marker = MagicMock()
+        marker.is_file.return_value = True
+        marker.read_text.side_effect = PermissionError("not readable")
+        marker.stat.side_effect = PermissionError("not statable")
+        self.runtime.maintenance_marker = marker
+        with self.assertLogs("takt.web.runtime", level="ERROR") as logs:
+            self.assertTrue(self.runtime.maintenance_status()["held"])
+            self.assertTrue(self.runtime.maintenance_status()["held"])
+        messages = [message for message in logs.output if "marker_unreadable" in message]
+        self.assertEqual(len(messages), 1)
+
     def test_audio_signal_delays_timer_start(self) -> None:
         asyncio.run(self._exercise_delayed_start())
 
@@ -146,6 +237,11 @@ class WebRuntimeTests(unittest.TestCase):
             self.assertTrue(self.runtime.primary_press())
             self.assertEqual(self.controller.state, TimerState.READY)
             self.assertTrue(self.runtime.state_payload()["start_sequence"]["active"])
+            with self.assertRaises(MaintenanceUnavailable):
+                self.runtime.acquire_maintenance(
+                    request_id="install-during-start-sequence",
+                    owner="takt-agent",
+                )
             await asyncio.sleep(0.005)
             self.assertEqual(self.controller.state, TimerState.READY)
             await asyncio.sleep(0.03)

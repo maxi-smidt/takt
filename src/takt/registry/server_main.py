@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import ssl
+import tempfile
 from pathlib import Path
 
 from aiohttp import web
@@ -22,6 +24,17 @@ def _parser() -> argparse.ArgumentParser:
         help="registry database, release, and mirror storage",
     )
     parser.add_argument("--admin-password", default=os.environ.get("TAKT_REGISTRY_ADMIN_PASSWORD"))
+    parser.add_argument(
+        "--admin-password-file",
+        default=os.environ.get("TAKT_REGISTRY_ADMIN_PASSWORD_FILE"),
+    )
+    parser.add_argument(
+        "--secure-cookies",
+        action="store_true",
+        default=os.environ.get("TAKT_REGISTRY_SECURE_COOKIES", "").lower()
+        in {"1", "true", "yes", "on"},
+        help="mark the admin cookie Secure when TLS terminates at a reverse proxy",
+    )
     parser.add_argument("--tls-certificate")
     parser.add_argument("--tls-key")
     return parser
@@ -29,19 +42,35 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if not args.admin_password:
+    password = args.admin_password
+    if args.admin_password_file:
+        password = Path(args.admin_password_file).read_text(encoding="utf-8").strip()
+    if not password:
         raise SystemExit(
-            "Set TAKT_REGISTRY_ADMIN_PASSWORD or pass --admin-password (minimum 10 characters)."
+            "Set TAKT_REGISTRY_ADMIN_PASSWORD(_FILE) or pass --admin-password "
+            "(minimum 10 characters)."
         )
     data_directory = Path(args.data_directory).expanduser().resolve()
     data_directory.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile(dir=data_directory):
+            pass
+    except OSError as error:
+        raise SystemExit(
+            f"Registry data directory is not writable: {data_directory}: {error}"
+        ) from error
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    lock_handle = _acquire_instance_lock(data_directory)
     store = RegistryStore(data_directory)
     try:
-        auth = AdminAuth(args.admin_password, data_directory)
+        auth = AdminAuth(password, data_directory)
     except Exception:
         store.close()
         raise
-    app = create_registry_app(store, auth)
+    app = create_registry_app(store, auth, secure_cookies=args.secure_cookies)
 
     async def close_store(_application: web.Application) -> None:
         store.close()
@@ -54,7 +83,24 @@ def main(argv: list[str] | None = None) -> int:
         ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ssl_context.load_cert_chain(args.tls_certificate, args.tls_key)
     web.run_app(app, host=args.host, port=args.port, ssl_context=ssl_context)
+    lock_handle.close()
     return 0
+
+
+def _acquire_instance_lock(data_directory: Path):
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - TAKT production targets are Unix systems.
+        return (data_directory / "registry.lock").open("a+", encoding="utf-8")
+    handle = (data_directory / "registry.lock").open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise SystemExit(
+            "Another TAKT registry process is already using this data directory."
+        ) from None
+    return handle
 
 
 if __name__ == "__main__":

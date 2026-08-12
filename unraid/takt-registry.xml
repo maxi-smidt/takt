@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>takt-registry</Name>
+  <Repository>ghcr.io/maxi-smidt/takt-registry:latest</Repository>
+  <Registry>https://github.com/maxi-smidt/takt/pkgs/container/takt-registry</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/maxi-smidt/takt/issues</Support>
+  <Project>https://github.com/maxi-smidt/takt</Project>
+  <Overview>Self-hosted TAKT fleet management, version deployment and Raspberry Pi data mirroring.</Overview>
+  <Category>Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8090]/</WebUI>
+  <ExtraParams>--user=10001:10001 --init --restart=unless-stopped --stop-timeout=60 --read-only --tmpfs /tmp:size=64m,mode=1777 --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=128 --log-opt max-size=10m --log-opt max-file=3</ExtraParams>
+  <Config Name="Web UI port" Target="8090" Default="8090" Mode="tcp" Description="Registry web interface and Pi agent API" Type="Port" Display="always" Required="true" Mask="false">8090</Config>
+  <Config Name="Registry data" Target="/data" Default="/mnt/user/appdata/takt/registry-data" Mode="rw" Description="SQLite metadata, releases, mirrors and online backups" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/takt/registry-data</Config>
+  <Config Name="Admin password" Target="TAKT_REGISTRY_ADMIN_PASSWORD" Default="" Mode="" Description="Use a unique password of at least 16 characters" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Secure cookies" Target="TAKT_REGISTRY_SECURE_COOKIES" Default="false" Mode="" Description="Set true only when the registry is served through HTTPS" Type="Variable" Display="advanced" Required="true" Mask="false">false</Config>
+</Container>

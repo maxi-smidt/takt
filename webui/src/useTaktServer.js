@@ -21,6 +21,11 @@ const EMPTY_STATE = {
     remaining_ms: 0,
     error: null,
   },
+  maintenance: {
+    held: false,
+    reason: null,
+    expires_in_seconds: null,
+  },
 };
 
 const EMPTY_HISTORY = {

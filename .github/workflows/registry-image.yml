@@ -1,0 +1,221 @@
+name: Publish TAKT distributions
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: registry-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[server]' 'pytest>=8,<9' 'ruff>=0.9,<1'
+      - run: ruff check src tests
+      - run: pytest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci
+        working-directory: webui
+      - run: npm run check && npm run build:fleet
+        working-directory: webui
+      - name: Smoke-test the registry container
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          data_directory="${RUNNER_TEMP}/takt-registry-smoke"
+          mkdir -p "$data_directory"
+          sudo chown 10001:10001 "$data_directory"
+          docker build --target registry --tag takt-registry:smoke .
+          docker run --detach --name takt-registry-smoke \
+            --read-only \
+            --tmpfs /tmp:size=64m,mode=1777 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --publish 127.0.0.1:18090:8090 \
+            --env TAKT_REGISTRY_ADMIN_PASSWORD=workflow-smoke-password \
+            --volume "${data_directory}:/data" \
+            takt-registry:smoke
+          cleanup() {
+            docker logs takt-registry-smoke || true
+            docker rm --force takt-registry-smoke || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:18090/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          printf 'Registry container did not become healthy.\n' >&2
+          exit 1
+
+  package-pi:
+    needs: quality
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci
+        working-directory: webui
+      - id: package
+        name: Build Raspberry Pi release package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          module_version="$(PYTHONPATH=src python3 -c 'from takt import __version__; print(__version__)')"
+          if [[ "$module_version" != "$version" ]]; then
+            printf 'pyproject version %s does not match takt.__version__ %s\n' \
+              "$version" "$module_version" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            printf 'Tag %s does not match pyproject version %s\n' "$GITHUB_REF_NAME" "$version" >&2
+            exit 1
+          fi
+          archive="dist/takt-raspberry-pi-${version}.tar.gz"
+          ./scripts/package_for_raspberry_pi.sh "$archive"
+          python3 - "$version" "$archive" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          version, archive_name = sys.argv[1:]
+          archive = Path(archive_name)
+          manifest = {
+              "schema_version": 1,
+              "version": version,
+              "commit": os.environ["GITHUB_SHA"],
+              "artifact": archive.name,
+              "size": archive.stat().st_size,
+              "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+          }
+          Path(f"dist/takt-raspberry-pi-{version}.manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: takt-raspberry-pi-${{ steps.package.outputs.version }}
+          path: |
+            dist/takt-raspberry-pi-${{ steps.package.outputs.version }}.tar.gz
+            dist/takt-raspberry-pi-${{ steps.package.outputs.version }}.tar.gz.sha256
+            dist/takt-raspberry-pi-${{ steps.package.outputs.version }}.manifest.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Assemble Unraid Compose bundle
+        run: |
+          mkdir -p dist/unraid-stack
+          cp compose.yaml dist/unraid-stack/compose.yaml
+          cp .env.example dist/unraid-stack/takt-registry.env.example
+          cp unraid/takt-registry.xml dist/unraid-stack/takt-registry.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: takt-unraid-stack-${{ steps.package.outputs.version }}
+          path: dist/unraid-stack/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-container:
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/maxi-smidt/takt-registry
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: registry
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+  publish-release:
+    if: github.ref_type == 'tag'
+    needs: [package-pi, publish-container]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: takt-raspberry-pi-${{ needs.package-pi.outputs.version }}
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: takt-unraid-stack-${{ needs.package-pi.outputs.version }}
+          path: dist
+      - name: Record the published registry image
+        env:
+          IMAGE_DIGEST: ${{ needs.publish-container.outputs.digest }}
+          VERSION: ${{ needs.package-pi.outputs.version }}
+        run: |
+          printf '%s\n' \
+            "ghcr.io/maxi-smidt/takt-registry:${VERSION}@${IMAGE_DIGEST}" \
+            > "dist/takt-registry-${VERSION}.image.txt"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/* \
+              --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "TAKT ${GITHUB_REF_NAME#v}" \
+              --generate-notes
+          fi

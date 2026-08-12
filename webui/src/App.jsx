@@ -161,6 +161,7 @@ function ActionButton({ icon: Icon, children, className = "", ...props }) {
 
 function ReadyTimer({ state, onPrimary }) {
   const sequence = state.start_sequence;
+  const maintenance = state.maintenance?.held;
   if (sequence?.active) {
     const waiting = sequence.phase === "waiting";
     const seconds = Math.max(0, (sequence.remaining_ms || 0) / 1000).toFixed(3);
@@ -173,7 +174,7 @@ function ReadyTimer({ state, onPrimary }) {
     );
   }
   return (
-    <button className="timer-hit-area" type="button" onClick={onPrimary}>
+    <button className="timer-hit-area" type="button" onClick={onPrimary} disabled={maintenance}>
       <StopwatchValue value={state.actual} hero />
     </button>
   );
@@ -281,6 +282,7 @@ function TimerPanel({ state, onAction }) {
       }
     : STATE_META[state.state] || STATE_META.error;
   const basic = state.state === "ready" || state.state === "running";
+  const maintenance = state.maintenance?.held;
   return (
     <section
       className={`instrument-panel timer-panel state-${state.state} ${
@@ -296,6 +298,13 @@ function TimerPanel({ state, onAction }) {
         <div className="stage-indicator"><i /></div>
       </div>
       <div className="timer-panel-body">
+        {maintenance && state.state === "ready" && (
+          <div className="maintenance-banner" role="status" aria-live="polite">
+            <RefreshCw size={22} />
+            <strong>WARTUNG LÄUFT</strong>
+            <span>{state.maintenance.reason || "TAKT wird gerade sicher aktualisiert."}</span>
+          </div>
+        )}
         {basic ? (
           <ReadyTimer state={state} onPrimary={() => onAction("primary")} />
         ) : (
@@ -304,7 +313,7 @@ function TimerPanel({ state, onAction }) {
       </div>
       <div className="timer-panel-foot">
         <TimerReset size={14} />
-        <span>{startSequence?.error || state.error || meta.hint}</span>
+        <span>{maintenance ? "Start ist während der Wartung gesperrt" : startSequence?.error || state.error || meta.hint}</span>
       </div>
     </section>
   );

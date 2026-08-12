@@ -24,11 +24,11 @@ class AdminAuth:
             salt = secrets.token_bytes(32)
             salt_path.write_bytes(salt)
             salt_path.chmod(0o600)
-        self._password = password
-        self._key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000, dklen=32)
+        self._salt = salt
+        self._key = self._derive(password)
 
     def authenticate(self, password: str) -> str | None:
-        if not hmac.compare_digest(password.encode("utf-8"), self._password.encode("utf-8")):
+        if not hmac.compare_digest(self._derive(password), self._key):
             return None
         csrf = secrets.token_urlsafe(24)
         payload = self._encode(
@@ -70,3 +70,8 @@ class AdminAuth:
     def _decode(value: str) -> bytes:
         encoded = value.encode("ascii")
         return base64.urlsafe_b64decode(encoded + b"=" * (-len(encoded) % 4))
+
+    def _derive(self, password: str) -> bytes:
+        return hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), self._salt, 200_000, dklen=32
+        )

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import secrets
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -31,6 +33,24 @@ class PendingConfirmation:
     expires_at: float
 
 
+@dataclass(slots=True)
+class MaintenanceLease:
+    token: str
+    request_id: str
+    owner: str
+    reason: str
+    acquired_at: float
+    expires_at: float
+
+
+class MaintenanceUnavailable(RuntimeError):
+    """Raised when TAKT cannot safely enter maintenance mode."""
+
+
+class MaintenanceLeaseMismatch(PermissionError):
+    """Raised when a caller tries to release another maintenance lease."""
+
+
 class WebRuntime:
     """Single authoritative runtime shared by GPIO and all browser clients."""
 
@@ -47,6 +67,7 @@ class WebRuntime:
         hardware_available: bool,
         show_mock_button: bool,
         show_mock_buzzer: bool,
+        maintenance_marker: Path | None = None,
     ) -> None:
         self.controller = controller
         self.repository = repository
@@ -60,6 +81,8 @@ class WebRuntime:
         self.hardware_available = hardware_available
         self.show_mock_button = show_mock_button
         self.show_mock_buzzer = show_mock_buzzer
+        self.maintenance_marker = maintenance_marker
+        self._maintenance_marker_error_logged = False
         self.history_revision = 0
         self.signal_revision = 0
         self.last_signal: str | None = None
@@ -73,6 +96,7 @@ class WebRuntime:
         self._start_phase: str | None = None
         self._start_deadline: float | None = None
         self._start_error: str | None = None
+        self._maintenance_lease: MaintenanceLease | None = None
         self._closed = False
         self.controller.subscribe(self._on_snapshot)
 
@@ -103,6 +127,11 @@ class WebRuntime:
     def primary_press(self, source: str = "web") -> bool:
         if self._start_task is not None and not self._start_task.done():
             return False
+        if self._maintenance_active() and self.controller.state in (
+            TimerState.READY,
+            TimerState.SAVED_CONFIRMATION,
+        ):
+            return False
         if self.controller.state is TimerState.SAVED_CONFIRMATION:
             self.controller.finish_confirmation()
             return self._start_or_sequence(source)
@@ -111,6 +140,8 @@ class WebRuntime:
         return self.controller.handle_primary_button_press(source)
 
     def _start_or_sequence(self, source: str) -> bool:
+        if self._maintenance_active():
+            return False
         self._start_error = None
         if not self.audio_service.enabled:
             return self.controller.start(source)
@@ -141,6 +172,80 @@ class WebRuntime:
             self._schedule_history_broadcast()
         return changed
 
+    def acquire_maintenance(
+        self,
+        *,
+        request_id: str,
+        owner: str,
+        reason: str = "",
+        ttl_seconds: int = 30,
+    ) -> dict[str, object]:
+        if not 5 <= ttl_seconds <= 120:
+            raise ValueError("Maintenance lease TTL must be between 5 and 120 seconds.")
+        now = time.monotonic()
+        self._expire_maintenance(now)
+        current = self._maintenance_lease
+        if self._persistent_maintenance_active():
+            raise MaintenanceUnavailable("TAKT is reserved for an in-progress system update.")
+        if current is not None:
+            if current.request_id == request_id and current.owner == owner:
+                current.expires_at = max(current.expires_at, now + ttl_seconds)
+                return {
+                    "acquired": True,
+                    "reused": True,
+                    "lease_token": current.token,
+                    "maintenance": self._maintenance_payload(now),
+                }
+            raise MaintenanceUnavailable("TAKT is already reserved for maintenance.")
+        if self.controller.state is not TimerState.READY:
+            raise MaintenanceUnavailable(
+                f"TAKT is {self.controller.state.value}; maintenance requires ready state."
+            )
+        if self._start_task is not None and not self._start_task.done():
+            raise MaintenanceUnavailable("A timer start sequence is already active.")
+        self._maintenance_lease = MaintenanceLease(
+            token=secrets.token_urlsafe(32),
+            request_id=request_id,
+            owner=owner,
+            reason=reason,
+            acquired_at=now,
+            expires_at=now + ttl_seconds,
+        )
+        LOGGER.info(
+            "maintenance_acquired request_id=%s owner=%s ttl_seconds=%s",
+            request_id,
+            owner,
+            ttl_seconds,
+        )
+        self._schedule_state_broadcast()
+        return {
+            "acquired": True,
+            "reused": False,
+            "lease_token": self._maintenance_lease.token,
+            "maintenance": self._maintenance_payload(now),
+        }
+
+    def release_maintenance(self, lease_token: str) -> bool:
+        self._expire_maintenance()
+        current = self._maintenance_lease
+        if current is None:
+            return False
+        if not secrets.compare_digest(current.token, lease_token):
+            raise MaintenanceLeaseMismatch("Maintenance lease token does not match.")
+        LOGGER.info(
+            "maintenance_released request_id=%s owner=%s",
+            current.request_id,
+            current.owner,
+        )
+        self._maintenance_lease = None
+        self._schedule_state_broadcast()
+        return True
+
+    def maintenance_status(self) -> dict[str, object]:
+        now = time.monotonic()
+        self._expire_maintenance(now)
+        return self._maintenance_payload(now)
+
     def state_payload(self) -> dict[str, object]:
         payload = serialize_snapshot(
             self.controller.snapshot(),
@@ -162,9 +267,8 @@ class WebRuntime:
             "remaining_ms": remaining_ms,
             "error": self._start_error,
         }
-        payload["sound_playing"] = (
-            self._sound_task is not None and not self._sound_task.done()
-        )
+        payload["sound_playing"] = self._sound_task is not None and not self._sound_task.done()
+        payload["maintenance"] = self.maintenance_status()
         return payload
 
     def history_payload(self, chart_days: int | None) -> dict[str, object]:
@@ -259,15 +363,11 @@ class WebRuntime:
                 details = {
                     "title": "Gespeicherten Lauf wirklich ändern?",
                     "message": (
-                        f"{run.started_at.astimezone():%d.%m.%Y, %H:%M} · "
-                        f"Lauf {run.run_number}"
+                        f"{run.started_at.astimezone():%d.%m.%Y, %H:%M} · Lauf {run.run_number}"
                     ),
                     "lines": [
                         f"Ist-Zeit: {run.actual_time.format_stopwatch()} (unverändert)",
-                        (
-                            f"Zuschlag: {run.added_time.format_added()} → "
-                            f"{corrected.format_added()}"
-                        ),
+                        (f"Zuschlag: {run.added_time.format_added()} → {corrected.format_added()}"),
                         (
                             f"Gesamtzeit: {run.total_time.format_stopwatch()} → "
                             f"{(run.actual_time + corrected).format_stopwatch()}"
@@ -277,14 +377,11 @@ class WebRuntime:
                     "confirm_label": "ÄNDERUNG BESTÄTIGEN",
                 }
             elif operation == "delete":
-                confirmation = PendingConfirmation(
-                    operation, run_id, 0, time.monotonic() + 30
-                )
+                confirmation = PendingConfirmation(operation, run_id, 0, time.monotonic() + 30)
                 details = {
                     "title": "Diesen Lauf endgültig löschen?",
                     "message": (
-                        f"{run.started_at.astimezone():%d.%m.%Y, %H:%M} · "
-                        f"Lauf {run.run_number}"
+                        f"{run.started_at.astimezone():%d.%m.%Y, %H:%M} · Lauf {run.run_number}"
                     ),
                     "lines": [
                         f"Ist-Zeit: {run.actual_time.format_stopwatch()}",
@@ -354,6 +451,8 @@ class WebRuntime:
 
     async def _refresh_loop(self) -> None:
         while not self._closed:
+            if self._expire_maintenance():
+                self._schedule_state_broadcast()
             if self.controller.state is TimerState.RUNNING:
                 self.controller.refresh()
                 await asyncio.sleep(0.033)
@@ -399,7 +498,11 @@ class WebRuntime:
                 if remaining <= 0:
                     break
                 await asyncio.sleep(min(0.025, remaining))
-            if self.controller.state is TimerState.READY and not self._closed:
+            if (
+                self.controller.state is TimerState.READY
+                and not self._closed
+                and not self._maintenance_active()
+            ):
                 self.controller.start(source)
         except asyncio.CancelledError:
             self._stop_start_sound()
@@ -421,6 +524,108 @@ class WebRuntime:
         if task is not None and not task.done():
             task.cancel()
         self._sound_task = None
+
+    def _maintenance_active(self) -> bool:
+        self._expire_maintenance()
+        return self._maintenance_lease is not None or self._persistent_maintenance_active()
+
+    def _persistent_maintenance_active(self) -> bool:
+        marker = self.maintenance_marker
+        if marker is None or not marker.is_file():
+            self._maintenance_marker_error_logged = False
+            return False
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            self._maintenance_marker_error_logged = False
+            if float(payload.get("expires_at", 0)) <= time.time():
+                marker.unlink(missing_ok=True)
+                LOGGER.warning("persistent_maintenance_expired marker=%s", marker)
+                return False
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            try:
+                age = max(0.0, time.time() - marker.stat().st_mtime)
+            except OSError as error:
+                if not self._maintenance_marker_error_logged:
+                    LOGGER.error(
+                        "persistent_maintenance_marker_unreadable marker=%s error=%s",
+                        marker,
+                        error,
+                    )
+                    self._maintenance_marker_error_logged = True
+                return True
+            if age > 30 * 60:
+                try:
+                    marker.unlink(missing_ok=True)
+                except OSError as error:
+                    if not self._maintenance_marker_error_logged:
+                        LOGGER.error(
+                            "persistent_maintenance_marker_cleanup_failed marker=%s error=%s",
+                            marker,
+                            error,
+                        )
+                        self._maintenance_marker_error_logged = True
+                    return True
+                self._maintenance_marker_error_logged = False
+                LOGGER.error(
+                    "persistent_maintenance_invalid_marker_expired marker=%s age_seconds=%.0f",
+                    marker,
+                    age,
+                )
+                return False
+            if not self._maintenance_marker_error_logged:
+                LOGGER.error(
+                    "persistent_maintenance_invalid_marker marker=%s age_seconds=%.0f",
+                    marker,
+                    age,
+                )
+                self._maintenance_marker_error_logged = True
+            return True
+        return True
+
+    def _expire_maintenance(self, now: float | None = None) -> bool:
+        current = self._maintenance_lease
+        if current is None:
+            return False
+        current_time = time.monotonic() if now is None else now
+        if current.expires_at > current_time:
+            return False
+        LOGGER.warning(
+            "maintenance_expired request_id=%s owner=%s",
+            current.request_id,
+            current.owner,
+        )
+        self._maintenance_lease = None
+        return True
+
+    def _maintenance_payload(self, now: float) -> dict[str, object]:
+        current = self._maintenance_lease
+        start_sequence_active = self._start_task is not None and not self._start_task.done()
+        persistent = self._persistent_maintenance_active()
+        return {
+            "held": current is not None or persistent,
+            "can_acquire": (
+                current is None
+                and not persistent
+                and self.controller.state is TimerState.READY
+                and not start_sequence_active
+            ),
+            "timer_state": self.controller.state.value,
+            "start_sequence_active": start_sequence_active,
+            "request_id": current.request_id
+            if current
+            else "system-update"
+            if persistent
+            else None,
+            "owner": current.owner if current else "takt-agent" if persistent else None,
+            "reason": (
+                current.reason
+                if current
+                else "TAKT update is being verified"
+                if persistent
+                else None
+            ),
+            "expires_in_seconds": (max(0, round(current.expires_at - now, 3)) if current else None),
+        }
 
     def _on_sound_finished(self, task: asyncio.Task[None]) -> None:
         if self._sound_task is task:
@@ -513,6 +718,8 @@ def parse_chart_days(value: str | None, default: int) -> int | None:
 
 
 async def json_body(request: web.Request) -> dict[str, Any]:
+    if request.content_type != "application/json":
+        raise web.HTTPUnsupportedMediaType(text="JSON-Inhaltstyp erforderlich.")
     try:
         body = await request.json()
     except Exception as error:
