@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useScreenAwake } from "./useScreenAwake";
 import { useTaktServer } from "./useTaktServer";
 
 const STATE_META = {
@@ -269,7 +270,7 @@ function ResultTimer({ state, onAction }) {
   );
 }
 
-function TimerPanel({ state, onAction }) {
+function TimerPanel({ state, screenAwake, onAction }) {
   const startSequence = state.start_sequence;
   const meta = startSequence?.active
     ? {
@@ -296,6 +297,18 @@ function TimerPanel({ state, onAction }) {
           <span>{meta.subtitle}</span>
         </div>
         <div className="stage-indicator"><i /></div>
+        {state.state === "running" && (
+          <div
+            className={`screen-awake-indicator ${screenAwake === "active" ? "is-active" : ""}`}
+            role="status"
+            title={screenAwake === "active"
+              ? "Der Bildschirm bleibt aktiv."
+              : "Tippen oder Taste drücken, um den Bildschirm aktiv zu halten."}
+          >
+            <MonitorUp size={14} />
+            <span>{screenAwake === "active" ? "ANZEIGE AKTIV" : "ANZEIGE ANTIPPEN"}</span>
+          </div>
+        )}
       </div>
       <div className="timer-panel-body">
         {maintenance && state.state === "ready" && (
@@ -559,7 +572,7 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
   );
 }
 
-function Footer({ state, system, onMockPress }) {
+function Footer({ state, system, screenAwake, onMockPress }) {
   return (
     <footer className="statusbar">
       <div className={`hardware-readout ${state.hardware.available ? "is-online" : ""}`}>
@@ -574,6 +587,16 @@ function Footer({ state, system, onMockPress }) {
           <strong>BEREIT</strong>
         </div>
       )}
+      <div
+        className={`hardware-readout ${screenAwake === "active" ? "is-online" : ""}`}
+        title={screenAwake === "active"
+          ? "Der Bildschirm bleibt aktiv, solange TAKT geöffnet ist."
+          : "Einmal tippen oder eine Taste drücken, um den Bildschirm aktiv zu halten."}
+      >
+        <i />
+        <span>ANZEIGE</span>
+        <strong>{screenAwake === "active" ? "BLEIBT AKTIV" : "ANTIPPEN ZUM AKTIVIEREN"}</strong>
+      </div>
       <div className="statusbar-spacer" />
       <div className="local-url">
         <ShieldCheck size={13} />
@@ -1018,6 +1041,7 @@ function App() {
   const [toast, setToast] = useState(null);
   const [now, setNow] = useState(new Date());
   const lastSignalRevision = useRef(state.signal_revision);
+  const screenAwake = useScreenAwake();
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
@@ -1144,12 +1168,17 @@ function App() {
         settingsDisabled={state.state === "running" || state.start_sequence?.active}
       />
       <main className="control-grid">
-        <TimerPanel state={state} onAction={handleAction} />
+        <TimerPanel state={state} screenAwake={screenAwake} onAction={handleAction} />
         <TodayPanel history={history} />
         <BestPanel history={history} />
         <ChartPanel history={history} chartDays={chartDays} onPeriodChange={setChartDays} />
       </main>
-      <Footer state={state} system={system} onMockPress={() => handleAction("primary")} />
+      <Footer
+        state={state}
+        system={system}
+        screenAwake={screenAwake}
+        onMockPress={() => handleAction("primary")}
+      />
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}

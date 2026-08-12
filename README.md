@@ -21,6 +21,7 @@ Der erste funktionsfähige Stand enthält:
 - eine von der Oberfläche getrennte GPIO-Eingabe,
 - einen lokalen Webserver mit synchroner Bedienung über mehrere Geräte,
 - eine responsive React-Browser-Oberfläche mit derselben deutschen Bedienlogik,
+- einen Display-Wachschutz für Tablets und Laptops, auch beim Zugriff über HTTP,
 - ein optionales Startsignal über AUX oder einen gekoppelten Bluetooth-Lautsprecher
   mit einstellbarer Startverzögerung,
 - eine automatisierte, headless Raspberry-Pi-Installation mit `takt.local`
@@ -80,6 +81,14 @@ Timerprozess. Änderungen erscheinen über WebSockets unmittelbar auf allen
 verbundenen Bildschirmen. Da jeder Client im lokalen Netz TAKT bedienen und
 auch das Herunterfahren bestätigen kann, gehört TAKT in ein vertrauenswürdiges,
 nicht öffentliches WLAN.
+
+Die Browser-Oberfläche hält den Bildschirm nach der ersten Berührung, dem
+ersten Klick oder Tastendruck aktiv. Unter HTTPS verwendet sie den nativen
+Screen Wake Lock des Browsers; beim normalen Zugriff über `http://takt.local`
+läuft als kompatibler Fallback ein winziges, stummes Video. Der Status steht
+unten in der Leiste unter **ANZEIGE**. Energiesparmodi oder Gerätevorgaben können
+den Wachschutz weiterhin übersteuern. Nach einem App- oder Tabwechsel fordert
+TAKT den Wachschutz beim Zurückkehren automatisch erneut an.
 
 Das Installationsskript kann nach einem Programmupdate erneut ausgeführt werden.
 Der Deployment-Befehl entfernt veraltete Projektdateien auf dem Pi, behält
