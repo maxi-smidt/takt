@@ -31,6 +31,7 @@ required_files=(
   "pyproject.toml"
   "config.example.toml"
   "scripts/install_raspberry_pi.sh"
+  "scripts/takt_wifi_helper.py"
   "src/takt/server_main.py"
   "src/takt/web/static/index.html"
   "src/takt/assets/start_signal.wav"

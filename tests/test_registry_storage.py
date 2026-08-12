@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -35,6 +36,117 @@ class RegistryStorageTests(unittest.TestCase):
             connection.close()
             with self.assertRaisesRegex(RuntimeError, "newer"):
                 RegistryStore(root)
+
+    def test_wifi_job_secret_is_encrypted_durable_and_removed_on_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            device_id = "12345678-1234-1234-1234-123456789abc"
+            password = "durable-fleet-secret"
+            store = RegistryStore(root)
+            try:
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token="a" * 64,
+                )
+                with self.assertRaisesRegex(ValueError, "online"):
+                    store.create_wifi_job(device_id, "Timing Hall", password)
+                store.update_heartbeat(
+                    device_id,
+                    {
+                        "protocol_version": 1,
+                        "capabilities": ["leased-jobs"],
+                        "poll_seconds": 10,
+                    },
+                )
+                with self.assertRaisesRegex(ValueError, "cannot manage"):
+                    store.create_wifi_job(device_id, "Timing Hall", password)
+                store.update_heartbeat(
+                    device_id,
+                    {
+                        "protocol_version": 1,
+                        "capabilities": ["wifi-profile-v1"],
+                        "poll_seconds": 10,
+                    },
+                )
+                job = store.create_wifi_job(device_id, "Timing Hall", password)
+                self.assertEqual(job["payload"], {"ssid": "Timing Hall", "priority": 0})
+                self.assertNotIn("credential", job)
+                self.assertEqual(root.joinpath("registry.db").stat().st_mode & 0o777, 0o600)
+                self.assertEqual(root.joinpath("job-secrets.key").stat().st_mode & 0o777, 0o600)
+                backup = store.backup_database(label="wifi-secret-test")
+                for path in [backup, *root.glob("registry.db*")]:
+                    self.assertNotIn(password.encode(), path.read_bytes())
+
+                claimed = store.claim_next_job(device_id, "session-a")
+                assert claimed is not None
+                self.assertEqual(claimed["credential"], {"password": password})
+                lease_id = claimed["lease_id"]
+                store.close()
+
+                store = RegistryStore(root)
+                claimed_again = store.claim_next_job(device_id, "session-a")
+                assert claimed_again is not None
+                self.assertEqual(claimed_again["id"], job["id"])
+                self.assertEqual(claimed_again["credential"], {"password": password})
+                store.update_job(
+                    job["id"], device_id, "succeeded", 100, "saved", lease_id=lease_id
+                )
+                secret_count = store.connection.execute(
+                    "SELECT COUNT(*) FROM job_secrets"
+                ).fetchone()[0]
+                self.assertEqual(secret_count, 0)
+            finally:
+                store.close()
+
+    def test_backup_without_job_secret_key_starts_and_fails_only_affected_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source"
+            restored = root / "restored"
+            device_id = "12345678-1234-1234-1234-123456789abc"
+            store = RegistryStore(source)
+            try:
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token="a" * 64,
+                )
+                store.update_heartbeat(
+                    device_id,
+                    {
+                        "protocol_version": 1,
+                        "capabilities": ["wifi-profile-v1"],
+                        "poll_seconds": 10,
+                    },
+                )
+                job = store.create_wifi_job(device_id, "Timing Hall", "durable-secret")
+                backup = store.backup_database(label="restore-test")
+            finally:
+                store.close()
+
+            restored.mkdir()
+            shutil.copy2(backup, restored / "registry.db")
+            restored_store = RegistryStore(restored)
+            try:
+                self.assertTrue(restored_store.health()["ok"])
+                self.assertIsNone(restored_store.claim_next_job(device_id, "session-a"))
+                failed = restored_store.get_job(job["id"])
+                assert failed is not None
+                self.assertEqual(failed["status"], "failed")
+                self.assertEqual(failed["message"], "Stored Wi-Fi credential is unavailable")
+                secret_count = restored_store.connection.execute(
+                    "SELECT COUNT(*) FROM job_secrets"
+                ).fetchone()[0]
+                self.assertEqual(secret_count, 0)
+            finally:
+                restored_store.close()
 
     def test_missing_duplicate_mirror_blob_is_repaired(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

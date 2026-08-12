@@ -104,6 +104,7 @@ def create_registry_app(
     app.router.add_post("/api/releases", upload_release)
     app.router.add_get("/api/jobs", jobs)
     app.router.add_post("/api/devices/{device_id}/jobs", create_job)
+    app.router.add_post("/api/devices/{device_id}/wifi-networks", create_wifi_network)
     app.router.add_post("/api/devices/{device_id}/revoke", revoke_device)
     app.router.add_get("/api/devices/{device_id}/mirror", download_mirror)
     app.router.add_post("/agent/enroll", agent_enroll)
@@ -277,6 +278,20 @@ async def create_job(request: web.Request) -> web.Response:
     try:
         job = request.app[STORE_KEY].create_job(
             request.match_info["device_id"], str(action), payload
+        )
+    except LookupError as error:
+        raise web.HTTPNotFound(text=str(error)) from error
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    return web.json_response({"job": job}, status=201)
+
+
+async def create_wifi_network(request: web.Request) -> web.Response:
+    _admin(request, csrf=True)
+    ssid, password = _wifi_network_body(await _json(request, max_bytes=8 * 1024))
+    try:
+        job = request.app[STORE_KEY].create_wifi_job(
+            request.match_info["device_id"], ssid, password
         )
     except LookupError as error:
         raise web.HTTPNotFound(text=str(error)) from error
@@ -748,6 +763,32 @@ def _heartbeat_payload(body: dict[str, Any]) -> dict[str, Any]:
                 raise web.HTTPBadRequest(text=f"Heartbeat field {key} is out of range.")
             payload[key] = value
     return payload
+
+
+def _wifi_network_body(body: dict[str, Any]) -> tuple[str, str]:
+    if set(body) != {"ssid", "password"}:
+        raise web.HTTPBadRequest(text="SSID and password are required.")
+    ssid = body["ssid"]
+    password = body["password"]
+    if not isinstance(ssid, str) or not isinstance(password, str):
+        raise web.HTTPBadRequest(text="SSID and password must be strings.")
+    try:
+        ssid_size = len(ssid.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise web.HTTPBadRequest(text="SSID must be valid UTF-8.") from error
+    if not 1 <= ssid_size <= 32 or any(
+        ord(character) < 32 or ord(character) == 127 for character in ssid
+    ):
+        raise web.HTTPBadRequest(text="SSID must contain 1 to 32 UTF-8 bytes without controls.")
+    raw_psk = re.fullmatch(r"[0-9A-Fa-f]{64}", password) is not None
+    passphrase = 8 <= len(password) <= 63 and all(
+        32 <= ord(character) <= 126 for character in password
+    )
+    if not raw_psk and not passphrase:
+        raise web.HTTPBadRequest(
+            text="Password must be 8 to 63 printable ASCII characters or 64 hexadecimal digits."
+        )
+    return ssid, password
 
 
 def _invalid_json_constant(value: str) -> None:

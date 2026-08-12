@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from takt import __version__
+from takt.registry.job_secrets import JobSecretCipher, JobSecretError
 
 
 def utc_now() -> datetime:
@@ -24,8 +25,9 @@ def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 JOB_LEASE_SECONDS = 120
+WIFI_PROFILE_CAPABILITY = "wifi-profile-v1"
 
 
 SCHEMA = """
@@ -86,6 +88,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_device_status
 ON jobs(device_id, status, created_at);
 
+CREATE TABLE IF NOT EXISTS job_secrets (
+    job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    nonce BLOB NOT NULL,
+    ciphertext BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -114,6 +123,7 @@ class RegistryStore:
     def __init__(self, data_directory: Path) -> None:
         self.data_directory = data_directory
         self.database_path = data_directory / "registry.db"
+        self.job_secret_key_path = data_directory / "job-secrets.key"
         self.release_directory = data_directory / "releases"
         self.mirror_directory = data_directory / "mirrors"
         self.backup_directory = data_directory / "backups"
@@ -122,7 +132,9 @@ class RegistryStore:
         self.backup_directory.mkdir(parents=True, exist_ok=True)
         database_existed = self.database_path.exists() and self.database_path.stat().st_size > 0
         self.connection = sqlite3.connect(self.database_path, timeout=10)
+        self.database_path.chmod(0o600)
         self.connection.row_factory = sqlite3.Row
+        self._job_secret_cipher: JobSecretCipher | None = None
         self.connection.execute("PRAGMA busy_timeout = 10000")
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA synchronous = FULL")
@@ -286,6 +298,15 @@ class RegistryStore:
                 return device
             self.connection.execute(
                 """
+                DELETE FROM job_secrets WHERE job_id IN (
+                    SELECT id FROM jobs
+                    WHERE device_id = ? AND status IN ('queued', 'claimed', 'running')
+                )
+                """,
+                (device_id,),
+            )
+            self.connection.execute(
+                """
                 UPDATE jobs SET status = 'failed', progress = 100,
                     message = 'Device access was revoked', updated_at = ?, completed_at = ?,
                     lease_id = NULL, lease_expires_at = NULL, lease_owner_session = NULL
@@ -384,6 +405,55 @@ class RegistryStore:
         assert job is not None
         return job
 
+    def create_wifi_job(self, device_id: str, ssid: str, password: str) -> dict[str, Any]:
+        device = self.get_device(device_id)
+        if device is None:
+            raise LookupError("Device does not exist.")
+        if device.get("revoked_at"):
+            raise ValueError("Device access has been revoked.")
+        if not device.get("online"):
+            raise ValueError("Device must be online to add a Wi-Fi network.")
+        capabilities = device.get("status", {}).get("capabilities", [])
+        if WIFI_PROFILE_CAPABILITY not in capabilities:
+            raise ValueError(
+                "This Pi agent cannot manage Wi-Fi profiles; update it once via SSH."
+            )
+        job_id = secrets.token_hex(12)
+        action = "add_wifi_network"
+        now = utc_iso()
+        cipher = self._get_job_secret_cipher(create=True)
+        nonce, ciphertext = cipher.encrypt(
+            password,
+            associated_data=self._job_secret_aad(job_id, device_id, action),
+        )
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO jobs(
+                    id, device_id, action, payload_json, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'queued', ?, ?)
+                """,
+                (
+                    job_id,
+                    device_id,
+                    action,
+                    json.dumps({"ssid": ssid, "priority": 0}, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+            self.connection.execute(
+                """
+                INSERT INTO job_secrets(job_id, nonce, ciphertext, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (job_id, nonce, ciphertext, now),
+            )
+            self._audit("job_created", device_id, {"job_id": job_id, "action": action})
+        job = self.get_job(job_id)
+        assert job is not None
+        return job
+
     def claim_next_job(self, device_id: str, agent_session_id: str = "") -> dict[str, Any] | None:
         now_value = utc_now()
         now = utc_iso(now_value)
@@ -410,7 +480,7 @@ class RegistryStore:
         if active is not None:
             active_job = self.get_job(active["id"])
             if active_job and active_job.get("lease_owner_session") == agent_session_id:
-                return active_job
+                return self._attach_job_secret(active_job)
             return None
         row = self.connection.execute(
             """
@@ -434,7 +504,8 @@ class RegistryStore:
                 """,
                 (now, now, lease_id, lease_expires_at, agent_session_id, row["id"]),
             )
-        return self.get_job(row["id"])
+        job = self.get_job(row["id"])
+        return self._attach_job_secret(job) if job else None
 
     def update_job(
         self,
@@ -511,6 +582,7 @@ class RegistryStore:
                 raise LookupError("Job does not exist.")
             if completed_at:
                 self._audit("job_completed", device_id, {"job_id": job_id, "status": status})
+                self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
             self.connection.execute(
                 "UPDATE devices SET last_seen_at = ? WHERE id = ?", (utc_iso(), device_id)
             )
@@ -732,6 +804,55 @@ class RegistryStore:
         item = dict(row)
         item["payload"] = json.loads(item.pop("payload_json"))
         return item
+
+    def _attach_job_secret(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        if job["action"] != "add_wifi_network":
+            return job
+        secret = self.connection.execute(
+            "SELECT nonce, ciphertext FROM job_secrets WHERE job_id = ?", (job["id"],)
+        ).fetchone()
+        try:
+            if secret is None:
+                raise JobSecretError("Stored job secret is missing.")
+            cipher = self._get_job_secret_cipher(create=False)
+            password = cipher.decrypt(
+                bytes(secret["nonce"]),
+                bytes(secret["ciphertext"]),
+                associated_data=self._job_secret_aad(
+                    str(job["id"]), str(job["device_id"]), str(job["action"])
+                ),
+            )
+        except JobSecretError:
+            now = utc_iso()
+            with self.connection:
+                self.connection.execute(
+                    """
+                    UPDATE jobs SET status = 'failed', progress = 100,
+                        message = 'Stored Wi-Fi credential is unavailable', updated_at = ?,
+                        completed_at = ?, lease_id = NULL, lease_expires_at = NULL,
+                        lease_owner_session = NULL
+                    WHERE id = ?
+                    """,
+                    (now, now, job["id"]),
+                )
+                self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job["id"],))
+                self._audit(
+                    "job_completed",
+                    str(job["device_id"]),
+                    {"job_id": job["id"], "status": "failed"},
+                )
+            return None
+        job["credential"] = {"password": password}
+        return job
+
+    def _get_job_secret_cipher(self, *, create: bool) -> JobSecretCipher:
+        if self._job_secret_cipher is None:
+            self._job_secret_cipher = JobSecretCipher(self.job_secret_key_path, create=create)
+        return self._job_secret_cipher
+
+    @staticmethod
+    def _job_secret_aad(job_id: str, device_id: str, action: str) -> bytes:
+        return f"{job_id}\0{device_id}\0{action}".encode()
 
     def _audit(
         self,
