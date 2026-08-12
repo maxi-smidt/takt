@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from takt.management.agent import (
     AgentConfig,
@@ -287,6 +287,59 @@ class ManagementAgentTests(unittest.TestCase):
             systemctl.assert_awaited_once_with("restart", agent.config.service_name)
             wait_for_health.assert_awaited_once_with(session, "0.1.0")
             self.assertFalse(agent.config.maintenance_marker.exists())
+
+    def test_wifi_profile_is_sent_to_helper_over_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = self._config(root, root / "takt.db")
+            config.wifi_helper_path = root / "takt-wifi-helper"
+            config.wifi_helper_path.write_text("helper", encoding="utf-8")
+            config.wifi_helper_path.chmod(0o755)
+            agent = TaktAgent(config)
+            process = MagicMock(returncode=0)
+            process.communicate = AsyncMock(return_value=(b"", None))
+            create_process = AsyncMock(return_value=process)
+            password = "fleet-secret-123"
+            with (
+                patch.object(agent, "_wifi_profile_capable", return_value=True),
+                patch(
+                    "takt.management.agent.asyncio.create_subprocess_exec",
+                    create_process,
+                ),
+            ):
+                asyncio.run(
+                    agent._add_wifi_network(
+                        {
+                            "payload": {"ssid": "Timing Hall", "priority": 0},
+                            "credential": {"password": password},
+                        }
+                    )
+                )
+            command = create_process.await_args.args
+            self.assertEqual(command, ("sudo", "-n", str(config.wifi_helper_path)))
+            self.assertNotIn(password, command)
+            document = process.communicate.await_args.args[0]
+            self.assertEqual(
+                document,
+                b'{"ssid":"Timing Hall","password":"fleet-secret-123","priority":0}',
+            )
+
+    def test_wifi_capability_requires_running_network_manager(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = self._config(root, root / "takt.db")
+            config.wifi_helper_path = root / "takt-wifi-helper"
+            config.wifi_helper_path.write_text("helper", encoding="utf-8")
+            config.wifi_helper_path.chmod(0o755)
+            agent = TaktAgent(config)
+            with (
+                patch("takt.management.agent.shutil.which", return_value="/usr/bin/nmcli"),
+                patch("takt.management.agent.subprocess.run") as run,
+            ):
+                run.return_value.returncode = 0
+                self.assertTrue(agent._wifi_profile_capable())
+                run.return_value.returncode = 3
+                self.assertFalse(agent._wifi_profile_capable())
 
     @staticmethod
     def _config(root: Path, database_path: Path) -> AgentConfig:

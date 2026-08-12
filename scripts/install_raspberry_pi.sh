@@ -35,6 +35,7 @@ install_uid="$(id -u "$install_user")"
 service_name="takt.service"
 agent_service_name="takt-agent.service"
 bluetooth_agent_service="takt-bluetooth-agent.service"
+wifi_helper_target="/usr/local/libexec/takt-wifi-helper"
 hostname_target="${TAKT_HOSTNAME:-takt}"
 port="${TAKT_PORT:-80}"
 health_url="http://127.0.0.1:$port/health"
@@ -174,6 +175,16 @@ if [[ -n "$registry_url" || -f "$agent_config" ]]; then
     "$agent_root/venv/bin/takt-agent" --config "$agent_config" --enroll-only \
       || fail "Die Anmeldung bei der Registry ist fehlgeschlagen. URL, WLAN und Code prüfen."
   fi
+fi
+
+wifi_helper_installed=false
+if command -v nmcli >/dev/null && systemctl is-active --quiet NetworkManager; then
+  say "Fleet-WLAN-Verwaltung einrichten"
+  sudo install -D -o root -g root -m 0755 \
+    "$project_dir/scripts/takt_wifi_helper.py" "$wifi_helper_target"
+fi
+if [[ -x "$wifi_helper_target" ]]; then
+  wifi_helper_installed=true
 fi
 
 sudo usermod -a -G gpio,audio "$install_user"
@@ -393,6 +404,9 @@ sudoers_temp="$(mktemp)"
     "$install_user" "$service_name"
   printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl reboot\n' "$install_user"
   printf '%s ALL=(root) NOPASSWD: /bin/systemctl reboot\n' "$install_user"
+  if [[ "$wifi_helper_installed" == true ]]; then
+    printf '%s ALL=(root) NOPASSWD: %s\n' "$install_user" "$wifi_helper_target"
+  fi
 } >"$sudoers_temp"
 sudo visudo -cf "$sudoers_temp"
 sudo install -m 0440 "$sudoers_temp" "$sudoers_file"

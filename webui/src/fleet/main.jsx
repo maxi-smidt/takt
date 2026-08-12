@@ -358,7 +358,67 @@ function ReleaseModal({ csrf, onClose, onUploaded }) {
   );
 }
 
-function DeviceCard({ device, releases, onJob, onRevoke }) {
+function WifiModal({ device, csrf, onClose, onCreated }) {
+  const [ssid, setSsid] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await request(
+        `/api/devices/${device.id}/wifi-networks`,
+        { method: "POST", body: JSON.stringify({ ssid, password }) },
+        csrf,
+      );
+      setPassword("");
+      await onCreated();
+      onClose();
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={`ADD WI-FI TO ${device.name}`} eyebrow="NETWORK PROFILE" onClose={onClose}>
+      <form className="modal-body wifi-fields" onSubmit={submit}>
+        <p>
+          Save a WPA/WPA2 network without switching the current connection. The profile uses
+          the default priority <strong>0</strong>. Send credentials only over HTTPS or a private VPN.
+        </p>
+        <label className="field-label">SSID
+          <input
+            autoFocus
+            value={ssid}
+            onChange={(event) => setSsid(event.target.value)}
+            maxLength={32}
+            required
+          />
+        </label>
+        <label className="field-label">PASSWORD
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            minLength={8}
+            maxLength={64}
+            required
+          />
+        </label>
+        {error && <div className="form-error">{error}</div>}
+        <button className="primary-button" disabled={busy || !ssid || !password}>
+          <Wifi size={15} /> {busy ? "SAVING …" : "SAVE WI-FI PROFILE"}
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
+function DeviceCard({ device, releases, onJob, onRevoke, onWifi }) {
   const [releaseId, setReleaseId] = useState(releases[0]?.id || "");
   const effectiveReleaseId = releaseId || releases[0]?.id || "";
   const status = device.status || {};
@@ -369,6 +429,7 @@ function DeviceCard({ device, releases, onJob, onRevoke }) {
   const protocolOk = protocolVersion === 1;
   const neverSeen = Object.keys(status).length === 0;
   const protocolLegacy = !neverSeen && !protocolOk;
+  const wifiCapable = status.capabilities?.includes("wifi-profile-v1");
   const connectionParts = [
     status.registry_rtt_ms != null ? `${status.registry_rtt_ms} ms` : null,
     status.wifi_signal_dbm != null ? `${status.wifi_signal_dbm} dBm` : null,
@@ -432,6 +493,11 @@ function DeviceCard({ device, releases, onJob, onRevoke }) {
       <footer>
         <button disabled={!device.online || updateRecovery || device.revoked_at} onClick={() => onJob(device, "mirror_now")}><Database size={14} /> MIRROR NOW</button>
         <button disabled={!device.online || protocolLegacy || updateRecovery || device.revoked_at} onClick={() => onJob(device, "restart_takt")}><RotateCcw size={14} /> RESTART</button>
+        <button
+          disabled={!device.online || !wifiCapable || updateRecovery || device.revoked_at}
+          title={!wifiCapable ? "Rerun the Pi installer once to enable Fleet Wi-Fi" : ""}
+          onClick={() => onWifi(device)}
+        ><Wifi size={14} /> ADD WI-FI</button>
         <button className="danger-action" disabled={device.revoked_at} onClick={() => onRevoke(device)}><Ban size={14} /> REVOKE</button>
       </footer>
     </article>
@@ -464,6 +530,7 @@ function Dashboard({ session, refreshSession }) {
   const [releases, setReleases] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [modal, setModal] = useState(null);
+  const [wifiDevice, setWifiDevice] = useState(null);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     try {
@@ -546,7 +613,7 @@ function Dashboard({ session, refreshSession }) {
         {error && <div className="global-error"><WifiOff size={16} />{error}</div>}
         <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></section>
         <section className="device-grid">
-          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} onJob={createJob} onRevoke={revokeDevice} />)}
+          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} onJob={createJob} onRevoke={revokeDevice} onWifi={setWifiDevice} />)}
           {!devices.length && <div className="empty-card"><Server size={28} /><h3>NO DEVICES ENROLLED</h3><p>Create an enrollment code to connect the first Raspberry Pi.</p><button className="primary-button" onClick={() => setModal("enroll")}>ENROLL FIRST DEVICE</button></div>}
         </section>
         <section className="operations">
@@ -559,6 +626,7 @@ function Dashboard({ session, refreshSession }) {
       </main>
       {modal === "enroll" && <EnrollmentModal csrf={session.csrf_token} onClose={() => setModal(null)} />}
       {modal === "release" && <ReleaseModal csrf={session.csrf_token} onClose={() => setModal(null)} onUploaded={load} />}
+      {wifiDevice && <WifiModal device={wifiDevice} csrf={session.csrf_token} onClose={() => setWifiDevice(null)} onCreated={load} />}
     </div>
   );
 }

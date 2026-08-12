@@ -145,6 +145,9 @@ input:focus, select:focus { border-color: var(--green); }
 .modal-body > p { margin: 0 0 20px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .modal-body > p code { color: var(--green); }
 .field-label input { margin-top: 8px; }
+.wifi-fields { display: grid; gap: 17px; }
+.wifi-fields > p { margin-bottom: 3px; }
+.wifi-fields > p strong { color: #cfe1dc; }
 .enrollment-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 17px; }
 .enrollment-url { grid-column: 1 / -1; }
 .insecure-opt-in { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 11px; padding: 12px 13px; color: #f6d38d; border: 1px solid #66502a; background: #2a2112; font-size: 9px; line-height: 1.5; }

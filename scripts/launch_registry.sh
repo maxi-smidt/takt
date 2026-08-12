@@ -16,7 +16,7 @@ if [[ ! -d .venv ]]; then
 fi
 
 ./scripts/build_registry_ui.sh
-.venv/bin/python -m pip install --disable-pip-version-check -e '.[server]'
+.venv/bin/python -m pip install --disable-pip-version-check -e '.[registry]'
 
 exec .venv/bin/takt-registry \
   --host "${TAKT_REGISTRY_HOST:-0.0.0.0}" \

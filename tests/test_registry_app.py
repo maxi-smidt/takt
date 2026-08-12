@@ -94,6 +94,7 @@ class RegistryApplicationTests(unittest.TestCase):
                             "agent_version": "0.1.0",
                             "health": {"ok": True, "state": "ready"},
                             "protocol_version": 1,
+                            "capabilities": ["wifi-profile-v1"],
                             "agent_session_id": "session-a",
                             "poll_seconds": 10,
                         },
@@ -101,6 +102,65 @@ class RegistryApplicationTests(unittest.TestCase):
                     ) as response:
                         self.assertEqual(response.status, 200)
                         self.assertIsNone((await response.json())["job"])
+
+                    wifi_password = "fleet-secret-123"
+                    async with client.post(
+                        f"{base_url}/api/devices/{device_id}/wifi-networks",
+                        json={"ssid": "Timing Hall", "password": wifi_password},
+                    ) as response:
+                        self.assertEqual(response.status, 403)
+                    async with client.post(
+                        f"{base_url}/api/devices/{device_id}/wifi-networks",
+                        json={"ssid": "Timing Hall", "password": "short"},
+                        headers={"X-CSRF-Token": csrf},
+                    ) as response:
+                        self.assertEqual(response.status, 400)
+                    async with client.post(
+                        f"{base_url}/api/devices/{device_id}/wifi-networks",
+                        json={"ssid": "Timing Hall", "password": wifi_password},
+                        headers={"X-CSRF-Token": csrf},
+                    ) as response:
+                        self.assertEqual(response.status, 201)
+                        wifi_job = (await response.json())["job"]
+                        self.assertEqual(
+                            wifi_job["payload"], {"ssid": "Timing Hall", "priority": 0}
+                        )
+                        self.assertNotIn("credential", wifi_job)
+                    async with client.get(f"{base_url}/api/jobs") as response:
+                        public_jobs = await response.json()
+                        self.assertNotIn(wifi_password, str(public_jobs))
+                    backup = store.backup_database(label="wifi-secret-test")
+                    self.assertNotIn(wifi_password.encode(), backup.read_bytes())
+                    for database_file in data_directory.glob("registry.db*"):
+                        self.assertNotIn(wifi_password.encode(), database_file.read_bytes())
+
+                    async with client.post(
+                        f"{base_url}/agent/heartbeat",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "protocol_version": 1,
+                            "capabilities": ["wifi-profile-v1"],
+                            "agent_session_id": "session-a",
+                            "poll_seconds": 10,
+                        },
+                        headers=agent_headers,
+                    ) as response:
+                        claimed_wifi = (await response.json())["job"]
+                        self.assertEqual(claimed_wifi["id"], wifi_job["id"])
+                        self.assertEqual(claimed_wifi["credential"], {"password": wifi_password})
+                        wifi_lease = claimed_wifi["lease_id"]
+                    async with client.post(
+                        f"{base_url}/agent/jobs/{wifi_job['id']}",
+                        json={
+                            "status": "succeeded",
+                            "progress": 100,
+                            "message": "saved",
+                            "lease_id": wifi_lease,
+                        },
+                        headers=agent_headers,
+                    ) as response:
+                        self.assertEqual(response.status, 200)
 
                     form = FormData()
                     form.add_field("version", "0.2.0")
