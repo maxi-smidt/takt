@@ -1,0 +1,7 @@
+services:
+  registry:
+    image: takt-registry:local
+    pull_policy: build
+    build:
+      context: .
+      target: registry

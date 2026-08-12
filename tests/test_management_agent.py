@@ -190,6 +190,18 @@ class ManagementAgentTests(unittest.TestCase):
             self.assertIsNone(agent._last_mirror_signature)
             self.assertIsNone(agent.state.last_mirror_signature)
 
+    def test_recovery_failure_is_exposed_in_heartbeat_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            agent._recovery_error = "manual repair is required"
+            agent._write_update_journal({"phase": "activated"})
+            status = asyncio.run(agent._status(object()))  # type: ignore[arg-type]
+            self.assertEqual(
+                status["update_recovery"],
+                {"stuck": True, "error": "manual repair is required", "phase": "activated"},
+            )
+
     def test_service_restart_keeps_persistent_maintenance_until_healthy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

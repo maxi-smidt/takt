@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -201,6 +202,16 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertFalse(self.runtime.primary_press("gpio-taster"))
         marker.unlink()
         self.assertFalse(self.runtime.maintenance_status()["held"])
+        self.assertTrue(self.runtime.primary_press("gpio-taster"))
+
+    def test_corrupt_old_maintenance_marker_is_recoverable(self) -> None:
+        marker = Path(self.temporary_directory.name) / "maintenance.json"
+        marker.write_text("{truncated", encoding="utf-8")
+        old = time.time() - 31 * 60
+        os.utime(marker, (old, old))
+        self.runtime.maintenance_marker = marker
+        self.assertFalse(self.runtime.maintenance_status()["held"])
+        self.assertFalse(marker.exists())
         self.assertTrue(self.runtime.primary_press("gpio-taster"))
 
     def test_audio_signal_delays_timer_start(self) -> None:

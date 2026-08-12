@@ -539,7 +539,26 @@ class WebRuntime:
                 LOGGER.warning("persistent_maintenance_expired marker=%s", marker)
                 return False
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            # An unreadable marker fails closed; the agent can replace or remove it.
+            try:
+                age = max(0.0, time.time() - marker.stat().st_mtime)
+            except OSError:
+                return True
+            if age > 30 * 60:
+                try:
+                    marker.unlink(missing_ok=True)
+                except OSError:
+                    return True
+                LOGGER.error(
+                    "persistent_maintenance_invalid_marker_expired marker=%s age_seconds=%.0f",
+                    marker,
+                    age,
+                )
+                return False
+            LOGGER.error(
+                "persistent_maintenance_invalid_marker marker=%s age_seconds=%.0f",
+                marker,
+                age,
+            )
             return True
         return True
 

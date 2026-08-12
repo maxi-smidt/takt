@@ -296,6 +296,7 @@ class TaktAgent:
         self._registry_rtt_ms: int | None = None
         self._connection_recoveries = 0
         self._active_job: dict[str, Any] | None = None
+        self._recovery_error: str | None = None
 
     async def run(self, *, once: bool = False, enroll_only: bool = False) -> None:
         ssl_option: ssl.SSLContext | bool | None = None
@@ -317,7 +318,14 @@ class TaktAgent:
                     await self._ensure_enrolled(session)
                     if enroll_only:
                         return
-                    await self._recover_interrupted_update(session)
+                    try:
+                        await self._recover_interrupted_update(session)
+                        self._recovery_error = None
+                    except Exception as recovery_error:
+                        self._recovery_error = str(recovery_error)[:500]
+                        with contextlib.suppress(Exception):
+                            await self._report_recovery_failure(session)
+                        raise
                     await self._cycle(session)
                     if failures:
                         self._connection_recoveries += 1
@@ -402,6 +410,17 @@ class TaktAgent:
             await self._mirror_if_changed(session)
             self._last_mirror_time = loop_time
 
+    async def _report_recovery_failure(self, session: ClientSession) -> None:
+        status = await self._status(session)
+        async with session.post(
+            f"{self.config.registry_url}/agent/heartbeat",
+            json=status,
+            headers=self._headers(),
+            timeout=ClientTimeout(total=25, connect=10, sock_read=15),
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Recovery failure heartbeat failed: {await response.text()}")
+
     async def _status(self, session: ClientSession) -> dict[str, Any]:
         health: dict[str, Any] = {"ok": False, "state": "unreachable"}
         try:
@@ -413,6 +432,18 @@ class TaktAgent:
         except Exception:
             pass
         disk = shutil.disk_usage(self.config.data_directory)
+        recovery_payload = None
+        if self._recovery_error:
+            phase = "unknown"
+            try:
+                phase = str((self._load_update_journal() or {}).get("phase") or "unknown")[:64]
+            except Exception:
+                pass
+            recovery_payload = {
+                "stuck": True,
+                "error": self._recovery_error,
+                "phase": phase,
+            }
         return {
             "name": self.config.device_name or socket.gethostname(),
             "hostname": socket.gethostname(),
@@ -440,6 +471,7 @@ class TaktAgent:
             "wifi_signal_dbm": self._wifi_signal_dbm(),
             "connection_recoveries": self._connection_recoveries,
             "registry_transport": self._registry_transport,
+            "update_recovery": recovery_payload,
         }
 
     async def _execute_job(self, session: ClientSession, job: dict[str, Any]) -> None:

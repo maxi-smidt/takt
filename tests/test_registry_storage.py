@@ -10,6 +10,23 @@ from takt.registry.storage import SCHEMA_VERSION, RegistryStore
 
 
 class RegistryStorageTests(unittest.TestCase):
+    def test_never_seen_device_can_receive_first_safe_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = RegistryStore(Path(temporary_directory))
+            try:
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id="12345678-1234-1234-1234-123456789abc",
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token="a" * 64,
+                )
+                job = store.create_job("12345678-1234-1234-1234-123456789abc", "restart_takt")
+                self.assertEqual(job["status"], "queued")
+            finally:
+                store.close()
+
     def test_newer_database_schema_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

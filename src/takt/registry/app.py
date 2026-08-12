@@ -300,15 +300,10 @@ async def download_mirror(request: web.Request) -> web.StreamResponse:
     path = request.app[STORE_KEY].mirror_path(device_id)
     if device is None or not path.exists():
         raise web.HTTPNotFound(text="No mirrored database is available.")
-    mirror_valid = await asyncio.to_thread(
-        _file_matches,
-        path,
-        str(device["mirror_sha256"] or ""),
-        int(device["mirror_size"] or 0),
-    )
-    if not mirror_valid:
+    expected_size = int(device["mirror_size"] or 0)
+    if path.stat().st_size != expected_size:
         raise web.HTTPServiceUnavailable(
-            text="The latest mirror failed its integrity check; request a new mirror."
+            text="The latest mirror size is invalid; request a new mirror."
         )
     return web.FileResponse(
         path,
@@ -650,6 +645,7 @@ def _heartbeat_payload(body: dict[str, Any]) -> dict[str, Any]:
         "wifi_signal_dbm",
         "connection_recoveries",
         "registry_transport",
+        "update_recovery",
     }
     payload = {key: value for key, value in body.items() if key in allowed}
     for key, limit in (
@@ -693,6 +689,15 @@ def _heartbeat_payload(body: dict[str, Any]) -> dict[str, Any]:
     payload["capabilities"] = (
         [str(value)[:64] for value in capabilities[:20]] if isinstance(capabilities, list) else []
     )
+    recovery = payload.get("update_recovery")
+    if recovery is not None:
+        if not isinstance(recovery, dict):
+            raise web.HTTPBadRequest(text="Heartbeat update recovery is invalid.")
+        payload["update_recovery"] = {
+            "stuck": bool(recovery.get("stuck")),
+            "error": str(recovery.get("error") or "")[:500],
+            "phase": str(recovery.get("phase") or "unknown")[:64],
+        }
     integer_ranges = {
         "uptime_seconds": (0, 10**10),
         "disk_free_bytes": (0, 10**16),

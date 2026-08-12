@@ -165,6 +165,17 @@ docker compose up -d
 docker compose ps
 ```
 
+Für eine lokale Entwicklung ohne GHCR-Pull kann der mitgelieferte Override
+verwendet werden. Er baut dasselbe Multi-Stage-Dockerfile auf dem Rechner:
+
+```bash
+docker compose -f compose.yaml -f compose.local.yaml up --build -d
+```
+
+Die Standarddatei bleibt absichtlich pull-only. `latest` ist ein beweglicher
+Main-Branch-Stand; für reproduzierbare Unraid-Deployments einen Commit- oder
+Versions-Tag in `TAKT_REGISTRY_IMAGE` verwenden.
+
 Im Compose-Manager-Plugin wird dieses Verzeichnis als Stack importiert. Für
 `TAKT_REGISTRY_IMAGE` kann `latest`, ein Versionstag wie `0.2.0` oder ein
 unveränderlicher `sha-...`-Tag eingetragen werden. Mit
@@ -283,6 +294,19 @@ direkt nach dem Erstellen seiner Umgebung an, bevor die langsamere Audio- und
 Systemkonfiguration weiterläuft. Die Pi-Seite erzeugt ihren Geräteschlüssel vor
 der Anmeldung; geht die Antwort verloren, kann dieselbe Anmeldung sicher
 wiederholt werden. Nach Erfolg wird der Einmalcode aus `agent.toml` entfernt.
+
+Wird ein Gerät in der Registry widerrufen, ist sein bisheriges Bearer-Token
+sofort ungültig. Zum erneuten Verbinden die lokale Agentenidentität und die
+Konfiguration auf dem Pi entfernen, danach in der Registry einen neuen Code
+erstellen und den einmaligen Installationsbefehl erneut ausführen:
+
+```bash
+sudo systemctl stop takt-agent.service
+rm ~/.config/takt/agent.toml ~/.config/takt/agent-identity.json
+```
+
+Die TAKT-Laufdaten und die Registry-Spiegel bleiben erhalten; nur die
+Verbindung wird neu ausgestellt.
 
 Für weitere Geräte werden ein neuer Code, ein eigener Anzeigename und ein
 eindeutiger Hostname (`takt-02`, `takt-03`, …) verwendet. Identität und

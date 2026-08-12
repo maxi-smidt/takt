@@ -346,8 +346,10 @@ class RegistryStore:
             raise LookupError("Device does not exist.")
         if device.get("revoked_at"):
             raise ValueError("Device access has been revoked.")
+        protocol_version = device.get("status", {}).get("protocol_version")
+        has_heartbeat = bool(device.get("status"))
         if action in {"install_release", "restart_takt"} and (
-            device.get("status", {}).get("protocol_version") != 1
+            protocol_version != 1 and (has_heartbeat or protocol_version is not None)
         ):
             raise ValueError(
                 "This Pi agent is incompatible with safe remote operations; update it once via SSH."
@@ -574,6 +576,8 @@ class RegistryStore:
                     """,
                     (utc_iso(), sha256, size, run_count, device_id),
                 )
+                self._audit("mirror_received", device_id, {"sha256": sha256, "size": size})
+            self._prune_mirror_snapshots(device_id, recent=48, daily=30)
             return
         received_at = utc_now()
         snapshot_id = secrets.token_hex(12)

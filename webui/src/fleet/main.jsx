@@ -68,7 +68,7 @@ function shellQuote(value) {
 function insecureRemoteHttp(value) {
   try {
     const parsed = new URL(value);
-    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
     const loopback = hostname === "localhost" || hostname.endsWith(".localhost")
       || hostname === "::1" || /^127\./.test(hostname);
     return parsed.protocol === "http:" && !loopback;
@@ -166,7 +166,7 @@ function Modal({ title, eyebrow, onClose, children, wide = false }) {
 function EnrollmentModal({ csrf, onClose }) {
   const [deviceName, setDeviceName] = useState("Bahn 1");
   const [hostname, setHostname] = useState("takt-01");
-  const [sshUser, setSshUser] = useState("msmidt");
+  const [sshUser, setSshUser] = useState("");
   const [piAddress, setPiAddress] = useState("raspberrypi.local");
   const [registryUrl, setRegistryUrl] = useState(() => window.location.origin);
   const [allowInsecureHttp, setAllowInsecureHttp] = useState(false);
@@ -266,7 +266,7 @@ function EnrollmentModal({ csrf, onClose }) {
               <input value={hostname} onChange={(event) => setHostname(event.target.value)} placeholder="e.g. takt-01" required />
             </label>
             <label className="field-label">RASPBERRY PI SSH USER
-              <input value={sshUser} onChange={(event) => setSshUser(event.target.value)} placeholder="e.g. msmidt" required />
+              <input value={sshUser} onChange={(event) => setSshUser(event.target.value)} placeholder="e.g. pi" required />
             </label>
             <label className="field-label">RASPBERRY PI ADDRESS
               <input value={piAddress} onChange={(event) => setPiAddress(event.target.value)} placeholder="e.g. raspberrypi.local" required />
@@ -363,11 +363,14 @@ function DeviceCard({ device, releases, onJob, onRevoke }) {
   const status = device.status || {};
   const health = status.health || {};
   const diskFree = status.disk_free_bytes;
-  const protocolOk = status.protocol_version === 1;
+  const protocolVersion = status.protocol_version;
+  const protocolOk = protocolVersion === 1;
+  const neverSeen = Object.keys(status).length === 0;
+  const protocolLegacy = !neverSeen && !protocolOk;
   const connectionParts = [
     status.registry_rtt_ms != null ? `${status.registry_rtt_ms} ms` : null,
     status.wifi_signal_dbm != null ? `${status.wifi_signal_dbm} dBm` : null,
-    status.protocol_version != null ? `protocol ${status.protocol_version}` : "legacy agent",
+    protocolVersion != null ? `protocol ${protocolVersion}` : "waiting for heartbeat",
     status.registry_transport === "insecure-http-opt-in" ? "HTTP opt-in" : status.registry_transport,
   ].filter(Boolean);
   return (
@@ -387,10 +390,10 @@ function DeviceCard({ device, releases, onJob, onRevoke }) {
         <div><Database size={14} /><span>Runs</span><strong>{device.run_count ?? "—"}</strong></div>
         <div><Clock3 size={14} /><span>Seen</span><strong>{timeAgo(device.last_seen_at)}</strong></div>
       </div>
-      <div className={`connection-row ${protocolOk ? "" : "connection-warning"}`}>
+      <div className={`connection-row ${protocolOk || !protocolLegacy ? "" : "connection-warning"}`}>
         <Radio size={15} />
         <span>AGENT LINK<small>{connectionParts.join(" · ")}</small></span>
-        <strong>{protocolOk ? "COMPATIBLE" : "UPDATE VIA SSH"}</strong>
+        <strong>{protocolOk ? "COMPATIBLE" : protocolLegacy ? "UPDATE VIA SSH" : "WAITING FOR HEARTBEAT"}</strong>
       </div>
       <div className="mirror-row">
         <div>
@@ -409,14 +412,14 @@ function DeviceCard({ device, releases, onJob, onRevoke }) {
           </select>
         </label>
         <button
-          disabled={!device.online || !protocolOk || !effectiveReleaseId || device.revoked_at}
-          title={!protocolOk ? "Update the Pi agent once via SSH before remote installs" : ""}
+          disabled={!device.online || protocolLegacy || !effectiveReleaseId || device.revoked_at}
+          title={protocolLegacy ? "Update the Pi agent once via SSH before remote installs" : ""}
           onClick={() => onJob(device, "install_release", { release_id: effectiveReleaseId })}
         ><CloudDownload size={16} /> INSTALL</button>
       </div>
       <footer>
         <button disabled={!device.online || device.revoked_at} onClick={() => onJob(device, "mirror_now")}><Database size={14} /> MIRROR NOW</button>
-        <button disabled={!device.online || !protocolOk || device.revoked_at} onClick={() => onJob(device, "restart_takt")}><RotateCcw size={14} /> RESTART</button>
+        <button disabled={!device.online || protocolLegacy || device.revoked_at} onClick={() => onJob(device, "restart_takt")}><RotateCcw size={14} /> RESTART</button>
         <button className="danger-action" disabled={device.revoked_at} onClick={() => onRevoke(device)}><Ban size={14} /> REVOKE</button>
       </footer>
     </article>
