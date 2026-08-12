@@ -87,7 +87,8 @@ ersten Klick oder Tastendruck aktiv. Unter HTTPS verwendet sie den nativen
 Screen Wake Lock des Browsers; beim normalen Zugriff über `http://takt.local`
 läuft als kompatibler Fallback ein winziges, stummes Video. Der Status steht
 unten in der Leiste unter **ANZEIGE**. Energiesparmodi oder Gerätevorgaben können
-den Wachschutz weiterhin übersteuern.
+den Wachschutz weiterhin übersteuern. Nach einem App- oder Tabwechsel fordert
+TAKT den Wachschutz beim Zurückkehren automatisch erneut an.
 
 Das Installationsskript kann nach einem Programmupdate erneut ausgeführt werden.
 Der Deployment-Befehl entfernt veraltete Projektdateien auf dem Pi, behält

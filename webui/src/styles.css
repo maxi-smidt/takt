@@ -1478,6 +1478,35 @@ kbd {
   background: #09140e;
 }
 
+.screen-awake-media {
+  position: fixed;
+  z-index: -1;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: .01;
+  pointer-events: none;
+}
+
+.screen-awake-indicator {
+  min-height: 30px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgb(242 173 38 / 45%);
+  color: var(--amber);
+  font-size: clamp(9px, .75vw, 12px);
+  font-weight: 850;
+  letter-spacing: .07em;
+}
+
+.screen-awake-indicator.is-active {
+  border-color: rgb(69 198 103 / 40%);
+  color: var(--green);
+}
+
 .state-running .stage-copy strong {
   font-size: clamp(13px, 1.3vw, 23px);
 }

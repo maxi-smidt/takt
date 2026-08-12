@@ -270,7 +270,7 @@ function ResultTimer({ state, onAction }) {
   );
 }
 
-function TimerPanel({ state, onAction }) {
+function TimerPanel({ state, screenAwake, onAction }) {
   const startSequence = state.start_sequence;
   const meta = startSequence?.active
     ? {
@@ -297,6 +297,18 @@ function TimerPanel({ state, onAction }) {
           <span>{meta.subtitle}</span>
         </div>
         <div className="stage-indicator"><i /></div>
+        {state.state === "running" && (
+          <div
+            className={`screen-awake-indicator ${screenAwake === "active" ? "is-active" : ""}`}
+            role="status"
+            title={screenAwake === "active"
+              ? "Der Bildschirm bleibt aktiv."
+              : "Tippen oder Taste drücken, um den Bildschirm aktiv zu halten."}
+          >
+            <MonitorUp size={14} />
+            <span>{screenAwake === "active" ? "ANZEIGE AKTIV" : "ANZEIGE ANTIPPEN"}</span>
+          </div>
+        )}
       </div>
       <div className="timer-panel-body">
         {maintenance && state.state === "ready" && (
@@ -1156,7 +1168,7 @@ function App() {
         settingsDisabled={state.state === "running" || state.start_sequence?.active}
       />
       <main className="control-grid">
-        <TimerPanel state={state} onAction={handleAction} />
+        <TimerPanel state={state} screenAwake={screenAwake} onAction={handleAction} />
         <TodayPanel history={history} />
         <BestPanel history={history} />
         <ChartPanel history={history} chartDays={chartDays} onPeriodChange={setChartDays} />
