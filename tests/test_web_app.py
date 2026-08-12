@@ -7,6 +7,7 @@ from pathlib import Path
 
 from aiohttp import ClientSession, web
 
+from takt import __version__
 from takt.application.timer_controller import TimerController
 from takt.buzzer import NullBuzzer
 from takt.config import Config
@@ -75,7 +76,7 @@ class WebApplicationTests(unittest.TestCase):
                         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
                         health = await response.json()
                         self.assertTrue(health["ok"])
-                        self.assertEqual(health["version"], "0.1.0")
+                        self.assertEqual(health["version"], __version__)
                         self.assertEqual(health["database_schema_version"], 1)
 
                     async with client.get(f"{base_url}/api/bootstrap?days=30") as response:
