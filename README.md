@@ -204,7 +204,9 @@ Registry erstellt zusätzlich täglich eine konsistente Online-Sicherung der
 Metadaten unter `registry-data/backups/`. Für ein vollständiges externes Backup
 einschließlich Releases und Spiegelhistorie den Container während des
 Appdata-Backups stoppen oder ein Backup-Werkzeug verwenden, das Container
-automatisch anhält.
+automatisch anhält. `job-secrets.key` muss zusammen mit `registry.db`
+gesichert und wiederhergestellt werden; ohne diesen Schlüssel können noch
+offene WLAN-Aufträge nicht entschlüsselt werden.
 
 Diagnosebefehle:
 
@@ -260,6 +262,7 @@ Die Registry speichert ihre Daten standardmäßig unter
 
 ```text
 registry.db       Geräte, Versionen und Auftragsverlauf
+job-secrets.key   Schlüssel für verschlüsselte Zugangsdaten offener Aufträge
 releases/         hochgeladene TAKT-Pakete
 mirrors/          versionierte SQLite-Snapshots der Raspberry Pis
 backups/          tägliche konsistente Registry-Metadaten-Sicherungen
@@ -312,6 +315,36 @@ Für weitere Geräte werden ein neuer Code, ein eigener Anzeigename und ein
 eindeutiger Hostname (`takt-02`, `takt-03`, …) verwendet. Identität und
 Zugangsdaten des Agenten bleiben auf dem Pi erhalten. Spätere TAKT-Versionen
 werden nur noch über die Registry installiert.
+
+### Ein WLAN auf einem Pi speichern
+
+Auf der Gerätekarte öffnet **Add Wi-Fi** ein Formular für SSID und
+WPA/WPA2-Passwort. Die Registry legt daraus einen gerätespezifischen Auftrag
+an. Das Passwort erscheint weder im Auftragsverlauf noch in den
+Registry-Datenbanksicherungen; solange der Auftrag offen ist, liegt es mit
+`job-secrets.key` authentifiziert verschlüsselt in der Registry. Deshalb muss
+auch dieser Schlüssel in die externe Sicherung des Registry-Datenverzeichnisses
+aufgenommen werden.
+
+Der Pi speichert ein ausschließlich von TAKT verwaltetes NetworkManager-Profil
+mit der Standardpriorität `0`. Ein erneuter Auftrag für dieselbe SSID
+aktualisiert dasselbe Profil. Bestehende fremde Profile werden nicht verändert.
+Der Auftrag aktiviert die Verbindung nicht und trennt daher auch nicht die
+aktuelle Registry-Verbindung; NetworkManager berücksichtigt das neue Profil bei
+einer späteren automatischen Verbindungswahl.
+
+Das Installationsskript richtet dafür einen eng begrenzten Root-Helfer ein,
+wenn NetworkManager aktiv ist. Bereits verbundene Pis benötigen deshalb einmal
+erneut `deploy_to_raspberry_pi.sh` beziehungsweise `install_raspberry_pi.sh`;
+ein normales Anwendungs-Release aktualisiert den getrennt installierten Agenten
+und dessen Systemberechtigung nicht. Fehlt **Add Wi-Fi** beziehungsweise ist die
+Schaltfläche deaktiviert, NetworkManager und diese einmalige Installation
+prüfen. Offene, Enterprise- und versteckte WLANs sind nicht Teil dieser
+Funktion.
+
+SSID und Passwort werden vom Browser zur Registry und anschließend zum Pi
+übertragen. Dafür HTTPS oder ein privates VPN verwenden; HTTP schützt diese
+Zugangsdaten nicht.
 
 ### Eine bestimmte TAKT-Version installieren
 

@@ -18,7 +18,7 @@ WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY --from=registry-ui /build/src/takt/registry/static/ ./src/takt/registry/static/
-RUN python -m pip wheel --wheel-dir /wheels ".[server]"
+RUN python -m pip wheel --wheel-dir /wheels ".[registry]"
 
 
 FROM python:3.12-slim AS registry
@@ -33,7 +33,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 COPY --from=registry-wheel /wheels /wheels
-RUN python -m pip install --no-index --find-links=/wheels "takt[server]" \
+RUN python -m pip install --no-index --find-links=/wheels "takt[registry]" \
     && rm -rf /wheels \
     && groupadd --gid 10001 takt \
     && useradd --uid 10001 --gid takt --create-home \

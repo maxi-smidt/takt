@@ -104,6 +104,9 @@ class AgentConfig:
     maintenance_marker: Path = field(
         default_factory=lambda: expanded("~/.local/share/takt/maintenance.json")
     )
+    wifi_helper_path: Path = field(
+        default_factory=lambda: Path("/usr/local/libexec/takt-wifi-helper")
+    )
     health_url: str = "http://127.0.0.1/health"
     service_name: str = "takt.service"
     ca_bundle: Path | None = None
@@ -138,6 +141,7 @@ class AgentConfig:
                 "current_link",
                 "release_environment",
                 "maintenance_marker",
+                "wifi_helper_path",
                 "ca_bundle",
             ):
                 if key in raw:
@@ -297,6 +301,7 @@ class TaktAgent:
         self._connection_recoveries = 0
         self._active_job: dict[str, Any] | None = None
         self._recovery_error: str | None = None
+        self._wifi_profile_capability = self._probe_wifi_profile_capability()
 
     async def run(self, *, once: bool = False, enroll_only: bool = False) -> None:
         ssl_option: ssl.SSLContext | bool | None = None
@@ -460,6 +465,14 @@ class TaktAgent:
                 "error": self._recovery_error,
                 "phase": phase,
             }
+        capabilities = [
+            "leased-jobs",
+            "maintenance-lock",
+            "resumable-releases",
+            "sqlite-mirror-v2",
+        ]
+        if self._wifi_profile_capable():
+            capabilities.append("wifi-profile-v1")
         return {
             "name": self.config.device_name or socket.gethostname(),
             "hostname": socket.gethostname(),
@@ -473,12 +486,7 @@ class TaktAgent:
             "disk_free_bytes": disk.free,
             "temperature_c": self._temperature(),
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": [
-                "leased-jobs",
-                "maintenance-lock",
-                "resumable-releases",
-                "sqlite-mirror-v2",
-            ],
+            "capabilities": capabilities,
             "agent_session_id": self._session_id,
             "boot_id": self._boot_id(),
             "heartbeat_sequence": self._heartbeat_sequence,
@@ -522,6 +530,8 @@ class TaktAgent:
                     await self._wait_for_health(session, expected_version)
                 finally:
                     self._remove_maintenance_marker()
+            elif action == "add_wifi_network":
+                await self._add_wifi_network(job)
             else:
                 raise RuntimeError(f"Unsupported job action: {action}")
         except DeferredJob as error:
@@ -555,6 +565,87 @@ class TaktAgent:
         )
         if action == "install_release":
             self._clear_update_journal(job_id)
+
+    async def _add_wifi_network(self, job: dict[str, Any]) -> None:
+        payload = job.get("payload")
+        credential = job.get("credential")
+        if not isinstance(payload, dict) or not isinstance(credential, dict):
+            raise RuntimeError("Wi-Fi profile data is missing.")
+        ssid = payload.get("ssid")
+        password = credential.get("password")
+        priority = payload.get("priority")
+        if not isinstance(ssid, str) or not isinstance(password, str):
+            raise RuntimeError("Wi-Fi profile data is invalid.")
+        self._validate_wifi_network(ssid, password, priority)
+        if not self._wifi_profile_capable():
+            raise RuntimeError("Wi-Fi profile helper is unavailable.")
+        self._assert_job_control()
+        document = json.dumps(
+            {"ssid": ssid, "password": password, "priority": 0},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        process = await asyncio.create_subprocess_exec(
+            "sudo",
+            "-n",
+            str(self.config.wifi_helper_path),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            await asyncio.wait_for(process.communicate(document), timeout=30)
+        except TimeoutError as error:
+            process.kill()
+            await process.communicate()
+            raise RuntimeError("Wi-Fi profile helper timed out.") from error
+        if process.returncode:
+            raise RuntimeError("Wi-Fi profile helper failed.")
+
+    def _wifi_profile_capable(self) -> bool:
+        return self._wifi_profile_capability
+
+    def _probe_wifi_profile_capability(self) -> bool:
+        if (
+            not self.config.wifi_helper_path.is_file()
+            or not os.access(self.config.wifi_helper_path, os.X_OK)
+            or shutil.which("nmcli") is None
+        ):
+            return False
+        try:
+            return (
+                subprocess.run(
+                    ["systemctl", "is-active", "--quiet", "NetworkManager"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=3,
+                ).returncode
+                == 0
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    @staticmethod
+    def _validate_wifi_network(ssid: str, password: str, priority: object) -> None:
+        try:
+            ssid_size = len(ssid.encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise RuntimeError("Wi-Fi SSID is invalid.") from error
+        if (
+            not 1 <= ssid_size <= 32
+            or any(ord(character) < 32 or ord(character) == 127 for character in ssid)
+            or isinstance(priority, bool)
+            or priority != 0
+        ):
+            raise RuntimeError("Wi-Fi profile data is invalid.")
+        raw_psk = re.fullmatch(r"[0-9A-Fa-f]{64}", password) is not None
+        passphrase = 8 <= len(password) <= 63 and all(
+            32 <= ord(character) <= 126 for character in password
+        )
+        if not raw_psk and not passphrase:
+            raise RuntimeError("Wi-Fi profile data is invalid.")
 
     async def _install_release(self, session: ClientSession, job: dict[str, Any]) -> None:
         job_id = str(job["id"])

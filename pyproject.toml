@@ -15,8 +15,10 @@ dependencies = []
 desktop = ["PySide6-Essentials>=6.6,<7"]
 gpio = ["gpiozero>=2.0,<3"]
 server = ["aiohttp>=3.10,<4"]
+registry = ["aiohttp>=3.10,<4", "cryptography>=43,<50"]
 dev = [
   "aiohttp>=3.10,<4",
+  "cryptography>=43,<50",
   "PySide6-Essentials>=6.6,<7",
   "pytest>=8,<9",
   "pytest-qt>=4.4,<5",
