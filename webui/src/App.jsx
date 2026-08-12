@@ -442,6 +442,18 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
       points,
     };
   }, [data]);
+  // Evenly spaced ticks plus the final point. The last regular tick is dropped
+  // when it would sit close enough to the final one for the labels to overlap.
+  const labelIndices = useMemo(() => {
+    const total = chart.points.length;
+    if (!total) return new Set();
+    const step = Math.max(1, Math.ceil(total / 5));
+    const indices = [];
+    for (let index = 0; index < total - 1; index += step) indices.push(index);
+    if (indices.length && total - 1 - indices.at(-1) < step / 2) indices.pop();
+    indices.push(total - 1);
+    return new Set(indices);
+  }, [chart.points.length]);
   const switcher = (
     <div className="period-switch">
       {PERIODS.map(([value, label]) => (
@@ -505,8 +517,8 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
               className="chart-line chart-line-total"
             />
             {chart.points.map((point, index) => {
-              const labelStep = Math.max(1, Math.ceil(chart.points.length / 5));
-              const showLabel = index % labelStep === 0 || index === chart.points.length - 1;
+              const lastIndex = chart.points.length - 1;
+              const showLabel = labelIndices.has(index);
               const tooltip = (
                 `${point.date} · ${point.time}\n`
                 + `Ist-Zeit: ${point.actual}\nZuschlag: ${point.added}\nGesamt: ${point.total}`
@@ -522,8 +534,10 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
                   {showLabel && (
                     <text
                       x={point.x}
-                      y={chart.padding.top + chart.innerHeight + 19}
-                      className="chart-x-label"
+                      y={chart.padding.top + chart.innerHeight + 21}
+                      className={`chart-x-label ${
+                        index === 0 ? "is-first" : index === lastIndex ? "is-last" : ""
+                      }`}
                     >
                       {point.label}
                     </text>

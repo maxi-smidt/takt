@@ -1,7 +1,21 @@
 :root {
   color-scheme: dark;
-  font-family: Inter, "DIN 2014", "Arial Narrow", ui-sans-serif, system-ui, sans-serif;
+
+  /* Condensed faces ("DIN 2014", "Arial Narrow") used to sit in this stack, so a
+     device without Inter rendered the whole UI narrowed. Fall back to normal-width
+     system sans instead. */
+  --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Roboto Mono", Consolas, "Liberation Mono", monospace;
+
+  /* Smallest type in the interface; labels sit at --fs-label, never below. */
+  --fs-label: 11px;
+  --fs-small: 12px;
+  --fs-base: 13px;
+
+  font-family: var(--font-ui);
   font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   --bg: #080e13;
   --surface: #0c151c;
   --surface-raised: #101c24;
@@ -9,8 +23,8 @@
   --line: #20313b;
   --line-strong: #334954;
   --text: #e8edef;
-  --muted: #7f9099;
-  --muted-2: #556872;
+  --muted: #94a5ad;
+  --muted-2: #7d919b;
   --blue: #2ba8e0;
   --green: #45c667;
   --amber: #f2ad26;
@@ -59,7 +73,7 @@ tr {
   margin: 0 auto;
   padding: 0 14px 8px;
   display: grid;
-  grid-template-rows: 57px minmax(0, 1fr) 31px;
+  grid-template-rows: 62px minmax(0, 1fr) 36px;
   color: var(--text);
 }
 
@@ -90,9 +104,9 @@ tr {
 
 .brand-copy span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-label);
   font-weight: 750;
-  letter-spacing: .16em;
+  letter-spacing: .1em;
 }
 
 .topbar-right {
@@ -111,9 +125,9 @@ tr {
   gap: 7px;
   border: 1px solid var(--line);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-small);
   font-weight: 800;
-  letter-spacing: .08em;
+  letter-spacing: .06em;
 }
 
 .connection-online {
@@ -195,25 +209,25 @@ tr {
 .timer-panel {
   grid-area: timer;
   display: grid;
-  grid-template-rows: 50px minmax(0, 1fr) 34px;
+  grid-template-rows: 56px minmax(0, 1fr) 38px;
 }
 
 .today-panel {
   grid-area: today;
   display: grid;
-  grid-template-rows: 52px minmax(0, 1fr);
+  grid-template-rows: 56px minmax(0, 1fr);
 }
 
 .best-panel {
   grid-area: best;
   display: grid;
-  grid-template-rows: 52px minmax(0, 1fr);
+  grid-template-rows: 56px minmax(0, 1fr);
 }
 
 .chart-panel {
   grid-area: chart;
   display: grid;
-  grid-template-rows: 52px minmax(0, 1fr) 25px;
+  grid-template-rows: 56px minmax(0, 1fr) 30px;
 }
 
 .panel-header {
@@ -242,18 +256,18 @@ tr {
 .data-section-header span,
 .modal-header span {
   color: var(--muted-2);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 850;
-  letter-spacing: .17em;
+  letter-spacing: .09em;
 }
 
 .panel-heading h2,
 .data-section-header h3 {
   margin: 0;
   color: #d9e2e6;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 850;
-  letter-spacing: .08em;
+  letter-spacing: .06em;
 }
 
 .run-count {
@@ -265,15 +279,15 @@ tr {
 
 .run-count strong {
   color: #fff;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 21px;
 }
 
 .run-count span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 800;
-  letter-spacing: .12em;
+  letter-spacing: .08em;
 }
 
 .timer-panel::before {
@@ -308,8 +322,8 @@ tr {
 
 .stage-index {
   color: var(--blue);
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
   font-weight: 800;
 }
 
@@ -349,9 +363,9 @@ tr {
 
 .stage-copy span {
   color: var(--muted-2);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 800;
-  letter-spacing: .12em;
+  letter-spacing: .08em;
 }
 
 .stage-indicator {
@@ -442,7 +456,7 @@ tr {
 
 .start-sequence strong {
   color: #fff;
-  font-family: "SFMono-Regular", "Roboto Mono", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: clamp(54px, 6.3vw, 104px);
   font-variant-numeric: tabular-nums;
   letter-spacing: -.06em;
@@ -451,9 +465,9 @@ tr {
 
 .start-sequence span {
   color: var(--amber);
-  font-size: 11px;
+  font-size: var(--fs-small);
   font-weight: 850;
-  letter-spacing: .14em;
+  letter-spacing: .1em;
 }
 
 .stopwatch {
@@ -464,7 +478,7 @@ tr {
 
 .stopwatch > span {
   color: #f2f5f6;
-  font-family: "SFMono-Regular", "Roboto Mono", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: clamp(50px, 5.7vw, 96px);
   font-weight: 650;
   font-variant-numeric: tabular-nums;
@@ -480,10 +494,10 @@ tr {
 
 .time-units i {
   color: var(--muted-2);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-style: normal;
   font-weight: 850;
-  letter-spacing: .11em;
+  letter-spacing: .08em;
 }
 
 .timer-panel-foot {
@@ -494,7 +508,7 @@ tr {
   gap: 7px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-base);
 }
 
 .maintenance-banner {
@@ -512,8 +526,8 @@ tr {
 }
 
 .maintenance-banner svg { animation: spin 1.4s linear infinite; }
-.maintenance-banner strong { letter-spacing: .12em; font-size: 12px; }
-.maintenance-banner span { color: var(--muted); font-size: 10px; }
+.maintenance-banner strong { letter-spacing: .08em; font-size: 13px; }
+.maintenance-banner span { color: var(--muted); font-size: var(--fs-small); }
 
 .result-view {
   position: relative;
@@ -546,14 +560,14 @@ tr {
 .result-breakdown span,
 .adjustment-label {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 850;
-  letter-spacing: .15em;
+  letter-spacing: .09em;
 }
 
 .result-total strong {
   color: #fff;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: clamp(46px, 4.8vw, 72px);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -581,7 +595,7 @@ tr {
 }
 
 .result-breakdown strong {
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 19px;
   font-variant-numeric: tabular-nums;
 }
@@ -615,7 +629,7 @@ tr {
   border-radius: 2px;
   background: #111e26;
   color: #b9c7ce;
-  font-size: 11px;
+  font-size: var(--fs-small);
   font-weight: 850;
   cursor: pointer;
 }
@@ -648,9 +662,9 @@ tr {
   border-radius: 2px;
   background: #14222a;
   color: #dfe6e9;
-  font-size: 11px;
+  font-size: var(--fs-base);
   font-weight: 850;
-  letter-spacing: .05em;
+  letter-spacing: .04em;
   cursor: pointer;
 }
 
@@ -674,7 +688,7 @@ kbd {
   border: 1px solid rgb(255 255 255 / 12%);
   border-radius: 2px;
   color: var(--muted);
-  font: 9px "SFMono-Regular", Consolas, monospace;
+  font: var(--fs-label) var(--font-mono);
 }
 
 .table-viewport {
@@ -689,8 +703,8 @@ kbd {
 .settings-table {
   width: 100%;
   border-collapse: collapse;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
   font-variant-numeric: tabular-nums;
 }
 
@@ -709,12 +723,12 @@ kbd {
   position: sticky;
   z-index: 1;
   top: 0;
-  color: #687a84;
+  color: #8b9ea8;
   background: #0b151b;
-  font-family: Inter, system-ui, sans-serif;
-  font-size: 9px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-label);
   font-weight: 850;
-  letter-spacing: .08em;
+  letter-spacing: .06em;
 }
 
 .runs-table tbody tr:nth-child(even),
@@ -742,9 +756,9 @@ kbd {
   place-items: center;
   align-content: center;
   gap: 8px;
-  color: #586a74;
-  font-size: 11px;
-  letter-spacing: .05em;
+  color: #7c8f9a;
+  font-size: var(--fs-base);
+  letter-spacing: .04em;
 }
 
 .period-switch {
@@ -760,8 +774,8 @@ kbd {
   border: 1px solid transparent;
   border-radius: 1px;
   background: transparent;
-  color: #63757f;
-  font-size: 9px;
+  color: #8497a1;
+  font-size: var(--fs-label);
   font-weight: 850;
   cursor: pointer;
 }
@@ -793,9 +807,9 @@ kbd {
 
 .chart-axis-label,
 .chart-x-label {
-  fill: #71818a;
-  font-family: Inter, system-ui, sans-serif;
-  font-size: 10px;
+  fill: #8d9ea7;
+  font-family: var(--font-ui);
+  font-size: 12px;
 }
 
 .chart-axis-label {
@@ -804,6 +818,15 @@ kbd {
 
 .chart-x-label {
   text-anchor: middle;
+}
+
+/* Edge labels are anchored inward so they cannot run past the plot area. */
+.chart-x-label.is-first {
+  text-anchor: start;
+}
+
+.chart-x-label.is-last {
+  text-anchor: end;
 }
 
 .chart-penalty-line {
@@ -851,7 +874,7 @@ kbd {
   gap: 15px;
   border-top: 1px solid #17262e;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 750;
 }
 
@@ -892,8 +915,8 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 9px;
-  letter-spacing: .08em;
+  font-size: var(--fs-label);
+  letter-spacing: .06em;
 }
 
 .hardware-readout i {
@@ -926,8 +949,8 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #6f818a;
-  font-size: 10px;
+  color: var(--muted);
+  font-size: var(--fs-label);
 }
 
 .mock-trigger {
@@ -940,7 +963,7 @@ kbd {
   border-radius: 1px;
   background: #0d2734;
   color: #75c7ed;
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 850;
   cursor: pointer;
 }
@@ -1017,15 +1040,15 @@ kbd {
 
 .system-tile span {
   color: var(--muted-2);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 850;
-  letter-spacing: .11em;
+  letter-spacing: .08em;
 }
 
 .system-tile strong {
   overflow: hidden;
   color: #c8d2d7;
-  font-size: 11px;
+  font-size: var(--fs-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1042,7 +1065,7 @@ kbd {
   border-radius: 2px;
   background: #14222a;
   color: #b8c4ca;
-  font-size: 10px;
+  font-size: var(--fs-small);
   font-weight: 850;
   cursor: pointer;
 }
@@ -1090,7 +1113,7 @@ kbd {
   border-radius: 2px;
   background: #14222a;
   color: #aebcc3;
-  font-size: 10px;
+  font-size: var(--fs-small);
   font-weight: 850;
   cursor: pointer;
 }
@@ -1112,9 +1135,9 @@ kbd {
 .audio-delay > span,
 .audio-summary > span {
   color: var(--muted-2);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 850;
-  letter-spacing: .1em;
+  letter-spacing: .08em;
 }
 
 .audio-delay > div {
@@ -1132,7 +1155,7 @@ kbd {
   outline: 0;
   background: #09131a;
   color: #e3eaed;
-  font: 11px "SFMono-Regular", Consolas, monospace;
+  font: var(--fs-base) var(--font-mono);
 }
 
 .audio-delay input {
@@ -1147,14 +1170,14 @@ kbd {
 
 .audio-delay strong {
   color: var(--muted);
-  font-size: 9px;
-  letter-spacing: .08em;
+  font-size: var(--fs-label);
+  letter-spacing: .06em;
 }
 
 .audio-summary strong {
   overflow: hidden;
   color: #d9e2e6;
-  font-size: 12px;
+  font-size: var(--fs-base);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1162,7 +1185,7 @@ kbd {
 .audio-delay small,
 .audio-summary small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-small);
 }
 
 .audio-note,
@@ -1179,8 +1202,8 @@ kbd {
   gap: 7px;
   border-left: 2px solid var(--blue);
   background: #0e202a;
-  color: #91a4ad;
-  font-size: 10px;
+  color: #a1b3bb;
+  font-size: var(--fs-small);
 }
 
 .audio-note.is-warning {
@@ -1215,7 +1238,7 @@ kbd {
 .audio-feedback {
   flex: 1;
   color: var(--green);
-  font-size: 10px;
+  font-size: var(--fs-small);
 }
 
 .audio-settings-footer .audio-save {
@@ -1246,7 +1269,7 @@ kbd {
 .data-section-header p {
   margin: 0 0 1px auto;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-small);
 }
 
 .settings-table-shell {
@@ -1288,9 +1311,9 @@ kbd {
 
 .curation-bar > div > span {
   color: var(--muted-2);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 850;
-  letter-spacing: .09em;
+  letter-spacing: .07em;
 }
 
 .curation-buttons {
@@ -1308,7 +1331,7 @@ kbd {
   min-height: 20px;
   padding-top: 7px;
   color: var(--green);
-  font-size: 11px;
+  font-size: var(--fs-base);
 }
 
 .confirmation-layer {
@@ -1342,9 +1365,9 @@ kbd {
 
 .confirmation-modal > span {
   color: var(--muted-2);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 850;
-  letter-spacing: .16em;
+  letter-spacing: .1em;
 }
 
 .confirmation-modal h2 {
@@ -1355,9 +1378,9 @@ kbd {
 
 .confirmation-modal p {
   margin: 0;
-  color: #a4b1b7;
-  font-size: 12px;
-  line-height: 1.5;
+  color: #b3c0c6;
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .confirmation-details {
@@ -1367,14 +1390,14 @@ kbd {
   gap: 5px;
   border: 1px solid var(--line);
   background: var(--surface-deep);
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
 }
 
 .confirmation-warning {
   margin-top: 10px;
   color: #f49b9f;
-  font-size: 11px;
+  font-size: var(--fs-base);
   font-weight: 750;
 }
 
@@ -1391,7 +1414,7 @@ kbd {
   border-radius: 2px;
   background: #14222a;
   color: #c6d0d5;
-  font-size: 10px;
+  font-size: var(--fs-small);
   font-weight: 850;
   cursor: pointer;
 }
@@ -1419,7 +1442,7 @@ kbd {
   background: #101c24;
   box-shadow: 0 14px 45px rgb(0 0 0 / 45%);
   color: #d9e2e6;
-  font-size: 11px;
+  font-size: var(--fs-base);
 }
 
 .state-running {
@@ -1446,7 +1469,7 @@ kbd {
   height: 100dvh;
   border: 0;
   border-radius: 0;
-  grid-template-rows: 70px minmax(0, 1fr) 50px;
+  grid-template-rows: 76px minmax(0, 1fr) 54px;
 }
 
 .state-running .timer-panel-top {
@@ -1460,7 +1483,7 @@ kbd {
 }
 
 .state-running .stage-copy span {
-  font-size: clamp(9px, .7vw, 12px);
+  font-size: clamp(11px, .8vw, 14px);
 }
 
 .state-running .timer-panel-body {
@@ -1489,14 +1512,14 @@ kbd {
 }
 
 .state-running .time-units i {
-  font-size: clamp(9px, 1vw, 18px);
+  font-size: clamp(11px, 1vw, 18px);
 }
 
 .state-running .timer-panel-foot {
   border-top-color: #173327;
   background: #09140e;
   color: #80a68b;
-  font-size: clamp(9px, .8vw, 14px);
+  font-size: clamp(12px, .9vw, 16px);
 }
 
 @media (max-width: 1050px) {
@@ -1507,7 +1530,7 @@ kbd {
   .takt-app:not(.state-running) {
     height: auto;
     min-height: 100dvh;
-    grid-template-rows: 57px auto 36px;
+    grid-template-rows: 62px auto 40px;
   }
 
   .control-grid {
@@ -1571,7 +1594,7 @@ kbd {
 
   .period-switch button::after {
     content: attr(data-short);
-    font-size: 9px;
+    font-size: var(--fs-label);
   }
 
   .statusbar {
