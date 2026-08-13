@@ -126,6 +126,14 @@ class RegistryStorageTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM job_secrets"
                 ).fetchone()[0]
                 self.assertEqual(secret_count, 0)
+                queued = store.create_wifi_job(device_id, "Timing Hall", password)
+                store.cancel_job(queued["id"])
+                secret_count = store.connection.execute(
+                    "SELECT COUNT(*) FROM job_secrets"
+                ).fetchone()[0]
+                self.assertEqual(secret_count, 0)
+                with self.assertRaisesRegex(ValueError, "cannot be retried"):
+                    store.retry_job(queued["id"])
             finally:
                 store.close()
 
@@ -211,6 +219,53 @@ class RegistryStorageTests(unittest.TestCase):
                     1,
                 )
                 self.assertEqual(mirror.read_bytes(), content)
+            finally:
+                store.close()
+
+    def test_pruning_mirror_snapshots_removes_every_expired_blob(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            device_id = "12345678-1234-1234-1234-123456789abc"
+            store = RegistryStore(root)
+            try:
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token="a" * 64,
+                )
+                rows = []
+                for index in range(2):
+                    relative_path = Path("mirrors") / device_id / f"expired-{index}.sqlite3"
+                    blob = root / relative_path
+                    blob.parent.mkdir(parents=True, exist_ok=True)
+                    blob.write_bytes(f"snapshot-{index}".encode())
+                    rows.append(
+                        (
+                            f"snapshot-{index}",
+                            device_id,
+                            f"2020-01-0{index + 1}T00:00:00+00:00",
+                            f"{index + 1:064x}",
+                            10,
+                            index,
+                            str(relative_path),
+                        )
+                    )
+                store.connection.executemany(
+                    "INSERT INTO mirror_snapshots "
+                    "(id, device_id, received_at, sha256, size, run_count, relative_path) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+                store._prune_mirror_snapshots(device_id, recent=0, daily=0)
+                self.assertEqual(
+                    store.connection.execute("SELECT COUNT(*) FROM mirror_snapshots").fetchone()[0],
+                    0,
+                )
+                self.assertFalse((root / rows[0][-1]).exists())
+                self.assertFalse((root / rows[1][-1]).exists())
             finally:
                 store.close()
 

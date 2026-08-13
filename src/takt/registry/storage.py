@@ -795,6 +795,7 @@ class RegistryStore:
                     """,
                     (now, now, job_id),
                 )
+                self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
                 self._record_job_event(
                     job_id, "cancelled", "cancelled", "Cancelled before activation"
                 )
@@ -817,6 +818,10 @@ class RegistryStore:
             raise LookupError("Job does not exist.")
         if previous["status"] not in {"failed", "rolled_back", "cancelled"}:
             raise ValueError("Only an unsuccessful completed job can be retried.")
+        if previous["action"] == "add_wifi_network":
+            raise ValueError(
+                "Wi-Fi jobs cannot be retried because their credential is not retained."
+            )
         replacement = self.create_job(
             previous["device_id"], previous["action"], previous["payload"]
         )
@@ -1190,6 +1195,7 @@ class RegistryStore:
                 "DELETE FROM mirror_snapshots WHERE id = ?",
                 [(row["id"],) for row in expired],
             )
+        for row in expired:
             (self.data_directory / row["relative_path"]).unlink(missing_ok=True)
 
     def create_deployment(

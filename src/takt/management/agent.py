@@ -755,6 +755,7 @@ class TaktAgent:
             await self._progress_job(
                 session, job_id, 70, "Stopping TAKT safely", stage="activating"
             )
+            self._assert_job_control()
             await self._systemctl("stop", self.config.service_name)
             self._update_journal_phase(journal, "stopped")
             try:

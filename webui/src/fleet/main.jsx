@@ -538,7 +538,7 @@ function JobRow({ job, onCancel, onRetry }) {
         aria-label={`${job.action.replaceAll("_", " ")} progress`}
       />
       {active && !["activating", "restarting", "health_checking"].includes(job.stage) && <button className="secondary-button" onClick={() => onCancel(job)}>CANCEL</button>}
-      {["rolled_back", "failed", "cancelled"].includes(job.status) && <button className="secondary-button" onClick={() => onRetry(job)}><RotateCcw size={14} /> RETRY</button>}
+      {job.action !== "add_wifi_network" && ["rolled_back", "failed", "cancelled"].includes(job.status) && <button className="secondary-button" onClick={() => onRetry(job)}><RotateCcw size={14} /> RETRY</button>}
       <time>{timeAgo(job.updated_at)}</time>
     </div>
   );
@@ -650,7 +650,7 @@ function Dashboard({ session, refreshSession }) {
         {error && <div className="global-error"><WifiOff size={16} />{error}</div>}
         <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></section>
         <section className="device-grid">
-          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release" && ["queued", "claimed", "running", "rolled_back", "failed", "cancelled"].includes(job.status))} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onRevoke={revokeDevice} onWifi={setWifiDevice} />)}
+          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release")} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onRevoke={revokeDevice} onWifi={setWifiDevice} />)}
           {!devices.length && <div className="empty-card"><Server size={28} /><h3>NO DEVICES ENROLLED</h3><p>Start a guided deployment to connect the first Raspberry Pi.</p><button className="primary-button" onClick={() => setModal("enroll")}>ENROLL FIRST DEVICE</button></div>}
         </section>
         <section className="operations">
