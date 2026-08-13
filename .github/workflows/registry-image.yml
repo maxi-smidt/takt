@@ -32,7 +32,7 @@ jobs:
           cache-dependency-path: webui/package-lock.json
       - run: npm ci
         working-directory: webui
-      - run: npm run check && npm run test:fleet && npm run build:fleet
+      - run: npm run typecheck && npm run check && npm test && npm run build && npm run build:fleet
         working-directory: webui
 
   package-pi:
