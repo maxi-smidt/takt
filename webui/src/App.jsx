@@ -1111,6 +1111,7 @@ function App() {
       setConfirmation(null);
       setTimeout(() => setToast(null), 2500);
     } catch (error) {
+      if (confirmation.operation === "shutdown") setFeedback("");
       setToast(error.message);
       setTimeout(() => setToast(null), 3000);
     } finally {
