@@ -1181,7 +1181,7 @@ function App() {
         state={state}
         system={system}
         screenAwake={screenAwake}
-        onMockPress={() => handleAction("primary")}
+        onMockPress={() => handleAction("mock_primary")}
       />
       <SettingsModal
         open={settingsOpen}

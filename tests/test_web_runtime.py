@@ -77,6 +77,7 @@ class WebRuntimeTests(unittest.TestCase):
         self.buzzer = RecordingBuzzer()
         config = Config()
         config.audio.settings_path = Path(self.temporary_directory.name) / "audio.json"
+        self.gesture_time = 0.0
         self.runtime = WebRuntime(
             self.controller,
             self.repository,
@@ -87,6 +88,7 @@ class WebRuntimeTests(unittest.TestCase):
             hardware_available=True,
             show_mock_button=True,
             show_mock_buzzer=True,
+            gesture_monotonic=lambda: self.gesture_time,
         )
 
     def tearDown(self) -> None:
@@ -144,6 +146,94 @@ class WebRuntimeTests(unittest.TestCase):
 
         self.assertTrue(self.runtime.primary_press())
         self.assertEqual(self.controller.state, TimerState.RUNNING)
+
+    def test_physical_press_during_saved_confirmation_starts_next_run(self) -> None:
+        self.controller.start()
+        self.clock.advance_ms(1_000)
+        self.controller.stop()
+        self.controller.save()
+        self.assertEqual(self.controller.state, TimerState.SAVED_CONFIRMATION)
+
+        self.gesture_time = 0.1
+        self.assertTrue(self.runtime.button_press())
+        self.runtime.button_release()
+        self.assertEqual(self.controller.state, TimerState.RUNNING)
+
+    def test_browser_mock_taps_use_gesture_recognizer(self) -> None:
+        self.assertTrue(self.runtime.dispatch_action("primary"))
+        self.clock.advance_ms(1_000)
+        self.assertTrue(self.runtime.dispatch_action("primary"))
+        self.assertEqual(self.controller.state, TimerState.STOPPED)
+
+        self.gesture_time = 1.0
+        self.assertFalse(self.runtime.dispatch_action("mock_primary"))
+        self.gesture_time = 1.3
+        self.assertTrue(self.runtime.dispatch_action("mock_primary"))
+
+        self.assertEqual(self.controller.state, TimerState.RUNNING)
+        self.assertEqual(self.repository.get_all_runs(), [])
+
+    def test_physical_long_press_saves_exactly_once(self) -> None:
+        self.assertTrue(self.runtime.button_press())
+        self.runtime.button_release()
+        self.clock.advance_ms(1_000)
+        self.gesture_time = 0.2
+        self.assertTrue(self.runtime.button_press())
+        self.runtime.button_release()
+        self.assertEqual(self.controller.state, TimerState.STOPPED)
+
+        self.gesture_time = 0.3
+        self.runtime.button_press()
+        self.gesture_time = 1.3
+        self.runtime._on_gesture_deadline()
+        self.assertEqual(self.controller.state, TimerState.SAVED_CONFIRMATION)
+        self.runtime.button_release()
+        self.assertEqual(len(self.repository.get_all_runs()), 1)
+
+        self.gesture_time = 2.0
+        self.runtime._on_gesture_deadline()
+        self.assertEqual(len(self.repository.get_all_runs()), 1)
+
+    def test_physical_double_press_discards_and_starts_next_run(self) -> None:
+        self.assertTrue(self.runtime.button_press())
+        self.runtime.button_release()
+        self.clock.advance_ms(1_000)
+        self.gesture_time = 0.2
+        self.assertTrue(self.runtime.button_press())
+        self.runtime.button_release()
+        self.assertEqual(self.controller.state, TimerState.STOPPED)
+
+        self.gesture_time = 1.0
+        self.runtime.button_press()
+        self.runtime.button_release()
+        self.gesture_time = 1.4
+        self.runtime.button_press()
+        self.assertTrue(self.runtime.button_release())
+
+        self.assertEqual(self.controller.state, TimerState.RUNNING)
+        self.assertEqual(self.repository.get_all_runs(), [])
+
+    def test_physical_single_press_after_stop_remains_stopped(self) -> None:
+        self.runtime.button_press()
+        self.runtime.button_release()
+        self.clock.advance_ms(1_000)
+        self.gesture_time = 0.2
+        self.runtime.button_press()
+        self.runtime.button_release()
+        self.assertEqual(self.controller.state, TimerState.STOPPED)
+
+        self.gesture_time = 0.8
+        self.runtime._on_gesture_deadline()
+        self.assertEqual(self.controller.state, TimerState.STOPPED)
+
+    def test_physical_gesture_is_ignored_during_maintenance(self) -> None:
+        self.runtime.acquire_maintenance(
+            request_id="install-job",
+            owner="takt-agent",
+        )
+        self.assertFalse(self.runtime.button_press())
+        self.assertFalse(self.runtime.button_release())
+        self.assertEqual(self.controller.state, TimerState.READY)
 
     def test_maintenance_lease_is_idempotent_and_blocks_every_start_source(self) -> None:
         lease = self.runtime.acquire_maintenance(
@@ -234,6 +324,24 @@ class WebRuntimeTests(unittest.TestCase):
 
     def test_audio_signal_delays_timer_start(self) -> None:
         asyncio.run(self._exercise_delayed_start())
+
+    def test_physical_short_press_cancels_start_sequence(self) -> None:
+        asyncio.run(self._exercise_start_cancellation())
+
+    async def _exercise_start_cancellation(self) -> None:
+        audio = DelayedAudioService()
+        self.runtime.audio_service = audio  # type: ignore[assignment]
+        self.runtime.start()
+        try:
+            self.assertTrue(self.runtime.primary_press())
+            await asyncio.sleep(0.015)
+            self.assertTrue(self.runtime.button_press())
+            self.runtime.button_release()
+            await asyncio.sleep(0)
+            self.assertEqual(self.controller.state, TimerState.READY)
+            self.assertTrue(audio.cancelled)
+        finally:
+            await self.runtime.close()
 
     async def _exercise_delayed_start(self) -> None:
         audio = DelayedAudioService()

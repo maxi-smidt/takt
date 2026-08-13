@@ -35,12 +35,10 @@ class TimerController:
     ) -> None:
         self.clock = clock
         self.repository = repository
-        self.double_press_ns = int(double_press_seconds * 1_000_000_000)
         self.state = TimerState.READY
         self.session = TimerSession()
         self.last_saved_run: Run | None = None
         self.error_message: str | None = None
-        self._last_stopped_press_ns: int | None = None
         self._listeners: list[Callable[[TimerSnapshot], None]] = []
 
     def subscribe(self, listener: Callable[[TimerSnapshot], None]) -> None:
@@ -88,14 +86,6 @@ class TimerController:
             return self.start(source)
         if self.state is TimerState.RUNNING:
             return self.stop(source)
-        if self.state is TimerState.STOPPED:
-            now_ns = self.clock.monotonic_ns()
-            previous = self._last_stopped_press_ns
-            self._last_stopped_press_ns = now_ns
-            if previous is not None and 0 <= now_ns - previous <= self.double_press_ns:
-                self._last_stopped_press_ns = None
-                self.discard_immediately(source)
-                return True
         return False
 
     def add_time(self, milliseconds: int) -> bool:
@@ -166,9 +156,11 @@ class TimerController:
         self._reset_to_ready("keyboard")
         return True
 
-    def discard_immediately(self, source: str = "button") -> None:
+    def discard_immediately(self, source: str = "button") -> bool:
         if self.state is TimerState.STOPPED:
             self._reset_to_ready(source)
+            return True
+        return False
 
     def finish_confirmation(self) -> bool:
         if self.state is not TimerState.SAVED_CONFIRMATION:
@@ -178,7 +170,6 @@ class TimerController:
 
     def _reset_to_ready(self, source: str) -> None:
         self.session.reset()
-        self._last_stopped_press_ns = None
         self.error_message = None
         self._transition(TimerState.READY, source=source)
 

@@ -5,6 +5,7 @@ import json
 import logging
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,12 @@ from takt.buzzer import Buzzer
 from takt.config import Config
 from takt.domain.duration import Duration
 from takt.domain.timer_state import TimerState
+from takt.input.button_gestures import (
+    ButtonGesture,
+    ButtonGestureRecognizer,
+    GestureEvent,
+    GestureMode,
+)
 from takt.persistence.run_repository import SQLiteRunRepository
 from takt.web.serialization import serialize_history, serialize_snapshot
 
@@ -68,6 +75,7 @@ class WebRuntime:
         show_mock_button: bool,
         show_mock_buzzer: bool,
         maintenance_marker: Path | None = None,
+        gesture_monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.controller = controller
         self.repository = repository
@@ -93,6 +101,14 @@ class WebRuntime:
         self._refresh_task: asyncio.Task[None] | None = None
         self._start_task: asyncio.Task[None] | None = None
         self._sound_task: asyncio.Task[None] | None = None
+        self._gesture_deadline_handle: asyncio.TimerHandle | None = None
+        self._gesture_monotonic = gesture_monotonic
+        self._gestures = ButtonGestureRecognizer(
+            self._gesture_mode,
+            double_press_seconds=config.gpio.double_press_seconds,
+            long_press_seconds=config.gpio.long_press_seconds,
+            monotonic=gesture_monotonic,
+        )
         self._start_phase: str | None = None
         self._start_deadline: float | None = None
         self._start_error: str | None = None
@@ -103,6 +119,7 @@ class WebRuntime:
     def start(self) -> None:
         self._refresh_task = asyncio.create_task(self._refresh_loop())
         self._on_snapshot(self.controller.snapshot())
+        self._schedule_gesture_deadline()
 
     async def close(self) -> None:
         self._closed = True
@@ -115,6 +132,10 @@ class WebRuntime:
         if self._sound_task is not None:
             self._sound_task.cancel()
             await asyncio.gather(self._sound_task, return_exceptions=True)
+        if self._gesture_deadline_handle is not None:
+            self._gesture_deadline_handle.cancel()
+            self._gesture_deadline_handle = None
+        self._gestures.reset()
         await self.audio_service.close()
         for client in tuple(self._clients):
             await client.close(code=1001, message=b"TAKT server shutdown")
@@ -126,7 +147,7 @@ class WebRuntime:
 
     def primary_press(self, source: str = "web") -> bool:
         if self._start_task is not None and not self._start_task.done():
-            return False
+            return self._cancel_start_sequence(source)
         if self._maintenance_active() and self.controller.state in (
             TimerState.READY,
             TimerState.SAVED_CONFIRMATION,
@@ -138,6 +159,26 @@ class WebRuntime:
         if self.controller.state is TimerState.READY:
             return self._start_or_sequence(source)
         return self.controller.handle_primary_button_press(source)
+
+    def button_press(self, source: str = "gpio-taster") -> bool:
+        """Feed a debounced physical press into the shared gesture recognizer."""
+
+        if self._closed:
+            return False
+        return self._dispatch_gestures(self._gestures.press(source))
+
+    def button_release(self) -> bool:
+        """Feed a debounced physical release into the shared gesture recognizer."""
+
+        if self._closed:
+            return False
+        return self._dispatch_gestures(self._gestures.release())
+
+    def mock_button_tap(self) -> bool:
+        """Simulate one complete button tap for the browser mock control."""
+
+        changed = self.button_press("mock-taster")
+        return self.button_release() or changed
 
     def _start_or_sequence(self, source: str) -> bool:
         if self._maintenance_active():
@@ -151,14 +192,87 @@ class WebRuntime:
         self._schedule_state_broadcast()
         return True
 
+    def _cancel_start_sequence(self, source: str) -> bool:
+        task = self._start_task
+        if task is None or task.done():
+            return False
+        LOGGER.info("start_sequence_cancelled source=%s", source)
+        task.cancel()
+        self._stop_start_sound()
+        self._schedule_state_broadcast()
+        return True
+
+    def _dispatch_gestures(self, events: tuple[GestureEvent, ...]) -> bool:
+        self._schedule_gesture_deadline()
+        changed = False
+        for event in events:
+            if event.gesture is ButtonGesture.SHORT:
+                changed = self.primary_press(event.source) or changed
+            elif event.gesture is ButtonGesture.LONG:
+                if self._maintenance_active() or self.controller.state is not TimerState.STOPPED:
+                    continue
+                changed = self._save_run(event.source) or changed
+            elif event.gesture is ButtonGesture.DOUBLE:
+                if self._maintenance_active() or self.controller.state is not TimerState.STOPPED:
+                    continue
+                self.controller.discard_immediately(event.source)
+                changed = self._start_or_sequence(event.source) or changed
+        return changed
+
+    def _save_run(self, source: str) -> bool:
+        run = self.controller.save()
+        if run is None:
+            return False
+        LOGGER.info("physical_save source=%s run_id=%s", source, run.id)
+        self.history_revision += 1
+        self._schedule_history_broadcast()
+        return True
+
+    def _gesture_mode(self) -> GestureMode:
+        if self._maintenance_active():
+            return GestureMode.IGNORE
+        if self.controller.state is TimerState.STOPPED:
+            return GestureMode.STOPPED
+        if self.controller.state in (
+            TimerState.READY,
+            TimerState.RUNNING,
+            TimerState.SAVED_CONFIRMATION,
+        ):
+            return GestureMode.IMMEDIATE
+        if self._start_task is not None and not self._start_task.done():
+            return GestureMode.IMMEDIATE
+        return GestureMode.IGNORE
+
+    def _schedule_gesture_deadline(self) -> None:
+        handle = self._gesture_deadline_handle
+        if handle is not None:
+            handle.cancel()
+            self._gesture_deadline_handle = None
+        deadline = self._gestures.next_deadline
+        if deadline is None or self._closed:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        # Leave a tiny boundary margin so an edge arriving exactly at the
+        # configured double-press deadline is still accepted before expiry.
+        delay = max(0.0, deadline - self._gesture_monotonic()) + 0.001
+        self._gesture_deadline_handle = loop.call_later(delay, self._on_gesture_deadline)
+
+    def _on_gesture_deadline(self) -> None:
+        self._gesture_deadline_handle = None
+        self._dispatch_gestures(self._gestures.advance())
+
     def dispatch_action(self, action: str) -> bool:
         actions = {
             "primary": lambda: self.primary_press("web"),
+            "mock_primary": self.mock_button_tap,
             "add_5": lambda: self.controller.add_time(5_000),
             "add_10": lambda: self.controller.add_time(10_000),
             "subtract_5": lambda: self.controller.subtract_time(5_000),
             "subtract_10": lambda: self.controller.subtract_time(10_000),
-            "save": lambda: self.controller.save() is not None,
+            "save": lambda: self._save_run("web"),
             "request_discard": self.controller.request_discard,
             "cancel_discard": self.controller.cancel_discard,
             "confirm_discard": self.controller.confirm_discard,
@@ -167,9 +281,6 @@ class WebRuntime:
         if handler is None:
             raise ValueError("Unbekannte Aktion.")
         changed = bool(handler())
-        if action == "save" and changed:
-            self.history_revision += 1
-            self._schedule_history_broadcast()
         return changed
 
     def acquire_maintenance(
@@ -436,6 +547,9 @@ class WebRuntime:
         if state is TimerState.STOPPED:
             self._stop_start_sound()
         if state is not self._last_state:
+            if state is not TimerState.STOPPED:
+                self._gestures.reset()
+                self._schedule_gesture_deadline()
             event = self._signal_for_transition(self._last_state, state)
             self._last_state = state
             if event:
@@ -448,6 +562,9 @@ class WebRuntime:
                 )
             elif state is not TimerState.SAVED_CONFIRMATION:
                 self._confirmation_deadline = None
+        elif snapshot.error_message:
+            self._gestures.reset()
+            self._schedule_gesture_deadline()
         self._schedule_state_broadcast()
 
     async def _refresh_loop(self) -> None:

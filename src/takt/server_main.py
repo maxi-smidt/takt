@@ -104,10 +104,13 @@ async def _serve(args: argparse.Namespace) -> None:
     )
 
     def physical_press() -> None:
-        loop.call_soon_threadsafe(runtime.primary_press, "gpio-taster")
+        loop.call_soon_threadsafe(runtime.button_press, "gpio-taster")
+
+    def physical_release() -> None:
+        loop.call_soon_threadsafe(runtime.button_release)
 
     if args.mock_gpio:
-        button_input = MockButtonInput(physical_press)
+        button_input = MockButtonInput(physical_press, physical_release)
         runtime.set_hardware_status("Mock aktiv", True)
     elif config.gpio.enabled:
         try:
@@ -115,14 +118,15 @@ async def _serve(args: argparse.Namespace) -> None:
                 config.gpio.pin_bcm,
                 config.gpio.bounce_seconds,
                 physical_press,
+                on_release=physical_release,
             )
             runtime.set_hardware_status("verbunden", True)
         except Exception:
             LOGGER.exception("GPIO unavailable, browser control remains active")
-            button_input = MockButtonInput(physical_press)
+            button_input = MockButtonInput(physical_press, physical_release)
             runtime.set_hardware_status("nicht verfügbar · Browser aktiv", False)
     else:
-        button_input = MockButtonInput(physical_press)
+        button_input = MockButtonInput(physical_press, physical_release)
         runtime.set_hardware_status("nur Browser", False)
 
     app = create_web_app(runtime)

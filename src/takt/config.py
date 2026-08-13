@@ -22,6 +22,7 @@ class GpioConfig:
     pin_bcm: int = 17
     bounce_seconds: float = 0.05
     double_press_seconds: float = 0.60
+    long_press_seconds: float = 1.00
 
 
 @dataclass(slots=True)
@@ -102,6 +103,9 @@ def load_config(path: Path | None = None) -> Config:
     config.gpio.bounce_seconds = max(0.01, float(gpio.get("bounce_seconds", 0.05)))
     config.gpio.double_press_seconds = min(
         max(float(gpio.get("double_press_seconds", 0.60)), 0.2), 2.0
+    )
+    config.gpio.long_press_seconds = min(
+        max(float(gpio.get("long_press_seconds", 1.00)), 0.5), 5.0
     )
 
     config.buzzer.enabled = bool(buzzer.get("enabled", config.buzzer.enabled))
