@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from takt import __version__
+from takt.protocol import PROTOCOL_VERSION
 from takt.registry.job_secrets import JobSecretCipher, JobSecretError
 
 
@@ -434,7 +435,7 @@ class RegistryStore:
         protocol_version = device.get("status", {}).get("protocol_version")
         has_heartbeat = bool(device.get("status"))
         if action in {"install_release", "restart_takt"} and (
-            protocol_version != 1 and (has_heartbeat or protocol_version is not None)
+            protocol_version != PROTOCOL_VERSION and (has_heartbeat or protocol_version is not None)
         ):
             raise ValueError(
                 "This Pi agent is incompatible with safe remote operations; update it once via SSH."
@@ -996,17 +997,7 @@ class RegistryStore:
         ).fetchone()
         if release is None:
             raise ValueError("Release not found.")
-        active = self.connection.execute(
-            """
-            SELECT 1 FROM deployments
-            WHERE target = ? AND port = ?
-              AND status NOT IN ('succeeded', 'failed', 'cancelled', 'interrupted')
-            LIMIT 1
-            """,
-            (target, port),
-        ).fetchone()
-        if active is not None:
-            raise ValueError("A deployment for this target is already active.")
+        self.ensure_deployment_target_available(target, port)
         deployment_id = secrets.token_hex(12)
         now = utc_iso()
         with self.connection:
@@ -1042,6 +1033,19 @@ class RegistryStore:
                 (deployment_id, now),
             )
         return self.get_deployment(deployment_id)
+
+    def ensure_deployment_target_available(self, target: str, port: int) -> None:
+        active = self.connection.execute(
+            """
+            SELECT 1 FROM deployments
+            WHERE target = ? AND port = ?
+              AND status NOT IN ('succeeded', 'failed', 'cancelled', 'interrupted')
+            LIMIT 1
+            """,
+            (target, port),
+        ).fetchone()
+        if active is not None:
+            raise ValueError("A deployment for this target is already active.")
 
     def get_deployment(self, deployment_id: str) -> dict[str, Any] | None:
         row = self.connection.execute(

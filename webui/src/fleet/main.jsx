@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { wifiNetworkError } from "./wifiValidation.js";
+import { deploymentTargetError } from "./deploymentValidation.js";
 
 async function request(url, options = {}, csrf = "") {
   const headers = { ...options.headers };
@@ -159,13 +160,13 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const [streamRetry, setStreamRetry] = useState(0);
+  const [streamAfter, setStreamAfter] = useState(0);
   const update = (key, value) => setFields((current) => ({ ...current, [key]: value }));
   const validate = () => {
     if (!/^[A-Za-z0-9ÄÖÜäöüß._ -]{1,80}$/.test(fields.device_name.trim())) return "Device name is invalid.";
     if (fields.hostname && !/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(fields.hostname)) return "Hostname is invalid.";
     if (!/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/.test(fields.ssh_user)) return "SSH user is invalid.";
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(fields.target) && !/^[0-9A-Fa-f:]+$/.test(fields.target)) return "Target is invalid.";
+    if (deploymentTargetError(fields.target)) return "Target is invalid.";
     if (!fields.release_id) return "Upload a Raspberry Pi release first.";
     try {
       const url = new URL(fields.registry_url);
@@ -216,7 +217,7 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
       })
       .catch((failure) => active && setError(failure.message));
     load();
-    source = new EventSource(path + "/events");
+    source = new EventSource(path + "/events?after=" + streamAfter);
     source.onmessage = (message) => {
       try {
         if (active) setEvents((current) => [...current, JSON.parse(message.data)]);
@@ -227,7 +228,7 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
     };
     source.onerror = () => { if (active) load(); };
     return () => { active = false; source.close(); };
-  }, [deployment?.id, streamRetry]);
+  }, [deployment?.id, streamAfter]);
 
   const confirmHostKey = () => post(
     "/api/deployments/" + deployment.id + "/host-key",
@@ -241,9 +242,10 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   };
   const cancel = () => post("/api/deployments/" + deployment.id + "/cancel", {});
   const retry = async () => {
-    setEvents([]);
+    const after = events.at(-1)?.id || 0;
     if (await post("/api/deployments/" + deployment.id + "/retry", {})) {
-      setStreamRetry((current) => current + 1);
+      setEvents([]);
+      setStreamAfter(after);
     }
   };
 

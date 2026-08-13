@@ -20,6 +20,7 @@ from typing import Any
 
 from aiohttp import web
 
+from takt.protocol import PROTOCOL_VERSION
 from takt.registry.auth import COOKIE_NAME, AdminAuth
 from takt.registry.deployment import DeploymentCredentials, DeploymentManager, validate_registry_url
 from takt.registry.storage import RegistryStore, utc_iso
@@ -38,7 +39,6 @@ VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 DEVICE_ID_PATTERN = re.compile(r"^[0-9a-f-]{16,64}$")
 DEVICE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 ALLOWED_ACTIONS = {"install_release", "mirror_now", "restart_takt"}
-PROTOCOL_VERSION = 1
 JSON_LIMIT = 64 * 1024
 LOGGER = logging.getLogger(__name__)
 

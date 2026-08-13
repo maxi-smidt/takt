@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import asyncssh
 
+from takt.protocol import PROTOCOL_VERSION
 from takt.registry.storage import RegistryStore
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
@@ -123,6 +124,7 @@ class DeploymentManager:
         deployment = self._deployment(deployment_id)
         if deployment["status"] not in TERMINAL_STATUSES:
             raise ValueError("Only a finished deployment can be retried.")
+        self.store.ensure_deployment_target_available(deployment["target"], deployment["port"])
         credentials = self._credentials.pop(deployment_id, None)
         if credentials:
             credentials.clear()
@@ -498,7 +500,7 @@ class DeploymentManager:
                 device
                 and device.get("online")
                 and status.get("app_version") == release_version
-                and status.get("protocol_version") == 1
+                and status.get("protocol_version") == PROTOCOL_VERSION
                 and health.get("ok") is True
                 and health.get("state") == "ready"
             ):
@@ -538,4 +540,4 @@ class DeploymentManager:
             self._event(deployment_id, stage, line)
         for line in stderr.splitlines()[-100:]:
             self._event(deployment_id, stage, line, level="error")
-        return stdout, stderr, int(result.exit_status)
+        return stdout, stderr, result.exit_status if result.exit_status is not None else 1

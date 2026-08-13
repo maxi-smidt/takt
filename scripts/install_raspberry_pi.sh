@@ -1,28 +1,5 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-bootstrap_config=""
-non_interactive=false
-while (($#)); do
-  case "$1" in
-    --bootstrap-config)
-      (($# >= 2)) || { printf "FEHLER: --bootstrap-config benötigt einen Pfad.\n" >&2; exit 2; }
-      bootstrap_config="$2"
-      shift 2
-      ;;
-    --non-interactive)
-      non_interactive=true
-      shift
-      ;;
-    --help)
-      printf "%s\n" "Usage: install_raspberry_pi.sh [--bootstrap-config PATH] [--non-interactive]"
-      exit 0
-      ;;
-    *)
-      printf "FEHLER: Unbekanntes Argument: %s\n" "$1" >&2
-      exit 2
-      ;;
-  esac
-done
 
 # Allow launching with `sudo ./install_raspberry_pi.sh`: re-exec as the
 # invoking normal user before touching anything, so the rest of the script
@@ -46,6 +23,29 @@ if [[ "$EUID" -eq 0 ]]; then
   exit 1
 fi
 
+bootstrap_config=""
+non_interactive=false
+while (($#)); do
+  case "$1" in
+    --bootstrap-config)
+      (($# >= 2)) || { printf "FEHLER: --bootstrap-config benötigt einen Pfad.\n" >&2; exit 2; }
+      bootstrap_config="$2"
+      shift 2
+      ;;
+    --non-interactive)
+      non_interactive=true
+      shift
+      ;;
+    --help)
+      printf "%s\n" "Usage: install_raspberry_pi.sh [--bootstrap-config PATH] [--non-interactive]"
+      exit 0
+      ;;
+    *)
+      printf "FEHLER: Unbekanntes Argument: %s\n" "$1" >&2
+      exit 2
+      ;;
+  esac
+done
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
   # Support an admin managing another account via `sudo -u <user> ./install...`.

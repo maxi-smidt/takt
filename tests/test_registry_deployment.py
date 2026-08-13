@@ -3,8 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-from takt.registry.deployment import redact_message, validate_registry_url
+from takt.registry.deployment import DeploymentManager, redact_message, validate_registry_url
 from takt.registry.storage import RegistryStore
 
 
@@ -63,7 +64,7 @@ class DeploymentStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             store, release = self._store_with_release(Path(temporary))
             try:
-                deployment = store.create_deployment(
+                store.create_deployment(
                     target="pi.local",
                     port=22,
                     ssh_user="pi",
@@ -124,7 +125,59 @@ class DeploymentStorageTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_retry_cannot_bypass_active_target_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store, release = self._store_with_release(Path(temporary))
+            try:
+                finished = store.create_deployment(
+                    target="pi.local",
+                    port=22,
+                    ssh_user="pi",
+                    device_name="Lane 1",
+                    requested_hostname="takt-01",
+                    registry_url="https://registry.example",
+                    allow_insecure_http=False,
+                    release_id=release["id"],
+                )
+                store.update_deployment(finished["id"], status="failed")
+                store.create_deployment(
+                    target="pi.local",
+                    port=22,
+                    ssh_user="pi",
+                    device_name="Lane 2",
+                    requested_hostname="takt-02",
+                    registry_url="https://registry.example",
+                    allow_insecure_http=False,
+                    release_id=release["id"],
+                )
+                with self.assertRaisesRegex(ValueError, "already active"):
+                    DeploymentManager(store).retry(finished["id"])
+            finally:
+                store.close()
 
+
+class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_signal_terminated_command_returns_failure_status(self) -> None:
+        class Stream:
+            async def read(self) -> str:
+                return ""
+
+        class Process:
+            stdout = Stream()
+            stderr = Stream()
+
+            async def wait(self) -> SimpleNamespace:
+                return SimpleNamespace(exit_status=None)
+
+        class Connection:
+            async def create_process(self, command: str, encoding: str) -> Process:
+                return Process()
+
+        manager = object.__new__(DeploymentManager)
+        manager._event = lambda *args, **kwargs: None
+        _, _, status = await manager._command(Connection(), "deployment", "stage", "true")
+
+        self.assertEqual(status, 1)
 class DeploymentValidationTests(unittest.TestCase):
     def test_secrets_are_redacted_from_event_text(self) -> None:
         message = redact_message(
