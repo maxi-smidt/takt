@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Manual fallback for offline or registry-less installs. Fleet Manager deployments
+# use the registry-hosted release path and do not require this operator-laptop script.
+
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 remote="${1:-msmidt@raspberrypi.local}"
 remote_dir="${TAKT_REMOTE_DIR:-takt}"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -19,12 +20,15 @@ from typing import Any
 
 from aiohttp import web
 
+from takt.protocol import PROTOCOL_VERSION
 from takt.registry.auth import COOKIE_NAME, AdminAuth
+from takt.registry.deployment import DeploymentCredentials, DeploymentManager, validate_registry_url
 from takt.registry.storage import RegistryStore, utc_iso
 
 STATIC_ROOT = Path(__file__).with_name("static")
 STORE_KEY = web.AppKey("registry_store", RegistryStore)
 AUTH_KEY = web.AppKey("registry_auth", AdminAuth)
+DEPLOYMENTS_KEY = web.AppKey("registry_deployments", DeploymentManager)
 SECURE_COOKIES_KEY = web.AppKey("registry_secure_cookies", bool)
 LOGIN_LIMITER_KEY = web.AppKey("registry_login_limiter", object)
 LOGIN_SEMAPHORE_KEY = web.AppKey("registry_login_semaphore", asyncio.Semaphore)
@@ -35,8 +39,8 @@ VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 DEVICE_ID_PATTERN = re.compile(r"^[0-9a-f-]{16,64}$")
 DEVICE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 ALLOWED_ACTIONS = {"install_release", "mirror_now", "restart_takt"}
-PROTOCOL_VERSION = 1
 JSON_LIMIT = 64 * 1024
+DEPLOYMENT_EVENT_POLL_SECONDS = 2
 LOGGER = logging.getLogger(__name__)
 
 
@@ -87,6 +91,7 @@ def create_registry_app(
     app = web.Application(client_max_size=256 * 1024 * 1024, middlewares=[security_headers])
     app[STORE_KEY] = store
     app[AUTH_KEY] = auth
+    app[DEPLOYMENTS_KEY] = DeploymentManager(store)
     app[SECURE_COOKIES_KEY] = secure_cookies
     app[LOGIN_LIMITER_KEY] = LoginLimiter()
     app[LOGIN_SEMAPHORE_KEY] = asyncio.Semaphore(2)
@@ -99,6 +104,14 @@ def create_registry_app(
     app.router.add_post("/api/session", login)
     app.router.add_delete("/api/session", logout)
     app.router.add_get("/api/devices", devices)
+    app.router.add_get("/api/deployments", deployments)
+    app.router.add_post("/api/deployments", create_deployment)
+    app.router.add_get("/api/deployments/{deployment_id}", deployment)
+    app.router.add_get("/api/deployments/{deployment_id}/events", deployment_events)
+    app.router.add_post("/api/deployments/{deployment_id}/host-key", deployment_host_key)
+    app.router.add_post("/api/deployments/{deployment_id}/credentials", deployment_credentials)
+    app.router.add_post("/api/deployments/{deployment_id}/retry", deployment_retry)
+    app.router.add_post("/api/deployments/{deployment_id}/cancel", deployment_cancel)
     app.router.add_post("/api/enrollment-codes", enrollment_code)
     app.router.add_get("/api/releases", releases)
     app.router.add_post("/api/releases", upload_release)
@@ -116,6 +129,7 @@ def create_registry_app(
     app.router.add_static("/assets", STATIC_ROOT / "assets", append_version=True)
     app.router.add_static("/static", STATIC_ROOT, append_version=True)
     app.cleanup_ctx.append(_registry_maintenance)
+    app.cleanup_ctx.append(_deployment_cleanup)
     return app
 
 
@@ -187,6 +201,202 @@ async def devices(request: web.Request) -> web.Response:
     _admin(request)
     return web.json_response({"devices": request.app[STORE_KEY].list_devices()})
 
+
+def _deployment_payload(
+    body: dict[str, Any], store: RegistryStore
+) -> dict[str, Any]:
+    target = body.get("target")
+    ssh_user = body.get("ssh_user")
+    device_name = body.get("device_name")
+    requested_hostname = body.get("hostname") or "takt"
+    registry_url = body.get("registry_url")
+    release_id = body.get("release_id")
+    port = body.get("port", 22)
+    allow_insecure_http = body.get("allow_insecure_http", False)
+    if not all(
+        isinstance(value, str)
+        for value in (target, ssh_user, device_name, registry_url, release_id)
+    ):
+        raise web.HTTPBadRequest(
+            text="Target, SSH user, device name, registry URL, and release are required."
+        )
+    target = target.strip()
+    if not target or len(target) > 253 or any(
+        ord(character) < 33 for character in target
+    ) or any(character in "/\\@" for character in target):
+        raise web.HTTPBadRequest(text="Target must be a hostname or IP address.")
+    try:
+        ipaddress.ip_address(target)
+    except ValueError:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", target):
+            raise web.HTTPBadRequest(text="Target must be a hostname or IP address.") from None
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        raise web.HTTPBadRequest(text="SSH port must be between 1 and 65535.")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,31}", ssh_user):
+        raise web.HTTPBadRequest(text="SSH user is invalid.")
+    device_name = device_name.strip()
+    if not re.fullmatch(r"[A-Za-z0-9ÄÖÜäöüß._ -]{1,80}", device_name):
+        raise web.HTTPBadRequest(text="Device name is invalid.")
+    if not isinstance(requested_hostname, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", requested_hostname
+    ):
+        raise web.HTTPBadRequest(text="Hostname is invalid.")
+    if not isinstance(allow_insecure_http, bool):
+        raise web.HTTPBadRequest(text="HTTP acknowledgement must be boolean.")
+    try:
+        registry_url = validate_registry_url(registry_url, allow_insecure_http)
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    if not release_id or store.get_release(release_id) is None:
+        raise web.HTTPBadRequest(text="Release does not exist.")
+    return {
+        "target": target,
+        "port": port,
+        "ssh_user": ssh_user,
+        "device_name": device_name.strip(),
+        "requested_hostname": requested_hostname,
+        "registry_url": registry_url,
+        "allow_insecure_http": allow_insecure_http,
+        "release_id": release_id,
+    }
+
+
+async def deployments(request: web.Request) -> web.Response:
+    _admin(request)
+    return web.json_response({"deployments": request.app[STORE_KEY].list_deployments()})
+
+
+async def create_deployment(request: web.Request) -> web.Response:
+    _admin(request, csrf=True)
+    body = await _json(request, max_bytes=16 * 1024)
+    values = _deployment_payload(body, request.app[STORE_KEY])
+    try:
+        item = request.app[STORE_KEY].create_deployment(**values)
+    except ValueError as error:
+        raise web.HTTPConflict(text=str(error)) from error
+    request.app[DEPLOYMENTS_KEY].start_discovery(item["id"])
+    return web.json_response({"deployment": item}, status=202)
+
+
+async def deployment(request: web.Request) -> web.Response:
+    _admin(request)
+    item = request.app[STORE_KEY].get_deployment(request.match_info["deployment_id"])
+    if item is None:
+        raise web.HTTPNotFound(text="Deployment does not exist.")
+    return web.json_response({"deployment": item})
+
+
+async def deployment_events(request: web.Request) -> web.StreamResponse:
+    _admin(request)
+    deployment_id = request.match_info["deployment_id"]
+    if request.app[STORE_KEY].get_deployment(deployment_id) is None:
+        raise web.HTTPNotFound(text="Deployment does not exist.")
+    try:
+        after = int(request.headers.get("Last-Event-ID") or request.query.get("after", "0"))
+    except ValueError as error:
+        raise web.HTTPBadRequest(text="Event cursor is invalid.") from error
+    response = web.StreamResponse(
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-store",
+            "Connection": "keep-alive",
+        }
+    )
+    await response.prepare(request)
+    item = request.app[STORE_KEY].get_deployment(deployment_id)
+    try:
+        while True:
+            events = request.app[STORE_KEY].list_deployment_events(deployment_id, after)
+            if events:
+                item = request.app[STORE_KEY].get_deployment(deployment_id)
+            for event in events:
+                event["deployment"] = item
+                payload = json.dumps(event, separators=(",", ":")).encode("utf-8")
+                await response.write(
+                    b"id: " + str(event["id"]).encode() + b"\ndata: " + payload + b"\n\n"
+                )
+                after = event["id"]
+            if item is None or (
+                item["status"] in {"succeeded", "failed", "cancelled", "interrupted"}
+                and not events
+            ):
+                break
+            await asyncio.sleep(DEPLOYMENT_EVENT_POLL_SECONDS)
+    except (ConnectionResetError, asyncio.CancelledError):
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            await response.write_eof()
+    return response
+
+
+async def deployment_host_key(request: web.Request) -> web.Response:
+    _admin(request, csrf=True)
+    body = await _json(request, max_bytes=8 * 1024)
+    fingerprint = body.get("fingerprint")
+    replace = body.get("replace", False)
+    if not isinstance(fingerprint, str) or not isinstance(replace, bool):
+        raise web.HTTPBadRequest(text="Fingerprint and replacement flag are required.")
+    try:
+        item = await request.app[DEPLOYMENTS_KEY].confirm_host_key(
+            request.match_info["deployment_id"], fingerprint, replace=replace
+        )
+    except LookupError as error:
+        raise web.HTTPNotFound(text=str(error)) from error
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    return web.json_response({"deployment": item})
+
+
+async def deployment_credentials(request: web.Request) -> web.Response:
+    _admin(request, csrf=True)
+    body = await _json(request, max_bytes=128 * 1024)
+    values = {}
+    for name, limit in (
+        ("ssh_password", 1024),
+        ("ssh_private_key", 64 * 1024),
+        ("ssh_key_passphrase", 1024),
+        ("sudo_password", 1024),
+    ):
+        value = body.get(name, "")
+        if not isinstance(value, str) or len(value) > limit:
+            raise web.HTTPBadRequest(text=f"{name} is invalid.")
+        values[name] = value
+    credentials = DeploymentCredentials(**values)
+    try:
+        request.app[DEPLOYMENTS_KEY].submit_credentials(
+            request.match_info["deployment_id"], credentials
+        )
+    except LookupError as error:
+        credentials.clear()
+        raise web.HTTPNotFound(text=str(error)) from error
+    except ValueError as error:
+        credentials.clear()
+        raise web.HTTPBadRequest(text=str(error)) from error
+    return web.json_response(
+        {"deployment": request.app[STORE_KEY].get_deployment(request.match_info["deployment_id"])},
+        status=202,
+    )
+
+
+async def deployment_retry(request: web.Request) -> web.Response:
+    _admin(request, csrf=True)
+    try:
+        item = request.app[DEPLOYMENTS_KEY].retry(request.match_info["deployment_id"])
+    except LookupError as error:
+        raise web.HTTPNotFound(text=str(error)) from error
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    return web.json_response({"deployment": item}, status=202)
+
+
+async def deployment_cancel(request: web.Request) -> web.Response:
+    _admin(request, csrf=True)
+    try:
+        item = request.app[DEPLOYMENTS_KEY].cancel(request.match_info["deployment_id"])
+    except LookupError as error:
+        raise web.HTTPNotFound(text=str(error)) from error
+    return web.json_response({"deployment": item})
 
 async def enrollment_code(request: web.Request) -> web.Response:
     _admin(request, csrf=True)
@@ -820,6 +1030,11 @@ def _set_security_headers(request: web.Request, response: web.StreamResponse) ->
     )
     if request.path.startswith(("/api/", "/agent/")):
         response.headers["Cache-Control"] = "no-store"
+
+
+async def _deployment_cleanup(app: web.Application):
+    yield
+    await app[DEPLOYMENTS_KEY].close()
 
 
 async def _registry_maintenance(app: web.Application):

@@ -23,6 +23,29 @@ if [[ "$EUID" -eq 0 ]]; then
   exit 1
 fi
 
+bootstrap_config=""
+non_interactive=false
+while (($#)); do
+  case "$1" in
+    --bootstrap-config)
+      (($# >= 2)) || { printf "FEHLER: --bootstrap-config benötigt einen Pfad.\n" >&2; exit 2; }
+      bootstrap_config="$2"
+      shift 2
+      ;;
+    --non-interactive)
+      non_interactive=true
+      shift
+      ;;
+    --help)
+      printf "%s\n" "Usage: install_raspberry_pi.sh [--bootstrap-config PATH] [--non-interactive]"
+      exit 0
+      ;;
+    *)
+      printf "FEHLER: Unbekanntes Argument: %s\n" "$1" >&2
+      exit 2
+      ;;
+  esac
+done
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
   # Support an admin managing another account via `sudo -u <user> ./install...`.
@@ -52,6 +75,39 @@ fail() {
   printf '\nFEHLER: %s\n' "$1" >&2
   exit 1
 }
+if [[ -n "$bootstrap_config" ]]; then
+  [[ -r "$bootstrap_config" ]] || fail "Bootstrap-Konfiguration fehlt."
+  bootstrap_values="$(python3 - "$bootstrap_config" <<'PY'
+from pathlib import Path
+import shlex
+import sys
+import json
+
+bootstrap = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(bootstrap, dict):
+    raise SystemExit("Bootstrap-Konfiguration ist ungültig.")
+for key, shell_name in (
+    ("registry_url", "registry_url"),
+    ("enrollment_code", "enrollment_code"),
+    ("device_name", "device_name"),
+    ("hostname", "hostname_target"),
+):
+    value = bootstrap.get(key)
+    if not isinstance(value, str) or not value:
+        raise SystemExit(f"Bootstrap-Wert fehlt: {key}")
+    print(f"{shell_name}={shlex.quote(value)}")
+allow_http = bootstrap.get("allow_insecure_http", False)
+if not isinstance(allow_http, bool):
+    raise SystemExit("allow_insecure_http muss boolean sein.")
+print(f"allow_insecure_http={str(allow_http).lower()}")
+PY
+  )"
+  eval "$bootstrap_values"
+fi
+
+if [[ "$non_interactive" == true ]]; then
+  sudo() { command sudo -n "$@"; }
+fi
 
 cleanup() {
   [[ -z "${unit_file:-}" ]] || rm -f "$unit_file"
@@ -101,6 +157,14 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommen
   wireplumber
 
 say "TAKT-Umgebung einrichten"
+release_root="$install_home/.local/share/takt/releases"
+current_link="$install_home/.local/share/takt/current"
+mkdir -p "$release_root"
+if [[ -n "$bootstrap_config" ]]; then
+  persistent_project_dir="$(mktemp -d "$release_root/deploy-XXXXXXXX")"
+  cp -a "$project_dir/." "$persistent_project_dir"
+  project_dir="$persistent_project_dir"
+fi
 cd "$project_dir"
 python_version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 if [[ -e .venv ]] && {
@@ -121,10 +185,7 @@ if [[ ! -f "$config_dir/config.toml" ]]; then
   cp "$project_dir/config.example.toml" "$config_dir/config.toml"
 fi
 
-release_root="$install_home/.local/share/takt/releases"
-current_link="$install_home/.local/share/takt/current"
 release_environment="$config_dir/release.env"
-mkdir -p "$release_root"
 ln -sfn "$project_dir" "$current_link"
 installed_version="$($project_dir/.venv/bin/python -c 'from takt import __version__; print(__version__)')"
 printf 'TAKT_RELEASE_VERSION=%s\n' "$installed_version" >"$release_environment"
@@ -477,7 +538,12 @@ printf '\nFERTIG · TAKT läuft headless und ist im lokalen Netzwerk erreichbar:
 printf 'Der physische Taster verwendet GPIO17 und GND.\n'
 printf 'Ein Bildschirm oder Desktop auf dem Raspberry Pi ist nicht erforderlich.\n'
 
-if [[ -t 0 ]]; then
+if [[ "$non_interactive" == true ]]; then
+  if [[ "${TAKT_MANAGED_REBOOT:-}" != true ]]; then
+    printf '\nTAKT startet neu, um die Headless- und Audio-Konfiguration zu übernehmen.\n'
+    sudo reboot
+  fi
+elif [[ -t 0 ]]; then
   printf '\nJetzt neu starten, um die neue Headless- und Audio-Konfiguration vollständig zu übernehmen? [J/n] '
   read -r answer
   if [[ -z "$answer" || "$answer" =~ ^[JjYy]$ ]]; then

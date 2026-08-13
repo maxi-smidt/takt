@@ -200,6 +200,9 @@ input:focus, select:focus { border-color: var(--green); }
 .deployment-panel > p strong { color: #cfe1dc; }
 .deploy-command { margin: 0 0 14px; padding: 18px; overflow: auto; color: #bcfade; border: 1px solid #2c413c; background: #07100e; font-family: var(--font-mono); font-size: var(--fs-small); line-height: 1.8; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
 .deployment-panel .secondary-button { margin-top: 0; }
+.deployment-log { max-height: 220px; overflow: auto; margin: 18px 0; padding: 12px; border: 1px solid var(--line); background: #07100e; font-family: var(--font-mono); font-size: var(--fs-small); text-align: left; }
+.deployment-log-line { display: grid; grid-template-columns: 92px 1fr; gap: 10px; padding: 4px 0; color: var(--muted); } .deployment-log-line span { color: var(--green); } .deployment-log-line.level-error { color: #ffb0a2; }
+.deployment-credentials { display: grid; gap: 14px; } .deployment-credentials textarea { margin-top: 8px; width: 100%; resize: vertical; } .deployment-actions { display: flex; flex-wrap: wrap; gap: 10px; } .deployment-confirmation { display: grid; gap: 12px; margin: 18px 0; padding: 15px; border: 1px solid #7a6033; background: #211b10; text-align: left; } .deployment-confirmation code { overflow-wrap: anywhere; color: #f8dda6; font-family: var(--font-mono); }
 .deployment-note { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; color: var(--muted); font-size: var(--fs-small); line-height: 1.55; text-align: left; }
 .deployment-note svg { flex: 0 0 auto; color: var(--green); }
 .deployment-note.insecure-note { color: #f8dda6; }

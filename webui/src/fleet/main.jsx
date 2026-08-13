@@ -9,7 +9,6 @@ import {
   Check,
   Clock3,
   CloudDownload,
-  Copy,
   Database,
   Download,
   HardDrive,
@@ -21,7 +20,6 @@ import {
   RotateCcw,
   Server,
   TriangleAlert,
-  Terminal,
   Upload,
   Wifi,
   WifiOff,
@@ -30,6 +28,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { wifiNetworkError } from "./wifiValidation.js";
+import { deploymentTargetError } from "./deploymentValidation.js";
 
 async function request(url, options = {}, csrf = "") {
   const headers = { ...options.headers };
@@ -63,9 +62,6 @@ function bytes(value) {
   return `${amount.toFixed(index ? 1 : 0)} ${units[index]}`;
 }
 
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", `'"'"'`)}'`;
-}
 
 function insecureRemoteHttp(value) {
   try {
@@ -79,26 +75,6 @@ function insecureRemoteHttp(value) {
   }
 }
 
-async function copyText(value) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(value);
-      return;
-    } catch {
-      // LAN deployments commonly use HTTP, where the Clipboard API can be blocked.
-    }
-  }
-  const input = document.createElement("textarea");
-  input.value = value;
-  input.setAttribute("readonly", "");
-  input.style.position = "fixed";
-  input.style.opacity = "0";
-  document.body.append(input);
-  input.select();
-  const copied = document.execCommand("copy");
-  input.remove();
-  if (!copied) throw new Error("Copying is unavailable. Select the command manually.");
-}
 
 function Login({ onLogin }) {
   const [password, setPassword] = useState("");
@@ -165,150 +141,169 @@ function Modal({ title, eyebrow, onClose, children, wide = false }) {
   );
 }
 
-function EnrollmentModal({ csrf, onClose }) {
-  const [deviceName, setDeviceName] = useState("Bahn 1");
-  const [hostname, setHostname] = useState("takt-01");
-  const [sshUser, setSshUser] = useState("");
-  const [piAddress, setPiAddress] = useState("raspberrypi.local");
-  const [registryUrl, setRegistryUrl] = useState(() => window.location.origin);
-  const [allowInsecureHttp, setAllowInsecureHttp] = useState(false);
-  const [code, setCode] = useState("");
+function EnrollmentModal({ csrf, onClose, releases, onDone }) {
+  const [fields, setFields] = useState({
+    device_name: "Bahn 1",
+    hostname: "takt-01",
+    ssh_user: "",
+    target: "raspberrypi.local",
+    registry_url: window.location.origin,
+    release_id: releases[0]?.id || "",
+    allow_insecure_http: false,
+  });
+  const [deployment, setDeployment] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [credentials, setCredentials] = useState({
+    ssh_password: "", ssh_private_key: "", ssh_key_passphrase: "", sudo_password: "",
+  });
+  const [replaceHostKey, setReplaceHostKey] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [copyLabel, setCopyLabel] = useState("COPY DEPLOY COMMAND");
 
+  const [streamAfter, setStreamAfter] = useState(0);
+  const update = (key, value) => setFields((current) => ({ ...current, [key]: value }));
   const validate = () => {
-    if (!deviceName.trim() || !/^[A-Za-z0-9ÄÖÜäöüß._ -]+$/.test(deviceName)) {
-      return "Device name may contain letters, numbers, spaces, dots, underscores and hyphens.";
-    }
-    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(hostname)) {
-      return "Hostname must start with a letter or number and contain only letters, numbers and hyphens.";
-    }
-    if (!/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/.test(sshUser)) {
-      return "SSH user is invalid.";
-    }
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(piAddress)) {
-      return "Pi address must be a hostname or IPv4 address without spaces.";
-    }
+    if (!/^[A-Za-z0-9ÄÖÜäöüß._ -]{1,80}$/.test(fields.device_name.trim())) return "Device name is invalid.";
+    if (fields.hostname && !/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(fields.hostname)) return "Hostname is invalid.";
+    if (!/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/.test(fields.ssh_user)) return "SSH user is invalid.";
+    if (deploymentTargetError(fields.target)) return "Target is invalid.";
+    if (!fields.release_id) return "Upload a Raspberry Pi release first.";
     try {
-      const parsed = new URL(registryUrl);
-      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
-        return "Registry URL must be an HTTP(S) address without embedded credentials.";
-      }
+      const url = new URL(fields.registry_url);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return "Registry URL is invalid.";
     } catch {
       return "Registry URL is invalid.";
     }
-    if (insecureRemoteHttp(registryUrl) && !allowInsecureHttp) {
-      return "Use HTTPS, or explicitly acknowledge HTTP over your private VPN/isolated LAN.";
-    }
+    if (insecureRemoteHttp(fields.registry_url) && !fields.allow_insecure_http) return "HTTPS or explicit HTTP acknowledgement is required.";
     return "";
   };
 
-  const create = async (event) => {
-    event.preventDefault();
-    setError("");
-    const validationError = validate();
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
+  const post = async (path, body) => {
     setBusy(true);
+    setError("");
     try {
-      const result = await request(
-        "/api/enrollment-codes",
-        { method: "POST", body: JSON.stringify({ label: deviceName.trim() }) },
-        csrf,
-      );
-      setCode(result.code);
+      const result = await request(path, { method: "POST", body: JSON.stringify(body) }, csrf);
+      setDeployment(result.deployment);
+      return true;
     } catch (failure) {
       setError(failure.message);
+      return false;
     } finally {
       setBusy(false);
     }
   };
 
-  const normalizedRegistryUrl = (() => {
-    try {
-      return new URL(registryUrl).toString().replace(/\/$/, "");
-    } catch {
-      return registryUrl.trim().replace(/\/$/, "");
-    }
-  })();
-  const deployCommand = code ? [
-    `TAKT_REGISTRY_URL=${shellQuote(normalizedRegistryUrl)} \\`,
-    ...(insecureRemoteHttp(normalizedRegistryUrl)
-      ? [`TAKT_REGISTRY_ALLOW_INSECURE_HTTP='true' \\`]
-      : []),
-    `TAKT_ENROLLMENT_CODE=${shellQuote(code)} \\`,
-    `TAKT_DEVICE_NAME=${shellQuote(deviceName.trim())} \\`,
-    `TAKT_HOSTNAME=${shellQuote(hostname)} \\`,
-    `  ./scripts/deploy_to_raspberry_pi.sh ${shellQuote(`${sshUser}@${piAddress}`)}`,
-  ].join("\n") : "";
+  const create = async (event) => {
+    event.preventDefault();
+    const validationError = validate();
+    if (validationError) return setError(validationError);
+    const result = await post("/api/deployments", fields);
+    if (result) setEvents([]);
+  };
 
-  const copyCommand = async () => {
-    try {
-      await copyText(deployCommand);
-      setCopyLabel("COPIED");
-      window.setTimeout(() => setCopyLabel("COPY DEPLOY COMMAND"), 1800);
-    } catch (failure) {
-      setError(failure.message);
+  useEffect(() => {
+    if (!deployment?.id) return undefined;
+    let active = true;
+    let source;
+    const path = "/api/deployments/" + deployment.id;
+    const load = () => request(path)
+      .then((result) => {
+        if (!active) return;
+        setDeployment(result.deployment);
+        setError("");
+        if (["succeeded", "failed", "cancelled", "interrupted"].includes(result.deployment.status)) {
+          source?.close();
+        }
+      })
+      .catch((failure) => active && setError(failure.message));
+    load();
+    source = new EventSource(path + "/events?after=" + streamAfter);
+    source.onmessage = (message) => {
+      try {
+        const event = JSON.parse(message.data);
+        if (active) {
+          setEvents((current) => [...current, event]);
+          if (event.deployment) {
+            setDeployment(event.deployment);
+            setError("");
+            if (["succeeded", "failed", "cancelled", "interrupted"].includes(event.deployment.status)) source.close();
+          }
+        }
+      } catch {
+        if (active) setError("Deployment log contained invalid data.");
+      }
+    };
+    source.onerror = () => { if (active) load(); };
+    return () => { active = false; source.close(); };
+  }, [deployment?.id, streamAfter]);
+
+  const confirmHostKey = () => post(
+    "/api/deployments/" + deployment.id + "/host-key",
+    { fingerprint: deployment.host_key_fingerprint, replace: replaceHostKey },
+  );
+  const submitCredentials = async (event) => {
+    event.preventDefault();
+    if (!credentials.ssh_password && !credentials.ssh_private_key) return setError("SSH password or private key is required.");
+    const accepted = await post("/api/deployments/" + deployment.id + "/credentials", credentials);
+    if (accepted) setCredentials({ ssh_password: "", ssh_private_key: "", ssh_key_passphrase: "", sudo_password: "" });
+  };
+  const cancel = () => post("/api/deployments/" + deployment.id + "/cancel", {});
+  const retry = async () => {
+    const after = events.at(-1)?.id || 0;
+    if (await post("/api/deployments/" + deployment.id + "/retry", {})) {
+      setEvents([]);
+      setStreamAfter(after);
     }
   };
 
   return (
-    <Modal title="ENROLL A RASPBERRY PI" eyebrow="GUIDED FIRST DEPLOYMENT" onClose={onClose} wide>
-      {!code ? (
+    <Modal title="DEPLOY A RASPBERRY PI" eyebrow="GUIDED FIRST DEPLOYMENT" onClose={onClose} wide>
+      {!deployment ? (
         <form className="modal-body" onSubmit={create}>
-          <p>Enter the individual parts once. The registry will create a safe command for the one-time SSH installation.</p>
+          <p>The registry checks, installs, enrolls, and verifies the Pi without a laptop checkout.</p>
           <div className="enrollment-fields">
-            <label className="field-label">DEVICE NAME
-              <input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} placeholder="e.g. Bahn 1" required />
-            </label>
-            <label className="field-label">TAKT HOSTNAME
-              <input value={hostname} onChange={(event) => setHostname(event.target.value)} placeholder="e.g. takt-01" required />
-            </label>
-            <label className="field-label">RASPBERRY PI SSH USER
-              <input value={sshUser} onChange={(event) => setSshUser(event.target.value)} placeholder="e.g. pi" required />
-            </label>
-            <label className="field-label">RASPBERRY PI ADDRESS
-              <input value={piAddress} onChange={(event) => setPiAddress(event.target.value)} placeholder="e.g. raspberrypi.local" required />
-            </label>
-            <label className="field-label enrollment-url">REGISTRY URL REACHABLE BY THE PI
-              <input value={registryUrl} onChange={(event) => setRegistryUrl(event.target.value)} placeholder="e.g. http://192.168.1.10:8090" required />
-            </label>
-            {insecureRemoteHttp(registryUrl) && (
-              <label className="insecure-opt-in">
-                <input
-                  type="checkbox"
-                  checked={allowInsecureHttp}
-                  onChange={(event) => setAllowInsecureHttp(event.target.checked)}
-                />
-                <span>
-                  <strong>ALLOW HTTP TRANSPORT</strong>
-                  Without a private VPN, HTTP exposes device data and cannot authenticate remote releases. Use only on a protected VPN or consciously isolated LAN.
-                </span>
+            {[
+              ["device_name", "DEVICE NAME", "Bahn 1"],
+              ["hostname", "TAKT HOSTNAME", "takt-01"],
+              ["ssh_user", "SSH USER", "pi"],
+              ["target", "PI HOSTNAME / IP", "raspberrypi.local"],
+              ["registry_url", "REGISTRY URL REACHABLE BY THE PI", "https://registry.example"],
+            ].map(([key, label, placeholder]) => (
+              <label className="field-label" key={key}>{label}
+                <input value={fields[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} required={key !== "hostname"} />
               </label>
+            ))}
+            <label className="field-label">RASPBERRY PI RELEASE
+              <select value={fields.release_id} onChange={(event) => update("release_id", event.target.value)} required>
+                <option value="">SELECT A RELEASE</option>
+                {releases.map((release) => <option value={release.id} key={release.id}>{release.version}</option>)}
+              </select>
+            </label>
+            {insecureRemoteHttp(fields.registry_url) && (
+              <label className="insecure-opt-in"><input type="checkbox" checked={fields.allow_insecure_http} onChange={(event) => update("allow_insecure_http", event.target.checked)} /><span><strong>ALLOW HTTP TRANSPORT</strong> Use only on a protected VPN or isolated LAN.</span></label>
             )}
           </div>
           {error && <div className="form-error">{error}</div>}
-          <button className="primary-button" disabled={busy}>
-            <Plus size={15} /> {busy ? "CREATING …" : "CREATE DEPLOY COMMAND"}
-          </button>
+          <button className="primary-button" disabled={busy || !releases.length}><Plus size={15} /> {busy ? "STARTING …" : "START DEPLOYMENT"}</button>
         </form>
       ) : (
         <div className="modal-body deployment-panel">
-          <div className="deployment-ready"><Check size={22} /><div><strong>DEPLOYMENT READY</strong><span>Enrollment code expires in 60 minutes</span></div></div>
-          <p>
-            Run this once from the TAKT repository on your laptop. It connects to
-            <strong> {sshUser}@{piAddress}</strong> and enrolls the agent with this registry.
-          </p>
-          <pre className="deploy-command"><code>{deployCommand}</code></pre>
+          <div className="deployment-ready"><Activity size={22} /><div><strong>{deployment.status.replaceAll("_", " ").toUpperCase()}</strong><span>{deployment.message}</span></div></div>
+          <div className="deployment-log" aria-live="polite">{events.map((item) => <div className={"deployment-log-line level-" + item.level} key={item.id}><span>{item.stage}</span>{item.message}</div>)}</div>
+          {deployment.status === "awaiting_host_key" && <div className="deployment-confirmation"><strong>VERIFY SSH HOST KEY</strong><code>{deployment.host_key_fingerprint}</code><label className="insecure-opt-in"><input type="checkbox" checked={replaceHostKey} onChange={(event) => setReplaceHostKey(event.target.checked)} /><span>Replace an existing trusted key only when expected.</span></label><button className="primary-button" onClick={confirmHostKey} disabled={busy}><KeyRound size={15} /> TRUST HOST KEY</button></div>}
+          {deployment.status === "awaiting_credentials" && <form className="deployment-credentials" onSubmit={submitCredentials}>
+            <label className="field-label">SSH PASSWORD<input type="password" autoComplete="new-password" value={credentials.ssh_password} onChange={(event) => setCredentials({ ...credentials, ssh_password: event.target.value })} /></label>
+            <label className="field-label">OR PRIVATE KEY<textarea rows="4" value={credentials.ssh_private_key} onChange={(event) => setCredentials({ ...credentials, ssh_private_key: event.target.value })} /></label>
+            <label className="field-label">KEY PASSPHRASE<input type="password" autoComplete="off" value={credentials.ssh_key_passphrase} onChange={(event) => setCredentials({ ...credentials, ssh_key_passphrase: event.target.value })} /></label>
+            <label className="field-label">SUDO PASSWORD<input type="password" autoComplete="off" value={credentials.sudo_password} onChange={(event) => setCredentials({ ...credentials, sudo_password: event.target.value })} placeholder="Defaults to SSH password" /></label>
+            <button className="primary-button" disabled={busy}><KeyRound size={15} /> CONTINUE</button>
+          </form>}
           {error && <div className="form-error">{error}</div>}
-          <button className="secondary-button" onClick={copyCommand}><Copy size={15} /> {copyLabel}</button>
-          <div className="deployment-note"><Terminal size={15} /><span>SSH is needed only for this first installation. Future versions are installed from the registry.</span></div>
-          {insecureRemoteHttp(normalizedRegistryUrl) && (
-            <div className="deployment-note insecure-note"><WifiOff size={15} /><span>This device explicitly permits HTTP. Treat remote installs as trusted only when this path is protected by a private VPN or isolated LAN.</span></div>
-          )}
+          <div className="deployment-actions">
+            {["pending", "running", "awaiting_host_key", "awaiting_credentials"].includes(deployment.status) && <button className="secondary-button" onClick={cancel} disabled={busy}><X size={15} /> CANCEL</button>}
+            {["failed", "cancelled", "interrupted"].includes(deployment.status) && <button className="secondary-button" onClick={retry} disabled={busy}><RotateCcw size={15} /> RETRY</button>}
+            {deployment.status === "succeeded" && <button className="primary-button" onClick={() => { onDone(); onClose(); }}><Check size={15} /> DONE</button>}
+          </div>
         </div>
       )}
     </Modal>
@@ -617,7 +612,7 @@ function Dashboard({ session, refreshSession }) {
         <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></section>
         <section className="device-grid">
           {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} onJob={createJob} onRevoke={revokeDevice} onWifi={setWifiDevice} />)}
-          {!devices.length && <div className="empty-card"><Server size={28} /><h3>NO DEVICES ENROLLED</h3><p>Create an enrollment code to connect the first Raspberry Pi.</p><button className="primary-button" onClick={() => setModal("enroll")}>ENROLL FIRST DEVICE</button></div>}
+          {!devices.length && <div className="empty-card"><Server size={28} /><h3>NO DEVICES ENROLLED</h3><p>Start a guided deployment to connect the first Raspberry Pi.</p><button className="primary-button" onClick={() => setModal("enroll")}>ENROLL FIRST DEVICE</button></div>}
         </section>
         <section className="operations">
           <div className="section-heading"><div><span>02 · ACTIVITY</span><h2>DEPLOYMENT JOBS</h2></div></div>
@@ -627,7 +622,7 @@ function Dashboard({ session, refreshSession }) {
           </div>
         </section>
       </main>
-      {modal === "enroll" && <EnrollmentModal csrf={session.csrf_token} onClose={() => setModal(null)} />}
+      {modal === "enroll" && <EnrollmentModal csrf={session.csrf_token} releases={releases} onDone={load} onClose={() => setModal(null)} />}
       {modal === "release" && <ReleaseModal csrf={session.csrf_token} onClose={() => setModal(null)} onUploaded={load} />}
       {wifiDevice && <WifiModal device={wifiDevice} csrf={session.csrf_token} onClose={() => setWifiDevice(null)} onCreated={load} />}
     </div>

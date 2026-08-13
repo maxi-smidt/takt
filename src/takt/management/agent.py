@@ -30,9 +30,9 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector
 
 from takt import __version__
 from takt.logging_config import configure_logging
+from takt.protocol import PROTOCOL_VERSION
 
 LOGGER = logging.getLogger(__name__)
-PROTOCOL_VERSION = 1
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{24}$")
 VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 MAX_RELEASE_SIZE = 250 * 1024 * 1024
