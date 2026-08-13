@@ -4,9 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import asyncssh
 
 from takt.registry.deployment import (
     OUTPUT_LIMIT,
+    DeploymentCredentials,
     DeploymentManager,
     redact_message,
     validate_hostname,
@@ -250,6 +254,44 @@ class DeploymentStorageTests(unittest.TestCase):
 
 
 class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connect_uses_text_known_hosts_for_both_credential_paths(self) -> None:
+        host_key = asyncssh.generate_private_key("ssh-ed25519")
+        deployment = {
+            "target": "pi.local",
+            "port": 22,
+            "ssh_user": "pi",
+            "host_key": host_key.export_public_key("openssh").decode().strip(),
+        }
+        credentials = (
+            DeploymentCredentials(ssh_password="correct horse"),
+            DeploymentCredentials(
+                ssh_private_key=host_key.export_private_key("openssh").decode()
+            ),
+        )
+        manager = object.__new__(DeploymentManager)
+
+        with patch(
+            "takt.registry.deployment.asyncssh.connect", new_callable=AsyncMock
+        ) as connect:
+            connect.return_value = object()
+            for credential in credentials:
+                with self.subTest(credential=bool(credential.ssh_private_key)):
+                    result = await manager._connect(deployment, credential)
+                    self.assertIs(result, connect.return_value)
+                    options = connect.await_args.kwargs
+                    self.assertIsNotNone(options["known_hosts"])
+                    if credential.ssh_private_key:
+                        self.assertNotIn("password", options)
+                        self.assertEqual(len(options["client_keys"]), 1)
+                        self.assertEqual(
+                            options["client_keys"][0].export_public_key("openssh"),
+                            host_key.export_public_key("openssh"),
+                        )
+                    else:
+                        self.assertEqual(options["password"], "correct horse")
+                        self.assertNotIn("client_keys", options)
+                    connect.reset_mock()
+
     async def test_hostname_change_reconnects_and_audits(self) -> None:
         class Store:
             def __init__(self) -> None:
