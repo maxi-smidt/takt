@@ -50,7 +50,12 @@ class DeploymentStorageTests(unittest.TestCase):
                 linked = store.get_deployment(deployment["id"])
                 assert linked is not None
                 self.assertEqual(linked["device_id"], "12345678-1234-1234-1234-123456789abc")
-                self.assertEqual(store.list_deployment_events(deployment["id"])[0]["stage"], "starting")
+                store.record_deployment_event(
+                    deployment["id"], "preflight", "Checks passed", status="running"
+                )
+                events = store.list_deployment_events(deployment["id"])
+                self.assertEqual(events[-1]["stage"], "preflight")
+                self.assertTrue(events[-1]["created_at"])
             finally:
                 store.close()
 

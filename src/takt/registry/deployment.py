@@ -15,6 +15,7 @@ import asyncssh
 from takt.registry.storage import RegistryStore
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
+TRANSFER_TIMEOUT = 15 * 60
 HOST_KEY_TIMEOUT = 20
 COMMAND_TIMEOUT = 60
 INSTALL_TIMEOUT = 45 * 60
@@ -266,7 +267,6 @@ class DeploymentManager:
                     status="running",
                 )
                 connection = await self._connect(deployment, credentials)
-                await self._authorize_sudo(connection, deployment_id, credentials)
                 await self._preflight(connection, deployment_id, deployment)
                 code = self.store.create_enrollment_code(
                     deployment["device_name"], deployment_id=deployment_id
@@ -277,7 +277,7 @@ class DeploymentManager:
                     "Uploading the server-side Raspberry Pi package.",
                 )
                 await self._transfer(connection, deployment_id, deployment, code)
-                await self._install(connection, deployment_id, deployment)
+                await self._install(connection, deployment_id, deployment, credentials)
                 await self._wait_for_agent(deployment_id, deployment["release_version"])
                 self._event(
                     deployment_id,
@@ -339,27 +339,6 @@ class DeploymentManager:
             options["password"] = credentials.ssh_password
         return await asyncssh.connect(**options)
 
-    async def _authorize_sudo(
-        self,
-        connection: asyncssh.SSHClientConnection,
-        deployment_id: str,
-        credentials: DeploymentCredentials,
-    ) -> None:
-        password = credentials.sudo_password or credentials.ssh_password
-        command = "sudo -S -p '' -v" if password else "sudo -n -v"
-        await self._command(
-            connection,
-            deployment_id,
-            "authorizing",
-            command,
-            input_text=password or None,
-            timeout=COMMAND_TIMEOUT,
-        )
-        self._event(
-            deployment_id,
-            "authorizing",
-            "Sudo credential accepted for this deployment.",
-        )
 
     async def _preflight(
         self,
@@ -406,31 +385,43 @@ class DeploymentManager:
     ) -> None:
         remote_dir = f".local/share/takt/bootstrap/{deployment_id}"
         archive = f"{remote_dir}/release.tar.gz"
-        config = f"{remote_dir}/bootstrap.toml"
+        config = f"{remote_dir}/bootstrap.json"
         work = f"{remote_dir}/work"
         release = self.store.get_release(deployment["release_id"])
         if release is None:
             raise ValueError("Release no longer exists.")
         quoted_dir = shlex.quote(remote_dir)
-        await self._command(
+        stdout, stderr, exit_status = await self._command(
             connection,
             deployment_id,
             "transfer",
             f"rm -rf -- {quoted_dir} && mkdir -p -- {quoted_dir}",
         )
-        bootstrap = (
-            "[bootstrap]\n"
-            f"registry_url = {json.dumps(deployment['registry_url'])}\n"
-            f"allow_insecure_http = {'true' if deployment['allow_insecure_http'] else 'false'}\n"
-            f"enrollment_code = {json.dumps(code)}\n"
-            f"device_name = {json.dumps(deployment['device_name'])}\n"
-            f"hostname = {json.dumps(deployment['requested_hostname'])}\n"
-        )
-        async with connection.start_sftp_client() as sftp:
-            await sftp.put(str(self.store.release_path(release["id"])), archive)
-            await sftp.putfo(io.BytesIO(bootstrap.encode("utf-8")), config)
+        if exit_status:
+            raise RuntimeError(stderr.strip() or stdout.strip() or "Could not prepare transfer.")
+        bootstrap = json.dumps(
+            {
+                "registry_url": deployment["registry_url"],
+                "allow_insecure_http": bool(deployment["allow_insecure_http"]),
+                "enrollment_code": code,
+                "device_name": deployment["device_name"],
+                "hostname": deployment["requested_hostname"],
+            }
+        ).encode("utf-8")
+        try:
+            async with connection.start_sftp_client() as sftp:
+                await asyncio.wait_for(
+                    sftp.put(str(self.store.release_path(release["id"])), archive),
+                    timeout=TRANSFER_TIMEOUT,
+                )
+                await asyncio.wait_for(
+                    sftp.putfo(io.BytesIO(bootstrap), config),
+                    timeout=COMMAND_TIMEOUT,
+                )
+        except TimeoutError as error:
+            raise TimeoutError("Release upload timed out.") from error
         digest = shlex.quote(release["sha256"])
-        await self._command(
+        stdout, stderr, exit_status = await self._command(
             connection,
             deployment_id,
             "transfer",
@@ -438,6 +429,8 @@ class DeploymentManager:
             f"mkdir -p -- {shlex.quote(work)} && "
             f"tar -xzf {shlex.quote(archive)} --strip-components=1 -C {shlex.quote(work)}",
         )
+        if exit_status:
+            raise RuntimeError(stderr.strip() or stdout.strip() or "Package verification failed.")
         self._event(deployment_id, "transfer", "Package checksum verified and unpacked.")
 
     async def _install(
@@ -445,29 +438,51 @@ class DeploymentManager:
         connection: asyncssh.SSHClientConnection,
         deployment_id: str,
         deployment: dict[str, Any],
+        credentials: DeploymentCredentials,
     ) -> None:
         remote_dir = f".local/share/takt/bootstrap/{deployment_id}"
-        command = (
+        installer = (
             f"bash {shlex.quote(remote_dir + '/work/scripts/install_raspberry_pi.sh')} "
-            f"--bootstrap-config {shlex.quote(remote_dir + '/bootstrap.toml')} --non-interactive"
+            f"--bootstrap-config {shlex.quote(remote_dir + '/bootstrap.json')} --non-interactive"
         )
-        self._event(deployment_id, "install", "Installing TAKT and enabling the agent.")
+        sudo_password = credentials.sudo_password or credentials.ssh_password
+        if sudo_password:
+            command = (
+                "set -eu; IFS= read -r _takt_sudo_password; "
+                "printf '%s\\n' \"$_takt_sudo_password\" | sudo -S -p '' -v; "
+                "unset _takt_sudo_password; "
+                "(while sleep 60; do sudo -n -v; done) & _takt_sudo_refresh=$!; "
+                "trap 'kill $_takt_sudo_refresh 2>/dev/null || true' EXIT; "
+                + installer
+            )
+        else:
+            command = "set -eu; sudo -n -v; " + installer
+        self._event(
+            deployment_id,
+            "authorizing",
+            "Validating sudo credentials for the installer session.",
+        )
         stdout, stderr, exit_status = await self._command(
             connection,
             deployment_id,
             "install",
             command,
+            input_text=sudo_password or None,
             timeout=INSTALL_TIMEOUT,
         )
         if exit_status:
             raise RuntimeError(stderr.strip() or stdout.strip() or "Installer failed.")
-        await self._command(
+        stdout, stderr, exit_status = await self._command(
             connection,
             deployment_id,
             "cleanup",
             f"rm -f -- {shlex.quote(remote_dir + '/release.tar.gz')} "
-            f"{shlex.quote(remote_dir + '/bootstrap.toml')}",
+            f"{shlex.quote(remote_dir + '/bootstrap.json')}",
         )
+        if exit_status:
+            raise RuntimeError(
+                stderr.strip() or stdout.strip() or "Could not remove bootstrap files."
+            )
         self._event(deployment_id, "install", "Installer completed; waiting for the agent.")
 
     async def _wait_for_agent(self, deployment_id: str, release_version: str) -> None:
@@ -477,15 +492,6 @@ class DeploymentManager:
             deployment = self._deployment(deployment_id)
             device_id = deployment.get("device_id")
             device = self.store.get_device(device_id) if device_id else None
-            if device is None:
-                for candidate in self.store.list_devices():
-                    if (
-                        candidate["name"] == deployment["device_name"]
-                        and candidate["hostname"] == deployment["requested_hostname"]
-                    ):
-                        self.store.update_deployment(deployment_id, device_id=candidate["id"])
-                        device = candidate
-                        break
             status = (device or {}).get("status", {})
             health = status.get("health") or {}
             if (
@@ -518,10 +524,14 @@ class DeploymentManager:
             stdout, stderr = await asyncio.wait_for(
                 asyncio.gather(process.stdout.read(), process.stderr.read()), timeout=timeout
             )
-            result = await asyncio.wait_for(process.wait(), timeout=5)
         except TimeoutError as error:
             process.kill()
             raise TimeoutError(f"Remote command timed out after {timeout:g} seconds.") from error
+        try:
+            result = await asyncio.wait_for(process.wait(), timeout=5)
+        except TimeoutError as error:
+            process.kill()
+            raise TimeoutError("Remote command did not exit after output closed.") from error
         stdout = stdout or ""
         stderr = stderr or ""
         for line in stdout.splitlines()[-100:]:

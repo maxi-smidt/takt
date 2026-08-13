@@ -159,12 +159,13 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const [streamRetry, setStreamRetry] = useState(0);
   const update = (key, value) => setFields((current) => ({ ...current, [key]: value }));
   const validate = () => {
     if (!/^[A-Za-z0-9ÄÖÜäöüß._ -]{1,80}$/.test(fields.device_name.trim())) return "Device name is invalid.";
-    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(fields.hostname)) return "Hostname is invalid.";
+    if (fields.hostname && !/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(fields.hostname)) return "Hostname is invalid.";
     if (!/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/.test(fields.ssh_user)) return "SSH user is invalid.";
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(fields.target)) return "Target is invalid.";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(fields.target) && !/^[0-9A-Fa-f:]+$/.test(fields.target)) return "Target is invalid.";
     if (!fields.release_id) return "Upload a Raspberry Pi release first.";
     try {
       const url = new URL(fields.registry_url);
@@ -202,10 +203,20 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   useEffect(() => {
     if (!deployment?.id) return undefined;
     let active = true;
+    let source;
     const path = "/api/deployments/" + deployment.id;
-    const load = () => request(path).then((result) => active && setDeployment(result.deployment)).catch((failure) => active && setError(failure.message));
+    const load = () => request(path)
+      .then((result) => {
+        if (!active) return;
+        setDeployment(result.deployment);
+        setError("");
+        if (["succeeded", "failed", "cancelled", "interrupted"].includes(result.deployment.status)) {
+          source?.close();
+        }
+      })
+      .catch((failure) => active && setError(failure.message));
     load();
-    const source = new EventSource(path + "/events");
+    source = new EventSource(path + "/events");
     source.onmessage = (message) => {
       try {
         if (active) setEvents((current) => [...current, JSON.parse(message.data)]);
@@ -214,8 +225,9 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
       }
       load();
     };
+    source.onerror = () => { if (active) load(); };
     return () => { active = false; source.close(); };
-  }, [deployment?.id]);
+  }, [deployment?.id, streamRetry]);
 
   const confirmHostKey = () => post(
     "/api/deployments/" + deployment.id + "/host-key",
@@ -228,7 +240,12 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
     if (accepted) setCredentials({ ssh_password: "", ssh_private_key: "", ssh_key_passphrase: "", sudo_password: "" });
   };
   const cancel = () => post("/api/deployments/" + deployment.id + "/cancel", {});
-  const retry = () => { setEvents([]); return post("/api/deployments/" + deployment.id + "/retry", {}); };
+  const retry = async () => {
+    setEvents([]);
+    if (await post("/api/deployments/" + deployment.id + "/retry", {})) {
+      setStreamRetry((current) => current + 1);
+    }
+  };
 
   return (
     <Modal title="DEPLOY A RASPBERRY PI" eyebrow="GUIDED FIRST DEPLOYMENT" onClose={onClose} wide>

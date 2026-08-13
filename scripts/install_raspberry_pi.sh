@@ -81,10 +81,9 @@ if [[ -n "$bootstrap_config" ]]; then
 from pathlib import Path
 import shlex
 import sys
-import tomllib
+import json
 
-data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-bootstrap = data.get("bootstrap")
+bootstrap = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 if not isinstance(bootstrap, dict):
     raise SystemExit("Bootstrap-Konfiguration ist ungültig.")
 for key, shell_name in (

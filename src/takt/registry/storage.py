@@ -1086,19 +1086,8 @@ class RegistryStore:
             if result is None:
                 raise KeyError(deployment_id)
             return result
-        assignments = ["updated_at = ?"]
-        values: list[Any] = [utc_iso()]
-        for key, value in changes.items():
-            assignments.append(f"{key} = ?")
-            values.append(value)
-        values.append(deployment_id)
         with self.connection:
-            updated = self.connection.execute(
-                f"UPDATE deployments SET {', '.join(assignments)} WHERE id = ?",
-                values,
-            )
-        if not updated.rowcount:
-            raise KeyError(deployment_id)
+            self._set_deployment_fields(deployment_id, changes)
         result = self.get_deployment(deployment_id)
         assert result is not None
         return result
@@ -1120,24 +1109,31 @@ class RegistryStore:
                     deployment_id, created_at, stage, level, message
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (deployment_id, stage, level, message),
+                (deployment_id, now, stage, level, message),
             )
             changes: dict[str, Any] = {"stage": stage, "message": message}
             if status is not None:
                 changes["status"] = status
                 if status in {"succeeded", "failed", "cancelled", "interrupted"}:
                     changes["completed_at"] = now
-            assignments = ["updated_at = ?"]
-            values: list[Any] = [now]
-            for key, value in changes.items():
-                assignments.append(f"{key} = ?")
-                values.append(value)
-            values.append(deployment_id)
-            self.connection.execute(
-                f"UPDATE deployments SET {', '.join(assignments)} WHERE id = ?",
-                values,
-            )
+            self._set_deployment_fields(deployment_id, changes, now)
         return self.get_deployment(deployment_id) or {}
+
+    def _set_deployment_fields(
+        self, deployment_id: str, changes: dict[str, Any], now: str | None = None
+    ) -> None:
+        assignments = ["updated_at = ?"]
+        values: list[Any] = [now or utc_iso()]
+        for key, value in changes.items():
+            assignments.append(f"{key} = ?")
+            values.append(value)
+        values.append(deployment_id)
+        updated = self.connection.execute(
+            f"UPDATE deployments SET {', '.join(assignments)} WHERE id = ?",
+            values,
+        )
+        if not updated.rowcount:
+            raise KeyError(deployment_id)
 
     def list_deployment_events(
         self, deployment_id: str, after: int = 0
