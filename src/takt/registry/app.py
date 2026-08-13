@@ -21,7 +21,12 @@ from aiohttp import web
 from takt.protocol import PROTOCOL_VERSION
 from takt.registry.auth import COOKIE_NAME, AdminAuth
 from takt.registry.bundled_release import ReleaseValidationError, validate_release_archive
-from takt.registry.deployment import DeploymentCredentials, DeploymentManager, validate_registry_url
+from takt.registry.deployment import (
+    DeploymentCredentials,
+    DeploymentManager,
+    validate_hostname,
+    validate_registry_url,
+)
 from takt.registry.storage import RegistryStore, utc_iso
 
 STATIC_ROOT = Path(__file__).with_name("static")
@@ -210,7 +215,8 @@ def _deployment_payload(
     target = body.get("target")
     ssh_user = body.get("ssh_user")
     device_name = body.get("device_name")
-    requested_hostname = body.get("hostname") or "takt"
+    requested_hostname = body.get("hostname", "")
+    hostname_change_confirmed = body.get("confirm_hostname_change", False)
     registry_url = body.get("registry_url")
     release_id = body.get("release_id")
     port = body.get("port", 22)
@@ -239,10 +245,18 @@ def _deployment_payload(
     device_name = device_name.strip()
     if not re.fullmatch(r"[A-Za-z0-9ÄÖÜäöüß._ -]{1,80}", device_name):
         raise web.HTTPBadRequest(text="Device name is invalid.")
-    if not isinstance(requested_hostname, str) or not re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", requested_hostname
-    ):
+    if not isinstance(requested_hostname, str):
         raise web.HTTPBadRequest(text="Hostname is invalid.")
+    try:
+        validate_hostname(requested_hostname, allow_empty=True)
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    if not isinstance(hostname_change_confirmed, bool):
+        raise web.HTTPBadRequest(text="Hostname confirmation must be boolean.")
+    if bool(requested_hostname) != hostname_change_confirmed:
+        raise web.HTTPBadRequest(
+            text="An explicit hostname requires confirmation, and preservation cannot be confirmed."
+        )
     if not isinstance(allow_insecure_http, bool):
         raise web.HTTPBadRequest(text="HTTP acknowledgement must be boolean.")
     try:
@@ -257,6 +271,7 @@ def _deployment_payload(
         "ssh_user": ssh_user,
         "device_name": device_name.strip(),
         "requested_hostname": requested_hostname,
+        "hostname_change_confirmed": hostname_change_confirmed,
         "registry_url": registry_url,
         "allow_insecure_http": allow_insecure_http,
         "release_id": release_id,

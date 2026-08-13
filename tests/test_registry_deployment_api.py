@@ -50,7 +50,8 @@ class DeploymentApiTests(unittest.TestCase):
                         "target": "127.0.0.1",
                         "ssh_user": "pi",
                         "device_name": "Lane 1",
-                        "hostname": "takt-01",
+                        "hostname": "",
+                        "confirm_hostname_change": False,
                         "registry_url": "https://registry.example",
                         "release_id": release["id"],
                     }
@@ -61,6 +62,12 @@ class DeploymentApiTests(unittest.TestCase):
                     async with client.post(
                         f"{base_url}/api/deployments",
                         json={**payload, "target": "not a host"},
+                        headers={"X-CSRF-Token": csrf},
+                    ) as response:
+                        self.assertEqual(response.status, 400)
+                    async with client.post(
+                        f"{base_url}/api/deployments",
+                        json={**payload, "hostname": "takt-01"},
                         headers={"X-CSRF-Token": csrf},
                     ) as response:
                         self.assertEqual(response.status, 400)

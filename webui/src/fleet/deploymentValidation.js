@@ -3,3 +3,10 @@ export function deploymentTargetError(target) {
     ? ""
     : "Target is invalid.";
 }
+
+
+export function hostnameChangeError(hostname, confirmed) {
+  if (!hostname) return "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(hostname)) return "Hostname is invalid.";
+  return confirmed ? "" : "Confirm the requested hostname change before deployment.";
+}

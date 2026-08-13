@@ -46,6 +46,16 @@ class SystemPowerServiceTests(unittest.TestCase):
         self.assertNotIn("bluetooth.target", takt)
         self.assertNotIn("sound.target", takt)
 
+    def test_install_preserves_hostname_without_explicit_confirmation(self) -> None:
+        root = pathlib.Path(__file__).parents[1]
+        installer = (root / "scripts" / "install_raspberry_pi.sh").read_text(encoding="utf-8")
+        deployer = (root / "scripts" / "deploy_to_raspberry_pi.sh").read_text(encoding="utf-8")
+        self.assertNotIn('TAKT_HOSTNAME:-takt', installer)
+        self.assertIn('hostname_target="${TAKT_HOSTNAME:-}"', installer)
+        self.assertIn('TAKT_CONFIRM_HOSTNAME_CHANGE', installer)
+        self.assertIn('TAKT_CONFIRM_HOSTNAME_CHANGE', deployer)
+        self.assertIn('hostnamectl --static', deployer)
+
     @patch.object(SystemPowerService, "_read_model", return_value="MacBook Pro")
     @patch("takt.application.system_power_service.platform.system", return_value="Darwin")
     def test_refuses_to_shutdown_development_computer(

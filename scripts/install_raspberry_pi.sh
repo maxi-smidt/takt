@@ -12,6 +12,7 @@ if [[ "$EUID" -eq 0 ]]; then
     script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
     exec sudo -u "$SUDO_USER" -H env \
       TAKT_HOSTNAME="${TAKT_HOSTNAME:-}" \
+      TAKT_CONFIRM_HOSTNAME_CHANGE="${TAKT_CONFIRM_HOSTNAME_CHANGE:-}" \
       TAKT_PORT="${TAKT_PORT:-}" \
       TAKT_REGISTRY_URL="${TAKT_REGISTRY_URL:-}" \
       TAKT_REGISTRY_ALLOW_INSECURE_HTTP="${TAKT_REGISTRY_ALLOW_INSECURE_HTTP:-}" \
@@ -59,13 +60,14 @@ service_name="takt.service"
 agent_service_name="takt-agent.service"
 bluetooth_agent_service="takt-bluetooth-agent.service"
 wifi_helper_target="/usr/local/libexec/takt-wifi-helper"
-hostname_target="${TAKT_HOSTNAME:-takt}"
+hostname_target="${TAKT_HOSTNAME:-}"
+hostname_change_confirmed="${TAKT_CONFIRM_HOSTNAME_CHANGE:-}"
 port="${TAKT_PORT:-80}"
 health_url="http://127.0.0.1:$port/health"
 registry_url="${TAKT_REGISTRY_URL:-}"
 allow_insecure_http="${TAKT_REGISTRY_ALLOW_INSECURE_HTTP:-false}"
 enrollment_code="${TAKT_ENROLLMENT_CODE:-}"
-device_name="${TAKT_DEVICE_NAME:-$hostname_target}"
+device_name="${TAKT_DEVICE_NAME:-}"
 
 say() {
   printf '\nTAKT · %s\n' "$1"
@@ -90,12 +92,19 @@ for key, shell_name in (
     ("registry_url", "registry_url"),
     ("enrollment_code", "enrollment_code"),
     ("device_name", "device_name"),
-    ("hostname", "hostname_target"),
 ):
     value = bootstrap.get(key)
     if not isinstance(value, str) or not value:
         raise SystemExit(f"Bootstrap-Wert fehlt: {key}")
     print(f"{shell_name}={shlex.quote(value)}")
+hostname = bootstrap.get("hostname", "")
+if not isinstance(hostname, str):
+    raise SystemExit("Bootstrap-Wert ist ungültig: hostname")
+print(f"hostname_target={shlex.quote(hostname)}")
+hostname_confirmation = bootstrap.get("hostname_confirmation", "")
+if not isinstance(hostname_confirmation, str):
+    raise SystemExit("Bootstrap-Wert ist ungültig: hostname_confirmation")
+print(f"hostname_change_confirmed={shlex.quote(hostname_confirmation)}")
 allow_http = bootstrap.get("allow_insecure_http", False)
 if not isinstance(allow_http, bool):
     raise SystemExit("allow_insecure_http muss boolean sein.")
@@ -109,7 +118,13 @@ if [[ "$non_interactive" == true ]]; then
   sudo() { command sudo -n "$@"; }
 fi
 
+hostname_changed=false
+installation_succeeded=false
 cleanup() {
+  if [[ "$hostname_changed" == true && "$installation_succeeded" != true && -n "${current_hostname:-}" ]]; then
+    sudo hostnamectl set-hostname "$current_hostname" || true
+    sudo systemctl restart avahi-daemon || true
+  fi
   [[ -z "${unit_file:-}" ]] || rm -f "$unit_file"
   [[ -z "${agent_unit_file:-}" ]] || rm -f "$agent_unit_file"
   [[ -z "${sudoers_temp:-}" ]] || rm -f "$sudoers_temp"
@@ -125,8 +140,20 @@ trap cleanup EXIT
 [[ "${ID:-}" == "raspbian" || "${ID:-}" == "debian" || "${ID_LIKE:-}" == *debian* ]] \
   || fail "TAKT unterstützt Raspberry Pi OS (Debian-basiert)."
 [[ -n "$install_home" ]] || fail "Das Benutzerverzeichnis konnte nicht ermittelt werden."
-[[ "$hostname_target" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]] \
-  || fail "TAKT_HOSTNAME ist kein gültiger Hostname."
+current_hostname="$(hostnamectl --static)"
+[[ "$current_hostname" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]] \
+  || fail "Der aktuelle Hostname ist ungültig oder konnte nicht gelesen werden."
+if [[ -n "$hostname_target" ]]; then
+  [[ "$hostname_target" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]] \
+    || fail "TAKT_HOSTNAME ist kein gültiger Hostname."
+  [[ "$hostname_change_confirmed" == "$hostname_target" ]] \
+    || fail "Ein expliziter TAKT_HOSTNAME benötigt TAKT_CONFIRM_HOSTNAME_CHANGE=$hostname_target."
+else
+  [[ -z "$hostname_change_confirmed" ]] \
+    || fail "Eine Hostnamen-Bestätigung ohne TAKT_HOSTNAME ist ungültig."
+  hostname_target="$current_hostname"
+fi
+device_name="${device_name:-$current_hostname}"
 [[ "$port" =~ ^[0-9]+$ ]] || fail "TAKT_PORT muss eine Zahl sein."
 ((port >= 1 && port <= 65535)) || fail "TAKT_PORT muss zwischen 1 und 65535 liegen."
 
@@ -370,10 +397,6 @@ else
 fi
 
 say "Lokale Netzwerkadresse konfigurieren"
-current_hostname="$(hostnamectl --static)"
-if [[ "$current_hostname" != "$hostname_target" ]]; then
-  sudo hostnamectl set-hostname "$hostname_target"
-fi
 sudo systemctl restart avahi-daemon
 
 say "TAKT-Systemdienst installieren"
@@ -531,6 +554,12 @@ if ! sudo -n -l 2>/dev/null | grep -q "shutdown -h now"; then
   printf 'Weboberfläche könnte fehlschlagen.\n' >&2
 fi
 
+if [[ "$hostname_target" != "$current_hostname" ]]; then
+  sudo hostnamectl set-hostname "$hostname_target"
+  hostname_changed=true
+  sudo systemctl restart avahi-daemon
+fi
+
 url="http://$hostname_target.local"
 if [[ "$port" != "80" ]]; then
   url="$url:$port"
@@ -538,6 +567,7 @@ fi
 printf '\nFERTIG · TAKT läuft headless und ist im lokalen Netzwerk erreichbar:\n%s\n' "$url"
 printf 'Der physische Taster verwendet GPIO17 und GND.\n'
 printf 'Ein Bildschirm oder Desktop auf dem Raspberry Pi ist nicht erforderlich.\n'
+installation_succeeded=true
 
 if [[ "$non_interactive" == true ]]; then
   if [[ "${TAKT_MANAGED_REBOOT:-}" != true ]]; then

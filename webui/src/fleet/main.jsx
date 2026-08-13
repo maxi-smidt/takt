@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { wifiNetworkError } from "./wifiValidation.js";
-import { deploymentTargetError } from "./deploymentValidation.js";
+import { deploymentTargetError, hostnameChangeError } from "./deploymentValidation.js";
 import { preferredReleaseId } from "./releaseSelection.js";
 
 async function request(url, options = {}, csrf = "") {
@@ -145,7 +145,8 @@ function Modal({ title, eyebrow, onClose, children, wide = false }) {
 function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   const [fields, setFields] = useState({
     device_name: "Bahn 1",
-    hostname: "takt-01",
+    hostname: "",
+    confirm_hostname_change: false,
     ssh_user: "",
     target: "raspberrypi.local",
     registry_url: window.location.origin,
@@ -162,10 +163,15 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   const [busy, setBusy] = useState(false);
 
   const [streamAfter, setStreamAfter] = useState(0);
-  const update = (key, value) => setFields((current) => ({ ...current, [key]: value }));
+  const update = (key, value) => setFields((current) => ({
+    ...current,
+    [key]: value,
+    ...(key === "hostname" ? { confirm_hostname_change: false } : {}),
+  }));
   const validate = () => {
     if (!/^[A-Za-z0-9ÄÖÜäöüß._ -]{1,80}$/.test(fields.device_name.trim())) return "Device name is invalid.";
-    if (fields.hostname && !/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(fields.hostname)) return "Hostname is invalid.";
+    const hostnameError = hostnameChangeError(fields.hostname, fields.confirm_hostname_change);
+    if (hostnameError) return hostnameError;
     if (!/^[A-Za-z_][A-Za-z0-9_-]{0,31}$/.test(fields.ssh_user)) return "SSH user is invalid.";
     if (deploymentTargetError(fields.target)) return "Target is invalid.";
     if (!fields.release_id) return "Upload a Raspberry Pi release first.";
@@ -264,16 +270,26 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
           <p>The registry checks, installs, enrolls, and verifies the Pi without a laptop checkout.</p>
           <div className="enrollment-fields">
             {[
-              ["device_name", "DEVICE NAME", "Bahn 1"],
-              ["hostname", "TAKT HOSTNAME", "takt-01"],
+              ["device_name", "DEVICE DISPLAY NAME", "Bahn 1"],
+              ["hostname", "NEW SYSTEM HOSTNAME (OPTIONAL)", "Leave empty to preserve the Pi hostname"],
               ["ssh_user", "SSH USER", "pi"],
-              ["target", "PI HOSTNAME / IP", "raspberrypi.local"],
+              ["target", "SSH ADDRESS / CURRENT HOSTNAME", "raspberrypi.local"],
               ["registry_url", "REGISTRY URL REACHABLE BY THE PI", "https://registry.example"],
             ].map(([key, label, placeholder]) => (
               <label className="field-label" key={key}>{label}
                 <input value={fields[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} required={key !== "hostname"} />
               </label>
             ))}
+            {fields.hostname && (
+              <label className="insecure-opt-in">
+                <input
+                  type="checkbox"
+                  checked={fields.confirm_hostname_change}
+                  onChange={(event) => update("confirm_hostname_change", event.target.checked)}
+                />
+                <span><strong>CONFIRM HOSTNAME CHANGE</strong> Preview: the Pi will move from the current SSH address to <code>{fields.hostname}.local</code>; mDNS, DHCP, SSH host keys, and reconnect behavior can change.</span>
+              </label>
+            )}
             <label className="field-label">RASPBERRY PI RELEASE
               <select value={fields.release_id} onChange={(event) => update("release_id", event.target.value)} required>
                 <option value="">SELECT A RELEASE</option>
