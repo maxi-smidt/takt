@@ -24,6 +24,7 @@ INSTALL_TIMEOUT = 45 * 60
 AGENT_TIMEOUT = 5 * 60
 OUTPUT_LIMIT = 128 * 1024
 SECRET_PATTERN = re.compile(r"(?:TAKT-[A-Za-z0-9_-]{8,})")
+HOSTNAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}")
 
 
 @dataclass
@@ -59,6 +60,14 @@ def validate_registry_url(value: str, allow_insecure_http: bool) -> str:
         if not loopback:
             raise ValueError("HTTP requires explicit acknowledgement for a non-loopback registry.")
     return normalized
+
+
+def validate_hostname(value: str, *, allow_empty: bool = False) -> str:
+    if allow_empty and value == "":
+        return value
+    if not HOSTNAME_PATTERN.fullmatch(value):
+        raise ValueError("Hostname is invalid.")
+    return value
 
 
 def redact_message(message: str, secrets: list[str] | tuple[str, ...] = ()) -> str:
@@ -260,6 +269,7 @@ class DeploymentManager:
         credentials = self._credentials.get(deployment_id)
         if credentials is None:
             return
+        connections: list[asyncssh.SSHClientConnection] = []
         connection: asyncssh.SSHClientConnection | None = None
         deployment = self._deployment(deployment_id)
         target_key = self.store.deployment_target_key(deployment["target"], deployment["port"])
@@ -274,7 +284,8 @@ class DeploymentManager:
                     status="running",
                 )
                 connection = await self._connect(deployment, credentials)
-                await self._preflight(connection, deployment_id, deployment)
+                connections.append(connection)
+                current_hostname = await self._preflight(connection, deployment_id, deployment)
                 code = self.store.create_enrollment_code(
                     deployment["device_name"], deployment_id=deployment_id
                 )
@@ -285,9 +296,23 @@ class DeploymentManager:
                 )
                 await self._transfer(connection, deployment_id, deployment, code)
                 await self._install(connection, deployment_id, deployment, credentials)
-                boot_id = await self._wait_for_agent(deployment_id, deployment["release_version"])
+                connection, boot_id, expected_hostname = await self._handle_hostname_change(
+                    connection, connections, deployment_id, deployment, credentials,
+                    current_hostname,
+                )
+                if boot_id is None:
+                    boot_id = await self._wait_for_agent(
+                        deployment_id,
+                        deployment["release_version"],
+                        expected_hostname=expected_hostname,
+                    )
                 await self._reboot(connection, deployment_id)
-                await self._wait_for_agent(deployment_id, deployment["release_version"], boot_id)
+                await self._wait_for_agent(
+                    deployment_id,
+                    deployment["release_version"],
+                    boot_id,
+                    expected_hostname=expected_hostname,
+                )
                 self._event(
                     deployment_id,
                     "complete",
@@ -309,10 +334,10 @@ class DeploymentManager:
                 status="failed",
             )
         finally:
-            if connection is not None:
-                connection.close()
+            for candidate in reversed(connections):
+                candidate.close()
                 with contextlib.suppress(Exception):
-                    await connection.wait_closed()
+                    await candidate.wait_closed()
             saved = self._credentials.pop(deployment_id, None)
             if saved:
                 saved.clear()
@@ -356,10 +381,26 @@ class DeploymentManager:
         connection: asyncssh.SSHClientConnection,
         deployment_id: str,
         deployment: dict[str, Any],
-    ) -> None:
+    ) -> str:
         release = self.store.get_release(deployment["release_id"])
         if release is None:
             raise ValueError("Release no longer exists.")
+        hostname_stdout, hostname_stderr, hostname_status = await self._command(
+            connection,
+            deployment_id,
+            "preflight",
+            "hostnamectl --static",
+            timeout=COMMAND_TIMEOUT,
+        )
+        if hostname_status != 0:
+            raise RuntimeError(
+                hostname_stderr.strip() or hostname_stdout.strip() or "Could not read hostname."
+            )
+        current_hostname = hostname_stdout.strip()
+        try:
+            validate_hostname(current_hostname)
+        except ValueError as error:
+            raise RuntimeError("The Pi reported an invalid hostname.") from error
         self._event(
             deployment_id,
             "preflight",
@@ -386,6 +427,57 @@ class DeploymentManager:
         if exit_status != 0:
             raise RuntimeError(stderr.strip() or stdout.strip() or "Preflight checks failed.")
         self._event(deployment_id, "preflight", "Preflight checks passed.")
+        return current_hostname
+
+    async def _handle_hostname_change(
+        self,
+        connection: asyncssh.SSHClientConnection,
+        connections: list[asyncssh.SSHClientConnection],
+        deployment_id: str,
+        deployment: dict[str, Any],
+        credentials: DeploymentCredentials,
+        current_hostname: str,
+    ) -> tuple[asyncssh.SSHClientConnection, str | None, str]:
+        requested_hostname = (
+            deployment["requested_hostname"]
+            if deployment.get("hostname_change_confirmed")
+            else ""
+        )
+        expected_hostname = requested_hostname or current_hostname
+        if not requested_hostname or requested_hostname == current_hostname:
+            return connection, None, expected_hostname
+
+        self._event(
+            deployment_id,
+            "hostname",
+            f"Waiting for the Pi to appear as {requested_hostname}.local.",
+        )
+        try:
+            renamed_connection = await self._connect(
+                {**deployment, "target": f"{requested_hostname}.local"}, credentials
+            )
+            connections.append(renamed_connection)
+            boot_id = await self._wait_for_agent(
+                deployment_id,
+                deployment["release_version"],
+                expected_hostname=requested_hostname,
+            )
+            self.store.record_hostname_change(
+                deployment_id,
+                old_hostname=current_hostname,
+                new_hostname=requested_hostname,
+            )
+            return renamed_connection, boot_id, expected_hostname
+        except Exception as error:
+            try:
+                await self._rollback_hostname(
+                    connection, deployment_id, current_hostname, requested_hostname
+                )
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    f"{error}; hostname rollback failed: {rollback_error}"
+                ) from error
+            raise
 
     async def _transfer(
         self,
@@ -417,6 +509,11 @@ class DeploymentManager:
                 "enrollment_code": code,
                 "device_name": deployment["device_name"],
                 "hostname": deployment["requested_hostname"],
+                "hostname_confirmation": (
+                    deployment["requested_hostname"]
+                    if deployment.get("hostname_change_confirmed")
+                    else ""
+                ),
             }
         ).encode("utf-8")
         try:
@@ -497,7 +594,12 @@ class DeploymentManager:
         self._event(deployment_id, "install", "Installer completed; waiting for the agent.")
 
     async def _wait_for_agent(
-        self, deployment_id: str, release_version: str, after_boot_id: str | None = None
+        self,
+        deployment_id: str,
+        release_version: str,
+        after_boot_id: str | None = None,
+        *,
+        expected_hostname: str | None = None,
     ) -> str:
         self._event(deployment_id, "agent", "Waiting for the enrolled agent heartbeat.")
         deadline = asyncio.get_running_loop().time() + AGENT_TIMEOUT
@@ -516,10 +618,42 @@ class DeploymentManager:
                 and status.get("protocol_version") == PROTOCOL_VERSION
                 and health.get("ok") is True
                 and health.get("state") == "ready"
+                and (
+                    expected_hostname is None
+                    or device.get("hostname") == expected_hostname
+                )
             ):
                 return str(status["boot_id"])
             await asyncio.sleep(2)
         raise TimeoutError("The agent did not report the expected online version and health.")
+
+    async def _rollback_hostname(
+        self,
+        connection: asyncssh.SSHClientConnection,
+        deployment_id: str,
+        hostname: str,
+        from_hostname: str,
+    ) -> None:
+        self._event(deployment_id, "hostname", "Restoring the previous Pi hostname.", level="error")
+        command = (
+            "set -eu; sudo hostnamectl set-hostname "
+            f"{shlex.quote(hostname)}; sudo systemctl restart avahi-daemon"
+        )
+        stdout, stderr, exit_status = await self._command(
+            connection,
+            deployment_id,
+            "hostname",
+            command,
+            timeout=COMMAND_TIMEOUT,
+        )
+        if exit_status:
+            raise RuntimeError(stderr.strip() or stdout.strip() or "Could not restore hostname.")
+        self.store.record_hostname_change(
+            deployment_id,
+            old_hostname=from_hostname,
+            new_hostname=hostname,
+            event="hostname_change_rolled_back",
+        )
 
     async def _reboot(
         self, connection: asyncssh.SSHClientConnection, deployment_id: str

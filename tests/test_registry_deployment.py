@@ -9,12 +9,49 @@ from takt.registry.deployment import (
     OUTPUT_LIMIT,
     DeploymentManager,
     redact_message,
+    validate_hostname,
     validate_registry_url,
 )
 from takt.registry.storage import RegistryStore
 
 
 class DeploymentStorageTests(unittest.TestCase):
+    def test_hostname_request_is_preserve_by_default_and_auditable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store, release = self._store_with_release(root)
+            try:
+                deployment = store.create_deployment(
+                    target="pi.local",
+                    port=22,
+                    ssh_user="pi",
+                    device_name="Lane 1",
+                    requested_hostname="",
+                    registry_url="https://registry.example",
+                    allow_insecure_http=False,
+                    release_id=release["id"],
+                )
+                self.assertEqual(deployment["requested_hostname"], "")
+                self.assertEqual(deployment["hostname_change_confirmed"], 0)
+                store.record_hostname_change(
+                    deployment["id"], old_hostname="raspberrypi", new_hostname="takt-01"
+                )
+                audit = store.connection.execute(
+                    "SELECT event, details_json FROM audit_events WHERE event = 'hostname_changed'"
+                ).fetchone()
+                self.assertIsNotNone(audit)
+                self.assertIn("takt-01", audit["details_json"])
+            finally:
+                store.close()
+
+    def test_hostname_validation_allows_only_an_explicit_empty_value(self) -> None:
+        self.assertEqual(validate_hostname("", allow_empty=True), "")
+        with self.assertRaisesRegex(ValueError, "invalid"):
+            validate_hostname("")
+        with self.assertRaisesRegex(ValueError, "invalid"):
+            validate_hostname("takt_01")
+        self.assertEqual(validate_hostname("takt-01"), "takt-01")
+
     def _store_with_release(self, root: Path) -> tuple[RegistryStore, dict[str, str]]:
         store = RegistryStore(root)
         source = root / "source.tar.gz"
@@ -213,6 +250,116 @@ class DeploymentStorageTests(unittest.TestCase):
 
 
 class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hostname_change_reconnects_and_audits(self) -> None:
+        class Store:
+            def __init__(self) -> None:
+                self.changes = []
+
+            def record_hostname_change(self, *args, **kwargs) -> None:
+                self.changes.append((args, kwargs))
+
+        manager = object.__new__(DeploymentManager)
+        manager.store = Store()
+        manager._event = lambda *args, **kwargs: None
+        old_connection = object()
+        new_connection = object()
+        targets = []
+
+        async def connect(deployment, _credentials):
+            targets.append(deployment["target"])
+            return new_connection
+
+        async def wait_for_agent(*args, **kwargs):
+            self.assertEqual(kwargs["expected_hostname"], "takt-01")
+            return "boot-1"
+
+        manager._connect = connect
+        manager._wait_for_agent = wait_for_agent
+        connections = [old_connection]
+        connection, boot_id, expected = await manager._handle_hostname_change(
+            old_connection,
+            connections,
+            "deployment",
+            {
+                "requested_hostname": "takt-01",
+                "hostname_change_confirmed": 1,
+                "release_version": "0.2.0",
+            },
+            object(),
+            "raspberrypi",
+        )
+
+        self.assertIs(connection, new_connection)
+        self.assertEqual(boot_id, "boot-1")
+        self.assertEqual(expected, "takt-01")
+        self.assertEqual(targets, ["takt-01.local"])
+        self.assertEqual(len(manager.store.changes), 1)
+
+        preserved_connection, preserved_boot_id, preserved_hostname = (
+            await manager._handle_hostname_change(
+                old_connection,
+                connections,
+                "deployment",
+                {
+                    "requested_hostname": "",
+                    "hostname_change_confirmed": 0,
+                    "release_version": "0.2.0",
+                },
+                object(),
+                "raspberrypi",
+            )
+        )
+        self.assertIs(preserved_connection, old_connection)
+        self.assertIsNone(preserved_boot_id)
+        self.assertEqual(preserved_hostname, "raspberrypi")
+        self.assertEqual(targets, ["takt-01.local"])
+
+        same_connection, same_boot_id, same_hostname = await manager._handle_hostname_change(
+            old_connection,
+            connections,
+            "deployment",
+            {
+                "requested_hostname": "raspberrypi",
+                "hostname_change_confirmed": 1,
+                "release_version": "0.2.0",
+            },
+            object(),
+            "raspberrypi",
+        )
+        self.assertIs(same_connection, old_connection)
+        self.assertIsNone(same_boot_id)
+        self.assertEqual(same_hostname, "raspberrypi")
+        self.assertEqual(targets, ["takt-01.local"])
+
+    async def test_hostname_change_failure_rolls_back_on_original_connection(self) -> None:
+        manager = object.__new__(DeploymentManager)
+        manager._event = lambda *args, **kwargs: None
+        old_connection = object()
+        rollback = []
+
+        async def connect(_deployment, _credentials):
+            raise OSError("mDNS not ready")
+
+        async def rollback_hostname(connection, deployment_id, hostname, from_hostname):
+            rollback.append((connection, deployment_id, hostname, from_hostname))
+
+        manager._connect = connect
+        manager._rollback_hostname = rollback_hostname
+        with self.assertRaisesRegex(OSError, "mDNS"):
+            await manager._handle_hostname_change(
+                old_connection,
+                [old_connection],
+                "deployment",
+                {
+                    "requested_hostname": "takt-01",
+                    "hostname_change_confirmed": 1,
+                    "release_version": "0.2.0",
+                },
+                object(),
+                "raspberrypi",
+            )
+        self.assertEqual(rollback, [(old_connection, "deployment", "raspberrypi", "takt-01")])
+
     async def test_signal_terminated_command_returns_failure_status(self) -> None:
         class Stream:
             async def read(self, _size: int) -> str:

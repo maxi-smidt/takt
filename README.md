@@ -24,8 +24,8 @@ Der erste funktionsfähige Stand enthält:
 - einen Display-Wachschutz für Tablets und Laptops, auch beim Zugriff über HTTP,
 - ein optionales Startsignal über AUX oder einen gekoppelten Bluetooth-Lautsprecher
   mit einstellbarer Startverzögerung,
-- eine automatisierte, headless Raspberry-Pi-Installation mit `takt.local`
-  und Systemdienst.
+- eine automatisierte, headless Raspberry-Pi-Installation mit der bestehenden
+  lokalen Adresse und Systemdienst.
 
 ## Raspberry Pi mit einem Skript einrichten
 
@@ -47,10 +47,11 @@ Setup auf dem Pi ausführen. Beim ersten Mal gilt üblicherweise:
 ./scripts/deploy_to_raspberry_pi.sh msmidt@raspberrypi.local
 ```
 
-Nach der Einrichtung lautet dieselbe Adresse:
+Nach der Einrichtung bleibt die bestehende Adresse erhalten; spätere Updates
+verwenden weiterhin beispielsweise:
 
 ```bash
-./scripts/deploy_to_raspberry_pi.sh msmidt@takt.local
+./scripts/deploy_to_raspberry_pi.sh msmidt@raspberrypi.local
 ```
 
 Damit bleibt für Installation und spätere Updates jeweils ein einziger
@@ -66,13 +67,9 @@ Desktop. Eine vorhandene Konfiguration oder Laufdaten werden nicht
 überschrieben. Alte TAKT-Kiosk-Autostarts werden bei einer Migration entfernt.
 Am Ende bietet das Skript einen Neustart an.
 
-Danach ist TAKT auf Geräten im selben lokalen Netzwerk erreichbar:
-
-```text
-http://takt.local
-```
-
-Die IP-Adresse darf sich ändern; `takt.local` wird über mDNS aufgelöst. Falls
+Danach ist TAKT auf Geräten im selben lokalen Netzwerk unter dem bestehenden
+Hostnamen erreichbar, beispielsweise `http://raspberrypi.local`. Die IP-Adresse
+darf sich ändern; der bestehende Hostname wird über mDNS aufgelöst. Falls
 ein Gerät `.local` nicht unterstützt, empfiehlt sich zusätzlich eine
 DHCP-Reservierung im Router.
 
@@ -84,7 +81,7 @@ nicht öffentliches WLAN.
 
 Die Browser-Oberfläche hält den Bildschirm nach der ersten Berührung, dem
 ersten Klick oder Tastendruck aktiv. Unter HTTPS verwendet sie den nativen
-Screen Wake Lock des Browsers; beim normalen Zugriff über `http://takt.local`
+Screen Wake Lock des Browsers; beim normalen Zugriff über beispielsweise `http://raspberrypi.local`
 läuft als kompatibler Fallback ein winziges, stummes Video. Der Status steht
 unten in der Leiste unter **ANZEIGE**. Energiesparmodi oder Gerätevorgaben können
 den Wachschutz weiterhin übersteuern. Nach einem App- oder Tabwechsel fordert
@@ -302,7 +299,7 @@ backups/          tägliche konsistente Registry-Metadaten-Sicherungen
 
 ### Raspberry Pi einmalig verbinden
 
-1. In der Registry **Enroll device** wählen, Gerätename, Hostname, SSH-Benutzer,
+1. In der Registry **Enroll device** wählen, Gerätename, SSH-Adresse, SSH-Benutzer,
    Pi-Adresse und Registry-Adresse eintragen und den erzeugten Befehl kopieren.
 2. Eine vom Raspberry Pi erreichbare Registry-Adresse verwenden. `localhost`
    ist dafür ungeeignet; im lokalen WLAN ist das beispielsweise
@@ -315,10 +312,14 @@ TAKT_REGISTRY_ALLOW_INSECURE_HTTP='true' \
 TAKT_ENROLLMENT_CODE='TAKT-...' \
 TAKT_DEVICE_NAME='Bahn 1' \
 TAKT_HOSTNAME='takt-01' \
+TAKT_CONFIRM_HOSTNAME_CHANGE='takt-01' \
   ./scripts/deploy_to_raspberry_pi.sh msmidt@raspberrypi.local
 ```
 
-Der Agent lehnt eine entfernte HTTP-Adresse standardmäßig ab. Bei einer
+Ohne `TAKT_HOSTNAME` bleibt der vorhandene Pi-Hostname byte-genau erhalten.
+Ein neuer Hostname wird nur nach Vorschau und ausdrücklicher Bestätigung mit
+`TAKT_CONFIRM_HOSTNAME_CHANGE=takt-01` gesetzt; danach prüft der Befehl die neue
+`.local`-Adresse. Der Agent lehnt eine entfernte HTTP-Adresse standardmäßig ab. Bei einer
 HTTP-Adresse zeigt der Assistent deshalb eine gesonderte Warnung und erzeugt
 die `TAKT_REGISTRY_ALLOW_INSECURE_HTTP`-Zeile erst nach ausdrücklicher
 Bestätigung. Sie ist nur für HTTP über ein privates VPN oder ein bewusst
@@ -343,8 +344,9 @@ rm ~/.config/takt/agent.toml ~/.config/takt/agent-identity.json
 Die TAKT-Laufdaten und die Registry-Spiegel bleiben erhalten; nur die
 Verbindung wird neu ausgestellt.
 
-Für weitere Geräte werden ein neuer Code, ein eigener Anzeigename und ein
-eindeutiger Hostname (`takt-02`, `takt-03`, …) verwendet. Identität und
+Für weitere Geräte werden ein neuer Code und ein eigener Anzeigename verwendet.
+Der optionale neue System-Hostname wird nur nach Vorschau und ausdrücklicher
+Bestätigung gesetzt; ohne ihn bleibt der bestehende Pi-Hostname erhalten. Identität und
 Zugangsdaten des Agenten bleiben auf dem Pi erhalten. Spätere TAKT-Versionen
 werden nur noch über die Registry installiert.
 
@@ -715,8 +717,8 @@ host = "0.0.0.0"
 port = 8080
 ```
 
-Der installierte Systemdienst überschreibt den Port mit 80, damit
-`http://takt.local` ohne Portangabe funktioniert.
+Der installierte Systemdienst überschreibt den Port mit 80, damit die lokale
+`.local`-Adresse ohne Portangabe funktioniert.
 
 Für einen isolierten Test lässt sich ein anderer Speicherort angeben:
 

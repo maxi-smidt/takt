@@ -26,7 +26,7 @@ def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
 INSTALL_STAGES = {
     "queued",
@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS deployments (
     ssh_user TEXT NOT NULL,
     device_name TEXT NOT NULL,
     requested_hostname TEXT NOT NULL,
+    hostname_change_confirmed INTEGER NOT NULL DEFAULT 0,
     registry_url TEXT NOT NULL,
     allow_insecure_http INTEGER NOT NULL DEFAULT 0,
     release_id TEXT NOT NULL,
@@ -250,6 +251,9 @@ class RegistryStore:
         self._ensure_column("enrollment_codes", "deployment_id", "TEXT")
         self._ensure_column("releases", "source", "TEXT NOT NULL DEFAULT 'upload'")
         self._ensure_column("releases", "commit_sha", "TEXT")
+        self._ensure_column(
+            "deployments", "hostname_change_confirmed", "INTEGER NOT NULL DEFAULT 0"
+        )
         self.connection.execute(
             """
             UPDATE deployments SET status = 'interrupted', stage = 'interrupted',
@@ -1214,6 +1218,26 @@ class RegistryStore:
     def _job_secret_aad(job_id: str, device_id: str, action: str) -> bytes:
         return f"{job_id}\0{device_id}\0{action}".encode()
 
+    def record_hostname_change(
+        self,
+        deployment_id: str,
+        *,
+        old_hostname: str,
+        new_hostname: str,
+        event: str = "hostname_changed",
+    ) -> None:
+        deployment = self.get_deployment(deployment_id)
+        with self.connection:
+            self._audit(
+                event,
+                deployment.get("device_id") if deployment else None,
+                {
+                    "deployment_id": deployment_id,
+                    "old_hostname": old_hostname,
+                    "new_hostname": new_hostname,
+                },
+            )
+
     def _audit(
         self,
         event: str,
@@ -1284,6 +1308,7 @@ class RegistryStore:
         ssh_user: str,
         device_name: str,
         requested_hostname: str,
+        hostname_change_confirmed: bool = False,
         registry_url: str,
         allow_insecure_http: bool,
         release_id: str,
@@ -1301,9 +1326,10 @@ class RegistryStore:
                 """
                 INSERT INTO deployments(
                     id, target, port, ssh_user, device_name, requested_hostname,
-                    registry_url, allow_insecure_http, release_id, status, stage,
+                    hostname_change_confirmed, registry_url, allow_insecure_http,
+                    release_id, status, stage,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'starting', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'starting', ?, ?)
                 """,
                 (
                     deployment_id,
@@ -1312,6 +1338,7 @@ class RegistryStore:
                     ssh_user,
                     device_name,
                     requested_hostname,
+                    int(hostname_change_confirmed),
                     registry_url,
                     int(allow_insecure_http),
                     release_id,
