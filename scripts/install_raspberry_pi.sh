@@ -320,8 +320,9 @@ bluetooth_agent_unit="$(mktemp)"
     "[Service]" \
     "Type=simple" \
     "ExecStart=/usr/bin/bt-agent --capability NoInputNoOutput" \
-    "Restart=always" \
+    "Restart=on-failure" \
     "RestartSec=2" \
+    "TimeoutStopSec=10" \
     "" \
     "[Install]" \
     "WantedBy=multi-user.target"
@@ -381,8 +382,8 @@ unit_file="$(mktemp)"
   printf '%s\n' \
     "[Unit]" \
     "Description=TAKT local stopwatch server" \
-    "After=network-online.target bluetooth.target sound.target $bluetooth_agent_service" \
-    "Wants=network-online.target bluetooth.target $bluetooth_agent_service" \
+    "After=network-online.target" \
+    "Wants=network-online.target" \
     "" \
     "[Service]" \
     "Type=simple" \

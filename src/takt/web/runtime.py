@@ -396,7 +396,7 @@ class WebRuntime:
         token = secrets.token_urlsafe(24)
         self._confirmations[token] = confirmation
         self._remove_expired_confirmations()
-        return {"confirmation_id": token, **details}
+        return {"confirmation_id": token, "operation": operation, **details}
 
     async def confirm(self, token: str) -> dict[str, object]:
         pending = self._confirmations.pop(token, None)
@@ -414,6 +414,7 @@ class WebRuntime:
                 raise ValueError("Der Lauf existiert nicht mehr.")
             message = f"Lauf {run.run_number} wurde gelöscht."
         elif pending.operation == "shutdown":
+            LOGGER.info("shutdown_confirmation_accepted")
             self.power_service.shutdown()
             message = "Der Raspberry Pi wird heruntergefahren."
         else:

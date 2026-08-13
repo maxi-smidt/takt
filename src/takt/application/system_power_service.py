@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import platform
 import subprocess
+import time
 from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -33,6 +34,8 @@ class SystemPowerService:
         # Raspberry Pi OS' shutdown helper reliably reaches halt on older Pi
         # models as well. The installer grants passwordless sudo for these
         # exact commands because the web service has no interactive session.
+        started = time.monotonic()
+        LOGGER.info("shutdown_request_received")
         commands = (
             ["sudo", "-n", "/usr/sbin/shutdown", "-h", "now"],
             ["sudo", "-n", "/sbin/shutdown", "-h", "now"],
@@ -50,6 +53,11 @@ class SystemPowerService:
                     capture_output=True,
                     text=True,
                 )
+                LOGGER.info(
+                    "shutdown_request_accepted command=%s elapsed_ms=%d",
+                    " ".join(command),
+                    round((time.monotonic() - started) * 1000),
+                )
                 return
             except subprocess.CalledProcessError as error:
                 last_error = error
@@ -65,6 +73,11 @@ class SystemPowerService:
                 LOGGER.warning("shutdown_command_missing command=%s", command[2])
                 continue
             except subprocess.TimeoutExpired as error:
+                LOGGER.warning(
+                    "shutdown_request_timeout command=%s elapsed_ms=%d",
+                    " ".join(command),
+                    round((time.monotonic() - started) * 1000),
+                )
                 raise RuntimeError(
                     "Die Anfrage zum Herunterfahren hat zu lange gedauert."
                 ) from error

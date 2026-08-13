@@ -119,6 +119,7 @@ class WebRuntimeTests(unittest.TestCase):
             delta_ms=5_000,
         )
         token = str(prepared["confirmation_id"])
+        self.assertEqual(prepared["operation"], "adjust")
         result = asyncio.run(self.runtime.confirm(token))
         self.assertTrue(result["ok"])
         updated = self.repository.get_run(saved.id)
@@ -128,6 +129,11 @@ class WebRuntimeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "abgelaufen"):
             asyncio.run(self.runtime.confirm(token))
+
+    def test_shutdown_confirmation_identifies_operation_for_client_teardown(self) -> None:
+        self.runtime.power_service.available = True
+        prepared = self.runtime.prepare_confirmation("shutdown")
+        self.assertEqual(prepared["operation"], "shutdown")
 
     def test_saved_confirmation_primary_press_starts_next_run(self) -> None:
         self.controller.start()
