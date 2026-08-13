@@ -30,3 +30,23 @@ test("falls back to the first release when nothing is bundled", () => {
 test("returns an empty id for an empty release list", () => {
   assert.equal(preferredReleaseId([]), "");
 });
+
+test("ranks a final release above its own prerelease", () => {
+  assert.equal(compareVersions("1.0.0-rc.1", "1.0.0"), -1);
+  assert.equal(compareVersions("1.0.0", "1.0.0-rc.1"), 1);
+});
+
+test("compares prerelease identifiers left to right per semver precedence", () => {
+  assert.equal(compareVersions("1.0.0-alpha", "1.0.0-alpha.1"), -1);
+  assert.equal(compareVersions("1.0.0-alpha.1", "1.0.0-alpha.beta"), -1);
+  assert.equal(compareVersions("1.0.0-alpha.beta", "1.0.0-beta"), -1);
+  assert.equal(compareVersions("1.0.0-rc.1", "1.0.0-rc.1"), 0);
+});
+
+test("preselects the final release over a same-core prerelease", () => {
+  const releases = [
+    { id: "bundled-rc", version: "1.0.0-rc.1", source: "bundled" },
+    { id: "bundled-final", version: "1.0.0", source: "bundled" },
+  ];
+  assert.equal(preferredReleaseId(releases), "bundled-final");
+});

@@ -20,6 +20,7 @@ import shutil
 import tarfile
 import tempfile
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,10 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
         LOGGER.error("Bundled release manifest %s is unreadable: %s", manifest_path, error)
         return {"status": "error", "reason": "corrupt", "detail": f"manifest unreadable: {error}"}
 
+    if not isinstance(manifest, dict):
+        LOGGER.error("Bundled release manifest %s is not a JSON object.", manifest_path)
+        return {"status": "error", "reason": "corrupt", "detail": "manifest is not a JSON object"}
+
     if manifest.get("schema_version") != 1:
         LOGGER.error(
             "Bundled release manifest has unsupported schema_version: %r",
@@ -172,9 +177,35 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
     commit_sha = str(manifest.get("commit") or "") or None
     existing = store.get_release_by_version(version)
     if existing is not None:
-        if existing["sha256"] == actual_sha256:
+        existing_path = store.release_path(existing["id"])
+        intact = (
+            existing["sha256"] == actual_sha256
+            and existing_path.is_file()
+            and RegistryStore._sha256_file(existing_path) == actual_sha256
+        )
+        if intact:
             store.mark_release_bundled(existing["id"], commit_sha=commit_sha)
             return {"status": "present", "version": version, "sha256": actual_sha256}
+        if existing["source"] == "bundled" or existing["sha256"] == actual_sha256:
+            # Either a previous CI bundle needs refreshing in place — packaged bytes
+            # changed without a version bump — or the database row is correct but the
+            # persisted artifact is missing/damaged (e.g. a database-only restore).
+            # Either way, the verified bundle we just validated is authoritative.
+            LOGGER.info("Refreshing bundled release %s from the verified bundle.", version)
+            return _stage_and_call(
+                archive_path,
+                store.data_directory,
+                lambda staged: store.replace_bundled_release(
+                    existing["id"],
+                    filename=archive_path.name,
+                    sha256=actual_sha256,
+                    size=actual_size,
+                    source=staged,
+                    commit_sha=commit_sha,
+                ),
+                version=version,
+                sha256=actual_sha256,
+            )
         detail = (
             f"an existing release {version} (sha256 {existing['sha256'][:12]}...) "
             f"does not match the bundled package (sha256 {actual_sha256[:12]}...)"
@@ -182,21 +213,44 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
         LOGGER.error("Bundled release collides with an existing upload: %s", detail)
         return {"status": "error", "reason": "collision", "detail": detail}
 
-    with tempfile.NamedTemporaryFile(dir=store.data_directory, delete=False) as temporary:
-        temporary_path = Path(temporary.name)
-    shutil.copyfile(archive_path, temporary_path)
-    try:
-        store.add_release(
+    return _stage_and_call(
+        archive_path,
+        store.data_directory,
+        lambda staged: store.add_release(
             version=version,
             filename=archive_path.name,
             sha256=actual_sha256,
             size=actual_size,
-            source=temporary_path,
+            source=staged,
             release_source="bundled",
             commit_sha=commit_sha,
-        )
+        ),
+        version=version,
+        sha256=actual_sha256,
+    )
+
+
+def _stage_and_call(
+    archive_path: Path,
+    data_directory: Path,
+    call: Callable[[Path], Any],
+    *,
+    version: str,
+    sha256: str,
+) -> dict[str, Any]:
+    """Copy ``archive_path`` into ``data_directory`` and hand it to ``call``.
+
+    ``call`` receives the staged path and is expected to consume it (rename it
+    into place) the way ``RegistryStore.add_release``/``replace_bundled_release``
+    do. Never raises: a failure here must degrade, not abort startup.
+    """
+    with tempfile.NamedTemporaryFile(dir=data_directory, delete=False) as temporary:
+        staged = Path(temporary.name)
+    shutil.copyfile(archive_path, staged)
+    try:
+        call(staged)
     except Exception as error:
-        temporary_path.unlink(missing_ok=True)
+        staged.unlink(missing_ok=True)
         LOGGER.error("Failed to import bundled release %s: %s", version, error)
         return {"status": "error", "reason": "import_failed", "detail": str(error)}
-    return {"status": "imported", "version": version, "sha256": actual_sha256}
+    return {"status": "imported", "version": version, "sha256": sha256}

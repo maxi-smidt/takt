@@ -202,6 +202,76 @@ class BundledReleaseImportTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_stale_bundled_release_is_refreshed_without_collision(self) -> None:
+        # A `main` push can rebuild packaged files (e.g. web UI assets) without
+        # bumping the project version, so a later startup sees a bundle with the
+        # same version but a different sha256. Because the existing row's
+        # source is "bundled" (our own CI artifact, not a manual upload), this
+        # must refresh the release in place rather than treat it as a collision.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            data_directory = root / "data"
+            bundle_directory = root / "bundle"
+            bundle_directory.mkdir()
+            _write_bundle(bundle_directory, version=__version__)
+
+            store = RegistryStore(data_directory)
+            try:
+                first = import_bundled_release(store, bundle_directory)
+                self.assertEqual(first["status"], "imported")
+                original_release_id = store.list_releases()[0]["id"]
+
+                # Simulate a rebuild: different bytes, same version.
+                different_bytes = _release_archive(__version__) + b"\x00extra-padding"
+                for stale_file in bundle_directory.iterdir():
+                    stale_file.unlink()
+                _write_bundle(bundle_directory, version=__version__, archive_bytes=different_bytes)
+
+                second = import_bundled_release(store, bundle_directory)
+                self.assertEqual(second["status"], "imported")
+                self.assertNotEqual(second["sha256"], first["sha256"])
+
+                releases = store.list_releases()
+                self.assertEqual(len(releases), 1)
+                self.assertEqual(releases[0]["id"], original_release_id)
+                self.assertEqual(releases[0]["sha256"], second["sha256"])
+                self.assertEqual(releases[0]["source"], "bundled")
+                self.assertEqual(
+                    store.release_path(original_release_id).read_bytes(), different_bytes
+                )
+                self.assertTrue(store.health()["ok"])
+            finally:
+                store.close()
+
+    def test_missing_persisted_artifact_is_restored_from_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            data_directory = root / "data"
+            bundle_directory = root / "bundle"
+            bundle_directory.mkdir()
+            _write_bundle(bundle_directory, version=__version__)
+
+            store = RegistryStore(data_directory)
+            try:
+                first = import_bundled_release(store, bundle_directory)
+                self.assertEqual(first["status"], "imported")
+                release_id = store.list_releases()[0]["id"]
+
+                # Simulate a database-only restore: the row survives, the file does not.
+                store.release_path(release_id).unlink()
+                self.assertFalse(store.release_path(release_id).is_file())
+
+                second = import_bundled_release(store, bundle_directory)
+                self.assertEqual(second["status"], "imported")
+
+                releases = store.list_releases()
+                self.assertEqual(len(releases), 1)
+                self.assertEqual(releases[0]["id"], release_id)
+                self.assertTrue(store.release_path(release_id).is_file())
+                self.assertTrue(store.health()["ok"])
+            finally:
+                store.close()
+
     def test_missing_sha256_sidecar_mismatch_is_degraded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -217,6 +287,23 @@ class BundledReleaseImportTests(unittest.TestCase):
                 self.assertEqual(status["status"], "error")
                 self.assertEqual(status["reason"], "corrupt")
                 self.assertEqual(store.list_releases(), [])
+            finally:
+                store.close()
+
+    def test_manifest_that_is_not_a_json_object_is_degraded_not_fatal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            bundle_directory = root / "bundle"
+            bundle_directory.mkdir()
+            (bundle_directory / "takt-raspberry-pi-0.0.0.manifest.json").write_text("[]")
+
+            store = RegistryStore(root / "data")
+            try:
+                status = import_bundled_release(store, bundle_directory)
+                self.assertEqual(status["status"], "error")
+                self.assertEqual(status["reason"], "corrupt")
+                self.assertEqual(store.list_releases(), [])
+                self.assertTrue(store.health()["ok"])
             finally:
                 store.close()
 

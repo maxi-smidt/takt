@@ -514,6 +514,44 @@ class RegistryStore:
                 (commit_sha, release_id),
             )
 
+    def replace_bundled_release(
+        self,
+        release_id: str,
+        *,
+        filename: str,
+        sha256: str,
+        size: int,
+        source: Path,
+        commit_sha: str | None,
+    ) -> dict[str, Any]:
+        """Overwrite an existing release's bytes and metadata in place.
+
+        Used to refresh a previously bundled release whose packaged bytes
+        changed without a version bump, or to repair a release whose
+        persisted artifact went missing or was damaged independently of its
+        database row.
+        """
+        previous = self.get_release(release_id)
+        target = self.release_path(release_id)
+        source.replace(target)
+        with self.connection:
+            self.connection.execute(
+                "UPDATE releases SET filename = ?, sha256 = ?, size = ?, "
+                "source = 'bundled', commit_sha = ? WHERE id = ?",
+                (filename, sha256, size, commit_sha, release_id),
+            )
+            self._audit(
+                "release_bundled_refreshed",
+                details={
+                    "version": previous["version"] if previous else None,
+                    "previous_sha256": previous["sha256"] if previous else None,
+                    "sha256": sha256,
+                },
+            )
+        release = self.get_release(release_id)
+        assert release is not None
+        return release
+
     def release_path(self, release_id: str) -> Path:
         return self.release_directory / f"{release_id}.tar.gz"
 
