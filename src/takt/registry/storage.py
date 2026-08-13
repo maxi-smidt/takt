@@ -228,6 +228,13 @@ class RegistryStore:
         code = f"TAKT-{secrets.token_urlsafe(18)}"
         now = utc_now()
         with self.connection:
+            if deployment_id:
+                self.connection.execute(
+                    "UPDATE enrollment_codes SET used_at = ? "
+                    "WHERE deployment_id = ? AND used_at IS NULL AND expires_at > ?",
+                    (utc_iso(now), deployment_id, utc_iso(now)),
+                )
+
             self.connection.execute(
                 """
                 INSERT INTO enrollment_codes(
@@ -272,7 +279,7 @@ class RegistryStore:
                     )
                     if consumed.rowcount:
                         self._audit("enrollment_code_consumed", device_id)
-                    self._link_deployment_for_code(hash_secret(code), device_id)
+                        self._link_deployment_for_code(hash_secret(code), device_id)
                 return token
             raise ValueError("This device ID is already enrolled with another secret.")
         code_hash = hash_secret(code)
@@ -1188,13 +1195,14 @@ class RegistryStore:
         return f"{target}:{port}"
 
     def _link_deployment_for_code(self, code_hash: str, device_id: str) -> None:
-        self.connection.execute(
-            """
-            UPDATE deployments
-            SET device_id = ?, updated_at = ?
-            WHERE id = (
-                SELECT deployment_id FROM enrollment_codes WHERE code_hash = ?
-            )
-            """,
-            (device_id, utc_iso(), code_hash),
+        row = self.connection.execute(
+            "SELECT deployment_id FROM enrollment_codes WHERE code_hash = ?", (code_hash,)
+        ).fetchone()
+        if row is None or row["deployment_id"] is None:
+            return
+        linked = self.connection.execute(
+            "UPDATE deployments SET device_id = ?, updated_at = ? WHERE id = ?",
+            (device_id, utc_iso(), row["deployment_id"]),
         )
+        if linked.rowcount != 1:
+            raise RuntimeError("Enrollment code refers to a missing deployment.")

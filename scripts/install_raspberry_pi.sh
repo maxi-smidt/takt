@@ -157,6 +157,14 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommen
   wireplumber
 
 say "TAKT-Umgebung einrichten"
+release_root="$install_home/.local/share/takt/releases"
+current_link="$install_home/.local/share/takt/current"
+mkdir -p "$release_root"
+if [[ -n "$bootstrap_config" ]]; then
+  persistent_project_dir="$(mktemp -d "$release_root/deploy-XXXXXXXX")"
+  cp -a "$project_dir/." "$persistent_project_dir"
+  project_dir="$persistent_project_dir"
+fi
 cd "$project_dir"
 python_version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 if [[ -e .venv ]] && {
@@ -177,10 +185,7 @@ if [[ ! -f "$config_dir/config.toml" ]]; then
   cp "$project_dir/config.example.toml" "$config_dir/config.toml"
 fi
 
-release_root="$install_home/.local/share/takt/releases"
-current_link="$install_home/.local/share/takt/current"
 release_environment="$config_dir/release.env"
-mkdir -p "$release_root"
 ln -sfn "$project_dir" "$current_link"
 installed_version="$($project_dir/.venv/bin/python -c 'from takt import __version__; print(__version__)')"
 printf 'TAKT_RELEASE_VERSION=%s\n' "$installed_version" >"$release_environment"
@@ -533,7 +538,12 @@ printf '\nFERTIG · TAKT läuft headless und ist im lokalen Netzwerk erreichbar:
 printf 'Der physische Taster verwendet GPIO17 und GND.\n'
 printf 'Ein Bildschirm oder Desktop auf dem Raspberry Pi ist nicht erforderlich.\n'
 
-if [[ "$non_interactive" != true && -t 0 ]]; then
+if [[ "$non_interactive" == true ]]; then
+  if [[ "${TAKT_MANAGED_REBOOT:-}" != true ]]; then
+    printf '\nTAKT startet neu, um die Headless- und Audio-Konfiguration zu übernehmen.\n'
+    sudo reboot
+  fi
+elif [[ -t 0 ]]; then
   printf '\nJetzt neu starten, um die neue Headless- und Audio-Konfiguration vollständig zu übernehmen? [J/n] '
   read -r answer
   if [[ -z "$answer" || "$answer" =~ ^[JjYy]$ ]]; then

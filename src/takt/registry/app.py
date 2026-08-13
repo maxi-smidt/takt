@@ -40,6 +40,7 @@ DEVICE_ID_PATTERN = re.compile(r"^[0-9a-f-]{16,64}$")
 DEVICE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 ALLOWED_ACTIONS = {"install_release", "mirror_now", "restart_takt"}
 JSON_LIMIT = 64 * 1024
+DEPLOYMENT_EVENT_POLL_SECONDS = 2
 LOGGER = logging.getLogger(__name__)
 
 
@@ -302,22 +303,25 @@ async def deployment_events(request: web.Request) -> web.StreamResponse:
         }
     )
     await response.prepare(request)
+    item = request.app[STORE_KEY].get_deployment(deployment_id)
     try:
         while True:
             events = request.app[STORE_KEY].list_deployment_events(deployment_id, after)
+            if events:
+                item = request.app[STORE_KEY].get_deployment(deployment_id)
             for event in events:
+                event["deployment"] = item
                 payload = json.dumps(event, separators=(",", ":")).encode("utf-8")
                 await response.write(
                     b"id: " + str(event["id"]).encode() + b"\ndata: " + payload + b"\n\n"
                 )
                 after = event["id"]
-            item = request.app[STORE_KEY].get_deployment(deployment_id)
             if item is None or (
                 item["status"] in {"succeeded", "failed", "cancelled", "interrupted"}
                 and not events
             ):
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(DEPLOYMENT_EVENT_POLL_SECONDS)
     except (ConnectionResetError, asyncio.CancelledError):
         raise
     finally:

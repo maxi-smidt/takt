@@ -5,7 +5,12 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from takt.registry.deployment import DeploymentManager, redact_message, validate_registry_url
+from takt.registry.deployment import (
+    OUTPUT_LIMIT,
+    DeploymentManager,
+    redact_message,
+    validate_registry_url,
+)
 from takt.registry.storage import RegistryStore
 
 
@@ -38,9 +43,20 @@ class DeploymentStorageTests(unittest.TestCase):
                     allow_insecure_http=False,
                     release_id=release["id"],
                 )
+                abandoned_code = store.create_enrollment_code(
+                    "Lane 1", deployment_id=deployment["id"]
+                )
                 code = store.create_enrollment_code(
                     "Lane 1", deployment_id=deployment["id"]
                 )
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    store.enroll_device(
+                        code=abandoned_code,
+                        device_id="12345678-1234-1234-1234-123456789abc",
+                        name="Lane 1",
+                        hostname="takt-01",
+                        token="a" * 64,
+                    )
                 store.enroll_device(
                     code=code,
                     device_id="12345678-1234-1234-1234-123456789abc",
@@ -86,6 +102,46 @@ class DeploymentStorageTests(unittest.TestCase):
                 self.assertEqual(
                     store.get_trusted_ssh_host(key_name)["fingerprint"], "SHA256:two"
                 )
+            finally:
+                store.close()
+
+    def test_superseded_code_cannot_link_existing_device(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store, release = self._store_with_release(Path(temporary))
+            try:
+                token = "a" * 64
+                device_id = "12345678-1234-1234-1234-123456789abc"
+                store.enroll_device(
+                    code=store.create_enrollment_code(),
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token=token,
+                )
+                deployment = store.create_deployment(
+                    target="pi.local",
+                    port=22,
+                    ssh_user="pi",
+                    device_name="Lane 1",
+                    requested_hostname="takt-01",
+                    registry_url="https://registry.example",
+                    allow_insecure_http=False,
+                    release_id=release["id"],
+                )
+                abandoned = store.create_enrollment_code(
+                    "Lane 1", deployment_id=deployment["id"]
+                )
+                store.create_enrollment_code("Lane 1", deployment_id=deployment["id"])
+                store.enroll_device(
+                    code=abandoned,
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token=token,
+                )
+                linked = store.get_deployment(deployment["id"])
+                assert linked is not None
+                self.assertIsNone(linked["device_id"])
             finally:
                 store.close()
 
@@ -159,7 +215,7 @@ class DeploymentStorageTests(unittest.TestCase):
 class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_signal_terminated_command_returns_failure_status(self) -> None:
         class Stream:
-            async def read(self) -> str:
+            async def read(self, _size: int) -> str:
                 return ""
 
         class Process:
@@ -178,12 +234,28 @@ class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
         _, _, status = await manager._command(Connection(), "deployment", "stage", "true")
 
         self.assertEqual(status, 1)
+
+    async def test_remote_output_is_capped(self) -> None:
+        class Stream:
+            def __init__(self) -> None:
+                self.chunks = ["x" * (OUTPUT_LIMIT + 1), "tail"]
+
+            async def read(self, _size: int) -> str:
+                return self.chunks.pop(0) if self.chunks else ""
+
+        output = await DeploymentManager._read_output(Stream())
+
+        self.assertEqual(len(output), OUTPUT_LIMIT)
+        self.assertTrue(output.endswith("tail"))
+
+
 class DeploymentValidationTests(unittest.TestCase):
     def test_secrets_are_redacted_from_event_text(self) -> None:
         message = redact_message(
             "ssh password and TAKT-secret-code",
             ["ssh password"],
         )
+
         self.assertNotIn("ssh password", message)
         self.assertNotIn("TAKT-secret-code", message)
         self.assertIn("[redacted", message)

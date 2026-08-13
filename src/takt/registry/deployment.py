@@ -6,6 +6,7 @@ import io
 import json
 import re
 import shlex
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -21,6 +22,7 @@ HOST_KEY_TIMEOUT = 20
 COMMAND_TIMEOUT = 60
 INSTALL_TIMEOUT = 45 * 60
 AGENT_TIMEOUT = 5 * 60
+OUTPUT_LIMIT = 128 * 1024
 SECRET_PATTERN = re.compile(r"(?:TAKT-[A-Za-z0-9_-]{8,})")
 
 
@@ -158,8 +160,13 @@ class DeploymentManager:
         old = self._tasks.get(deployment_id)
         if old and not old.done():
             return
-        self._tasks[deployment_id] = asyncio.create_task(
+        task = asyncio.create_task(
             coroutine, name=f"deployment-{deployment_id}"
+        )
+        self._tasks[deployment_id] = task
+        task.add_done_callback(
+            lambda completed: self._tasks.pop(deployment_id, None)
+            if self._tasks.get(deployment_id) is completed else None
         )
 
     def _deployment(self, deployment_id: str) -> dict[str, Any]:
@@ -255,10 +262,8 @@ class DeploymentManager:
             return
         connection: asyncssh.SSHClientConnection | None = None
         deployment = self._deployment(deployment_id)
-        lock = self._locks.setdefault(
-            self.store.deployment_target_key(deployment["target"], deployment["port"]),
-            asyncio.Lock(),
-        )
+        target_key = self.store.deployment_target_key(deployment["target"], deployment["port"])
+        lock = self._locks.setdefault(target_key, asyncio.Lock())
         try:
             async with lock:
                 deployment = self._deployment(deployment_id)
@@ -280,7 +285,9 @@ class DeploymentManager:
                 )
                 await self._transfer(connection, deployment_id, deployment, code)
                 await self._install(connection, deployment_id, deployment, credentials)
-                await self._wait_for_agent(deployment_id, deployment["release_version"])
+                boot_id = await self._wait_for_agent(deployment_id, deployment["release_version"])
+                await self._reboot(connection, deployment_id)
+                await self._wait_for_agent(deployment_id, deployment["release_version"], boot_id)
                 self._event(
                     deployment_id,
                     "complete",
@@ -309,6 +316,8 @@ class DeploymentManager:
             saved = self._credentials.pop(deployment_id, None)
             if saved:
                 saved.clear()
+            if self._locks.get(target_key) is lock and not lock.locked():
+                self._locks.pop(target_key)
 
     async def _connect(
         self, deployment: dict[str, Any], credentials: DeploymentCredentials
@@ -444,7 +453,8 @@ class DeploymentManager:
     ) -> None:
         remote_dir = f".local/share/takt/bootstrap/{deployment_id}"
         installer = (
-            f"bash {shlex.quote(remote_dir + '/work/scripts/install_raspberry_pi.sh')} "
+            "TAKT_MANAGED_REBOOT=true bash "
+            f"{shlex.quote(remote_dir + '/work/scripts/install_raspberry_pi.sh')} "
             f"--bootstrap-config {shlex.quote(remote_dir + '/bootstrap.json')} --non-interactive"
         )
         sudo_password = credentials.sudo_password or credentials.ssh_password
@@ -478,8 +488,7 @@ class DeploymentManager:
             connection,
             deployment_id,
             "cleanup",
-            f"rm -f -- {shlex.quote(remote_dir + '/release.tar.gz')} "
-            f"{shlex.quote(remote_dir + '/bootstrap.json')}",
+            f"rm -rf -- {shlex.quote(remote_dir)}",
         )
         if exit_status:
             raise RuntimeError(
@@ -487,7 +496,9 @@ class DeploymentManager:
             )
         self._event(deployment_id, "install", "Installer completed; waiting for the agent.")
 
-    async def _wait_for_agent(self, deployment_id: str, release_version: str) -> None:
+    async def _wait_for_agent(
+        self, deployment_id: str, release_version: str, after_boot_id: str | None = None
+    ) -> str:
         self._event(deployment_id, "agent", "Waiting for the enrolled agent heartbeat.")
         deadline = asyncio.get_running_loop().time() + AGENT_TIMEOUT
         while asyncio.get_running_loop().time() < deadline:
@@ -499,14 +510,29 @@ class DeploymentManager:
             if (
                 device
                 and device.get("online")
+                and status.get("boot_id")
                 and status.get("app_version") == release_version
+                and (after_boot_id is None or status["boot_id"] != after_boot_id)
                 and status.get("protocol_version") == PROTOCOL_VERSION
                 and health.get("ok") is True
                 and health.get("state") == "ready"
             ):
-                return
+                return str(status["boot_id"])
             await asyncio.sleep(2)
         raise TimeoutError("The agent did not report the expected online version and health.")
+
+    async def _reboot(
+        self, connection: asyncssh.SSHClientConnection, deployment_id: str
+    ) -> None:
+        self._event(deployment_id, "reboot", "Restarting the Pi to apply headless and audio setup.")
+        try:
+            stdout, stderr, exit_status = await self._command(
+                connection, deployment_id, "reboot", "sudo -n systemctl reboot"
+            )
+        except (asyncssh.ConnectionLost, ConnectionResetError, BrokenPipeError):
+            return
+        if exit_status and (stdout.strip() or stderr.strip()):
+            raise RuntimeError(stderr.strip() or stdout.strip() or "Could not restart the Pi.")
 
     async def _command(
         self,
@@ -524,7 +550,10 @@ class DeploymentManager:
             process.stdin.write_eof()
         try:
             stdout, stderr = await asyncio.wait_for(
-                asyncio.gather(process.stdout.read(), process.stderr.read()), timeout=timeout
+                asyncio.gather(
+                    self._read_output(process.stdout), self._read_output(process.stderr)
+                ),
+                timeout=timeout,
             )
         except TimeoutError as error:
             process.kill()
@@ -541,3 +570,19 @@ class DeploymentManager:
         for line in stderr.splitlines()[-100:]:
             self._event(deployment_id, stage, line, level="error")
         return stdout, stderr, result.exit_status if result.exit_status is not None else 1
+
+    @staticmethod
+    async def _read_output(stream: Any) -> str:
+        chunks: deque[str] = deque()
+        size = 0
+        while chunk := await stream.read(8192):
+            chunks.append(chunk)
+            size += len(chunk)
+            while size > OUTPUT_LIMIT:
+                excess = size - OUTPUT_LIMIT
+                if len(chunks[0]) <= excess:
+                    size -= len(chunks.popleft())
+                else:
+                    chunks[0] = chunks[0][excess:]
+                    size -= excess
+        return "".join(chunks)

@@ -220,11 +220,18 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
     source = new EventSource(path + "/events?after=" + streamAfter);
     source.onmessage = (message) => {
       try {
-        if (active) setEvents((current) => [...current, JSON.parse(message.data)]);
+        const event = JSON.parse(message.data);
+        if (active) {
+          setEvents((current) => [...current, event]);
+          if (event.deployment) {
+            setDeployment(event.deployment);
+            setError("");
+            if (["succeeded", "failed", "cancelled", "interrupted"].includes(event.deployment.status)) source.close();
+          }
+        }
       } catch {
         if (active) setError("Deployment log contained invalid data.");
       }
-      load();
     };
     source.onerror = () => { if (active) load(); };
     return () => { active = false; source.close(); };
