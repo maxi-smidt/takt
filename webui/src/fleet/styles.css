@@ -214,6 +214,51 @@ input:focus, select:focus { border-color: var(--green); }
 .file-drop small { color: var(--muted); font-size: var(--fs-small); }
 .file-drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
+/* Maintenance panel: grouped, capability-gated device actions. */
+.maintenance-panel { display: grid; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--line); background: #0b1513; }
+.maintenance-group { display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 10px; }
+.maintenance-label { color: var(--muted); font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps); }
+.maintenance-buttons { display: flex; flex-wrap: wrap; gap: 7px; }
+.maintenance-buttons button { flex: 1 1 auto; min-width: 92px; border: 1px solid var(--line); background: #15201e; color: var(--text); padding: 9px 10px; font-size: var(--fs-label); font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
+.maintenance-buttons button:not(:disabled):hover { border-color: var(--line-bright); }
+.maintenance-buttons button:disabled { opacity: .42; cursor: not-allowed; }
+.maintenance-buttons .danger-action { color: #ffb0a2; background: #241512; border-color: #63382f; }
+.maintenance-bundles { display: flex; flex-wrap: wrap; gap: 7px; }
+.maintenance-bundles a { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); color: var(--text); padding: 7px 10px; font-size: var(--fs-small); }
+.maintenance-bundles a:hover { border-color: var(--line-bright); }
+
+/* Health check results. */
+.health-panel { border-top: 1px solid var(--line); background: #0b1513; }
+.health-panel summary { display: flex; align-items: center; gap: 9px; padding: 13px 20px; cursor: pointer; font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps); }
+.health-panel summary small { margin-left: auto; color: var(--muted); font-weight: 400; letter-spacing: 0; font-size: var(--fs-small); }
+.health-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.health-dot.tone-ok { background: var(--green); }
+.health-dot.tone-warn { background: var(--amber); }
+.health-dot.tone-fail { background: var(--red); }
+.health-panel ul { list-style: none; margin: 0; padding: 0 20px 14px; display: grid; gap: 6px; }
+.health-panel li { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: var(--fs-small); }
+.health-panel li strong { font-size: var(--fs-label); letter-spacing: var(--ls-caps); color: var(--muted); }
+.health-panel li.tone-ok strong { color: var(--green); }
+.health-panel li.tone-warn strong { color: var(--amber); }
+.health-panel li.tone-fail strong { color: var(--red); }
+.health-panel li small { grid-column: 1 / -1; color: var(--muted); }
+
+/* Maintenance confirmation dialog. */
+.confirm-body { display: grid; gap: 14px; padding: 20px; font-size: var(--fs-base); }
+.confirm-body p { margin: 0; }
+.confirm-aftermath, .confirm-safe { color: var(--muted); font-size: var(--fs-small); }
+.confirm-warning { display: flex; gap: 11px; border: 1px solid #63382f; background: #241512; padding: 14px; }
+.confirm-warning svg { flex: none; color: var(--red); }
+.confirm-warning > div { display: grid; gap: 7px; }
+.confirm-warning strong { color: #ffb0a2; font-size: var(--fs-label); letter-spacing: var(--ls-caps); }
+.confirm-warning span { font-size: var(--fs-small); }
+.confirm-override { display: flex; align-items: center; gap: 9px; font-size: var(--fs-small); font-weight: 700; cursor: pointer; }
+.confirm-override input { width: 17px; height: 17px; accent-color: var(--red); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 0 20px 20px; }
+.modal-actions button { min-height: 42px; border: 1px solid var(--line); background: #15201e; color: var(--text); padding: 0 20px; font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps); }
+.modal-actions button:disabled { opacity: .42; cursor: not-allowed; }
+.modal-actions .danger-action { color: #ffb0a2; background: #241512; border-color: #63382f; }
+
 @media (max-width: 900px) {
   .registry-state { display: none; }
   .top-actions button:not(.icon-button) { font-size: 0; width: 40px; justify-content: center; padding: 0; }
@@ -235,4 +280,5 @@ input:focus, select:focus { border-color: var(--green); }
   .update-control button { justify-content: center; }
   .enrollment-fields { grid-template-columns: 1fr; }
   .enrollment-url, .insecure-opt-in { grid-column: auto; }
+  .maintenance-group { grid-template-columns: 1fr; gap: 6px; }
 }
