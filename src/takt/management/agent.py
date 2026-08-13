@@ -714,6 +714,8 @@ class TaktAgent:
         )
         artifact = self.config.data_directory / f"{expected_sha256}.tar.gz.part"
         download_complete = False
+        project_directory: Path | None = None
+        maintenance_lease: str | None = None
         try:
             await self._download_release(
                 session,
@@ -727,7 +729,10 @@ class TaktAgent:
             project_directory = await asyncio.to_thread(
                 self._prepare_release, artifact, version, job_id
             )
-            await self._acquire_maintenance(session, job_id, f"Install TAKT release {version}")
+            self._assert_job_control()
+            maintenance_lease = await self._acquire_maintenance(
+                session, job_id, f"Install TAKT release {version}"
+            )
             try:
                 previous_target = (
                     self.config.current_link.resolve(strict=True)
@@ -812,6 +817,13 @@ class TaktAgent:
                 await self._upload_mirror(session)
             except Exception as error:
                 LOGGER.warning("post_deployment_mirror_pending error=%s", error)
+        except CancelledJob:
+            if maintenance_lease:
+                with contextlib.suppress(Exception):
+                    await self._release_maintenance(session, maintenance_lease)
+            if project_directory is not None:
+                shutil.rmtree(project_directory, ignore_errors=True)
+            raise
         finally:
             if download_complete:
                 artifact.unlink(missing_ok=True)
@@ -1346,6 +1358,18 @@ class TaktAgent:
             if response.status != 200 or not body.get("acquired"):
                 raise RuntimeError(f"Could not acquire local maintenance lock: {body}")
             return str(body["lease_token"])
+
+    async def _release_maintenance(self, session: ClientSession, lease_token: str) -> None:
+        local_base = self.config.health_url.rsplit("/health", 1)[0]
+        async with session.post(
+            f"{local_base}/internal/maintenance/release",
+            json={"lease_token": lease_token},
+            timeout=ClientTimeout(total=5),
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError(
+                    f"Could not release local maintenance lock: {await response.text()}"
+                )
 
     async def _systemctl(self, *arguments: str) -> None:
         process = await asyncio.create_subprocess_exec(

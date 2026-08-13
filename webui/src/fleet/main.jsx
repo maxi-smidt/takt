@@ -537,7 +537,7 @@ function JobRow({ job, onCancel, onRetry }) {
         value={progress}
         aria-label={`${job.action.replaceAll("_", " ")} progress`}
       />
-      {active && !["activating", "restarting", "health_checking"].includes(job.stage) && <button className="secondary-button" onClick={() => onCancel(job)}>CANCEL</button>}
+      {job.action === "install_release" && active && !["activating", "restarting", "health_checking"].includes(job.stage) && <button className="secondary-button" onClick={() => onCancel(job)}>CANCEL</button>}
       {job.action !== "add_wifi_network" && ["rolled_back", "failed", "cancelled"].includes(job.status) && <button className="secondary-button" onClick={() => onRetry(job)}><RotateCcw size={14} /> RETRY</button>}
       <time>{timeAgo(job.updated_at)}</time>
     </div>
