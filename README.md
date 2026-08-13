@@ -559,8 +559,22 @@ React-Code und erzeugt anschließend die produktiven Dateien.
 | F11 | Vollbild umschalten |
 | Strg+Q | Anwendung beenden |
 
-Nach dem Stoppen verwirft ein Doppeldruck auf den Mock- oder GPIO-Taster
-innerhalb von 600 ms den aktuellen Lauf. Ein einzelner Druck tut nichts.
+Der Mock- und GPIO-Taster unterstützt zusätzlich diese Gesten:
+
+- kurzer Druck in **Bereit** startet, ein kurzer Druck während der Messung stoppt;
+- ein kurzer Druck während des Startsignals bricht dieses ab;
+- ein etwa einsekündiges Halten nach dem Stoppen speichert den Lauf und gibt
+  sofort Rückmeldung;
+- zwei kurze Drücke nach dem Stoppen innerhalb des konfigurierten Fensters
+  verwerfen den Lauf und starten unmittelbar den nächsten;
+- ein einzelner kurzer Druck nach dem Stoppen wartet das Doppeldruckfenster ab
+  und lässt den Lauf unverändert.
+
+Entprellzeit, Doppeldruckfenster und Halteschwelle stehen in
+`config.example.toml`; die Zeitmessung verwendet eine monotone Uhr und ist
+deshalb unabhängig von der Systemzeit. Ein erkannter langer Druck wird beim
+Erreichen der Halteschwelle verbraucht und kann beim Loslassen keine zweite
+Aktion auslösen.
 Beim Reduzieren bleibt der Zuschlag immer mindestens bei `+00:00.00`; die
 gemessene Ist-Zeit wird dabei nie verändert.
 
@@ -627,6 +641,8 @@ GND          ↔ NO
 
 Die Eingabe ist active-low und verwendet den internen Pull-up-Widerstand.
 Pin, Entprellzeit und Doppeldruckfenster stehen in `config.example.toml`.
+Zusätzlich lassen sich dort die Halteschwelle (`long_press_seconds`) und damit
+die Hardware-Anpassung des Tasters konfigurieren.
 
 ## Raspberry-Pi-Betrieb prüfen
 

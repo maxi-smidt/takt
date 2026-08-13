@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -36,6 +37,12 @@ from takt.buzzer import Buzzer, NullBuzzer
 from takt.config import Config
 from takt.domain.run import Run
 from takt.domain.timer_state import TimerState
+from takt.input.button_gestures import (
+    ButtonGesture,
+    ButtonGestureRecognizer,
+    GestureEvent,
+    GestureMode,
+)
 from takt.input.button_input import ButtonInput
 from takt.persistence.run_repository import SQLiteRunRepository
 from takt.ui.performance_chart import PerformanceChart
@@ -60,6 +67,8 @@ class ClickableFrame(QFrame):
 
 class MainWindow(QMainWindow):
     primary_press_requested = Signal()
+    physical_button_pressed = Signal()
+    physical_button_released = Signal()
 
     def __init__(
         self,
@@ -84,6 +93,11 @@ class MainWindow(QMainWindow):
         self._hardware_label = hardware_label
         self._show_mock_button = show_mock_button
         self._show_mock_buzzer = show_mock_buzzer
+        self._gestures = ButtonGestureRecognizer(
+            self._gesture_mode,
+            double_press_seconds=config.gpio.double_press_seconds,
+            long_press_seconds=config.gpio.long_press_seconds,
+        )
         self.setWindowTitle("TAKT")
         self.resize(1400, 820)
         self.setMinimumSize(1050, 650)
@@ -94,6 +108,8 @@ class MainWindow(QMainWindow):
         self.space_shortcut.activated.connect(self._handle_space_shortcut)
 
         self.primary_press_requested.connect(self._handle_primary_press)
+        self.physical_button_pressed.connect(self._handle_button_press)
+        self.physical_button_released.connect(self._handle_button_release)
         self.controller.subscribe(self.render)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(33)
@@ -106,6 +122,9 @@ class MainWindow(QMainWindow):
         self._confirmation_timer = QTimer(self)
         self._confirmation_timer.setSingleShot(True)
         self._confirmation_timer.timeout.connect(self.controller.finish_confirmation)
+        self._gesture_timer = QTimer(self)
+        self._gesture_timer.setSingleShot(True)
+        self._gesture_timer.timeout.connect(self._advance_gesture)
         self._update_clock()
         self.refresh_history()
         self.render(self.controller.snapshot())
@@ -141,7 +160,13 @@ class MainWindow(QMainWindow):
         state = snapshot.state
         state_changed = state is not self._last_state
         if state_changed:
+            if state is not TimerState.STOPPED:
+                self._gestures.reset()
+                self._gesture_timer.stop()
             self._signal_state_change(self._last_state, state)
+        elif snapshot.error_message:
+            self._gestures.reset()
+            self._gesture_timer.stop()
         self._last_state = state
 
         colors = {
@@ -602,12 +627,57 @@ class MainWindow(QMainWindow):
         self.mock_button = QPushButton("MOCK-TASTER DRÜCKEN")
         self.mock_button.setObjectName("mock")
         self.mock_button.setVisible(self._show_mock_button)
-        self.mock_button.clicked.connect(self.primary_press_requested.emit)
+        self.mock_button.pressed.connect(self.physical_button_pressed.emit)
+        self.mock_button.released.connect(self.physical_button_released.emit)
         footer.addWidget(self.mock_button)
         return footer
 
     def _handle_primary_press(self, source: str = "mock-taster") -> None:
+        if self.controller.state is TimerState.SAVED_CONFIRMATION:
+            self._confirmation_timer.stop()
+            self.controller.finish_confirmation()
+            self.controller.start(source)
+            return
         self.controller.handle_primary_button_press(source)
+
+    def _handle_button_press(self) -> None:
+        self._dispatch_gestures(self._gestures.press("gpio-taster"))
+
+    def _handle_button_release(self) -> None:
+        self._dispatch_gestures(self._gestures.release())
+
+    def _advance_gesture(self) -> None:
+        self._dispatch_gestures(self._gestures.advance())
+
+    def _dispatch_gestures(self, events: tuple[GestureEvent, ...]) -> None:
+        self._schedule_gesture_deadline()
+        for event in events:
+            if event.gesture is ButtonGesture.SHORT:
+                self._handle_primary_press(event.source)
+            elif event.gesture is ButtonGesture.LONG:
+                if self.controller.state is TimerState.STOPPED:
+                    self.controller.save()
+            elif event.gesture is ButtonGesture.DOUBLE:
+                if self.controller.state is TimerState.STOPPED:
+                    self.controller.discard_immediately(event.source)
+                    self.controller.start(event.source)
+
+    def _schedule_gesture_deadline(self) -> None:
+        self._gesture_timer.stop()
+        deadline = self._gestures.next_deadline
+        if deadline is not None:
+            self._gesture_timer.start(max(1, round((deadline - time.monotonic()) * 1000)))
+
+    def _gesture_mode(self) -> GestureMode:
+        if self.controller.state is TimerState.STOPPED:
+            return GestureMode.STOPPED
+        if self.controller.state in (
+            TimerState.READY,
+            TimerState.RUNNING,
+            TimerState.SAVED_CONFIRMATION,
+        ):
+            return GestureMode.IMMEDIATE
+        return GestureMode.IGNORE
 
     def _handle_space_shortcut(self) -> None:
         state = self.controller.state

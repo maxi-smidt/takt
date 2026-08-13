@@ -90,25 +90,35 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.mock_gpio:
-        button_input = MockButtonInput(window.primary_press_requested.emit)
+        button_input = MockButtonInput(
+            window.physical_button_pressed.emit,
+            window.physical_button_released.emit,
+        )
         window.set_hardware_status("Mock aktiv", available=True)
     elif config.gpio.enabled:
         try:
             button_input = GpioButtonInput(
                 config.gpio.pin_bcm,
                 config.gpio.bounce_seconds,
-                window.primary_press_requested.emit,
+                window.physical_button_pressed.emit,
+                on_release=window.physical_button_released.emit,
             )
             window.set_hardware_status("verbunden", available=True)
         except Exception:
             LOGGER.exception("GPIO unavailable, falling back to keyboard and mouse")
-            button_input = MockButtonInput(window.primary_press_requested.emit)
+            button_input = MockButtonInput(
+                window.physical_button_pressed.emit,
+                window.physical_button_released.emit,
+            )
             window.set_hardware_status(
                 "nicht verfügbar · Tastatur/Maus aktiv",
                 available=False,
             )
     else:
-        button_input = MockButtonInput(window.primary_press_requested.emit)
+        button_input = MockButtonInput(
+            window.physical_button_pressed.emit,
+            window.physical_button_released.emit,
+        )
         window.set_hardware_status("nur Tastatur/Maus", available=False)
 
     if args.mock_buzzer:

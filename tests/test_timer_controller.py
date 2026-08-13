@@ -64,25 +64,17 @@ class TimerControllerTests(unittest.TestCase):
         self.assertFalse(self.controller.start())
         self.assertEqual(self.controller.state, TimerState.RUNNING)
 
-    def test_stopped_double_button_press_discards(self) -> None:
+    def test_stopped_primary_button_press_is_handled_by_gesture_layer(self) -> None:
         self.controller.handle_primary_button_press()
         self.clock.advance_ms(2_000)
         self.controller.handle_primary_button_press()
         self.assertEqual(self.controller.state, TimerState.STOPPED)
 
-        self.controller.handle_primary_button_press()
-        self.clock.advance_ms(400)
-        discarded = self.controller.handle_primary_button_press()
-        self.assertTrue(discarded)
-        self.assertEqual(self.controller.state, TimerState.READY)
-
-    def test_slow_stopped_presses_do_not_discard(self) -> None:
+    def test_stopped_primary_button_press_does_not_discard(self) -> None:
         self.controller.start()
         self.clock.advance_ms(1_000)
         self.controller.stop()
-        self.controller.handle_primary_button_press()
-        self.clock.advance_ms(900)
-        self.controller.handle_primary_button_press()
+        self.assertFalse(self.controller.handle_primary_button_press())
         self.assertEqual(self.controller.state, TimerState.STOPPED)
 
     def test_keyboard_discard_requires_confirmation(self) -> None:
