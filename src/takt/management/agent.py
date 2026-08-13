@@ -849,7 +849,7 @@ class TaktAgent:
 
     async def _require_safe_state(
         self, session: ClientSession, job: dict[str, Any], reason: str
-    ) -> None:
+    ) -> str | None:
         """Refuse to disturb a running or unsaved run unless explicitly overridden.
 
         The local maintenance lock only grants a lease in the `ready` timer state,
@@ -861,12 +861,12 @@ class TaktAgent:
             LOGGER.warning(
                 "maintenance_override id=%s action=%s", job_id, job.get("action")
             )
-            return
+            return None
         if not await self._service_is_active():
             # TAKT is not running, so there is no run to interrupt and the local
             # maintenance endpoint is unreachable by definition.
-            return
-        await self._acquire_maintenance(session, job_id, reason)
+            return None
+        return await self._acquire_maintenance(session, job_id, reason)
 
     async def _restart_takt(self, session: ClientSession, job: dict[str, Any]) -> None:
         job_id = str(job["id"])
@@ -918,15 +918,12 @@ class TaktAgent:
             else "Shutdown requested; the device will leave the fleet until it is powered on."
         )
         await self._progress_job(session, job_id, 90, message, stage=stage)
-        # Record and report the outcome BEFORE the box goes down: once the helper
-        # runs this process is killed and can never report anything again. The
-        # durable pending result replays on the next boot if the report is lost,
-        # and the registry does not requeue power actions on lease expiry, so a
-        # lost report can never turn into a second reboot.
+        await self._call_helper("power", {"mode": mode})
+        # Do not report success until the helper accepts the operation; a
+        # refused helper call is handled as a failed job by the outer runner.
         await self._remember_result(
             session, job_id, "succeeded", message, lease_id=lease_id, stage="succeeded"
         )
-        await self._call_helper("power", {"mode": mode})
 
     async def _run_health_checks(self, session: ClientSession, job: dict[str, Any]) -> None:
         job_id = str(job["id"])
@@ -1183,8 +1180,8 @@ class TaktAgent:
                 self._prepare_release, artifact, version, job_id
             )
             self._assert_job_control()
-            maintenance_lease = await self._acquire_maintenance(
-                session, job_id, f"Install TAKT release {version}"
+            maintenance_lease = await self._require_safe_state(
+                session, job, f"Install TAKT release {version}"
             )
             try:
                 previous_target = (

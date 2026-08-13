@@ -316,6 +316,7 @@ class ManagementAgentTests(unittest.TestCase):
                 patch.object(agent, "_progress_job", AsyncMock(side_effect=publish_progress)),
                 patch.object(agent, "_download_release", AsyncMock(side_effect=download_release)),
                 patch.object(agent, "_prepare_release", return_value=prepared),
+                patch.object(agent, "_service_is_active", AsyncMock(return_value=True)),
                 patch.object(
                     agent, "_acquire_maintenance", AsyncMock(return_value="maintenance-token")
                 ),
@@ -451,7 +452,7 @@ class FleetMaintenanceAgentTests(unittest.TestCase):
                 asyncio.run(agent._call_helper("power", {"mode": "reboot"}))
             self.assertEqual(spawn.call_count, 0)
 
-    def test_reboot_reports_its_result_before_powering_down(self) -> None:
+    def test_reboot_reports_its_result_after_power_helper_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             agent = self._agent(root, helper_verbs=frozenset({"power"}))
@@ -477,13 +478,28 @@ class FleetMaintenanceAgentTests(unittest.TestCase):
                 patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=True)),
             ):
                 asyncio.run(agent._power_action(AsyncMock(), job))
-            self.assertIn("report:succeeded", order)
-            self.assertEqual(order[-1], "helper:power:reboot")
+            self.assertEqual(order[-1], "report:succeeded")
             self.assertLess(
-                order.index("report:succeeded"),
                 order.index("helper:power:reboot"),
-                "the outcome must be reported before the device can be killed",
+                order.index("report:succeeded"),
+                "a power action must not be successful before the helper accepts it",
             )
+
+    def test_reboot_helper_failure_is_not_recorded_as_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            agent = self._agent(Path(temporary_directory), helper_verbs=frozenset({"power"}))
+            job = {"id": "a" * 24, "action": "reboot_device", "lease_id": "lease-1", "payload": {}}
+            with (
+                patch.object(
+                    TaktAgent, "_call_helper",
+                    AsyncMock(side_effect=RuntimeError("helper refused")),
+                ),
+                patch.object(TaktAgent, "_progress_job", AsyncMock()),
+                patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=False)),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "helper refused"):
+                    asyncio.run(agent._power_action(AsyncMock(), job))
+
 
     def test_reboot_result_stays_durable_when_reporting_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -492,7 +508,6 @@ class FleetMaintenanceAgentTests(unittest.TestCase):
             state_at_power: dict[str, str] = {}
 
             async def capture(verb: str, arguments: dict[str, object]) -> dict[str, object]:
-                state_at_power["state"] = agent.state_path.read_text(encoding="utf-8")
                 return {}
 
             job = {
@@ -512,6 +527,7 @@ class FleetMaintenanceAgentTests(unittest.TestCase):
             ):
                 asyncio.run(agent._power_action(AsyncMock(), job))
             # It must survive the reboot on disk so the next boot can replay it.
+            state_at_power["state"] = agent.state_path.read_text(encoding="utf-8")
             self.assertIn("succeeded", state_at_power["state"])
             self.assertIn("a" * 24, state_at_power["state"])
 

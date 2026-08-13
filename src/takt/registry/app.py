@@ -1191,8 +1191,14 @@ async def cancel_job(request: web.Request) -> web.Response:
 
 async def retry_job(request: web.Request) -> web.Response:
     _admin(request, csrf=True)
+    body = await _json(request, max_bytes=4 * 1024)
+    override = body.get("override", False)
+    if not isinstance(override, bool):
+        raise web.HTTPBadRequest(text="Job override must be a boolean.")
     try:
-        job = request.app[STORE_KEY].retry_job(request.match_info["job_id"])
+        job = request.app[STORE_KEY].retry_job(
+            request.match_info["job_id"], override=override
+        )
     except LookupError as error:
         raise web.HTTPNotFound(text=str(error)) from error
     except ValueError as error:

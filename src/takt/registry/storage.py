@@ -32,7 +32,7 @@ def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
 JOB_LEASE_SECONDS = 120
 
@@ -566,10 +566,6 @@ class RegistryStore:
         fleet_action = get_action(action)
         assert fleet_action is not None
         status = device.get("status") or {}
-        if not status:
-            # Never heartbeated: allow queuing so the first safe job is waiting
-            # once the agent connects; unsupported actions simply fail there.
-            return
         protocol_version = status.get("protocol_version")
         if protocol_version is not None and int(protocol_version) < fleet_action.min_protocol:
             raise ValueError(
@@ -596,6 +592,8 @@ class RegistryStore:
         override: bool = False,
     ) -> dict[str, Any]:
         payload = dict(payload or {})
+        # Operator consent is controlled by the explicit argument, never by caller data.
+        payload.pop("override", None)
         fleet_action = get_action(action)
         if fleet_action is None:
             raise ValueError("Unsupported action.")
@@ -608,6 +606,8 @@ class RegistryStore:
             raise LookupError("Device does not exist.")
         if device.get("revoked_at"):
             raise ValueError("Device access has been revoked.")
+        if not device.get("online"):
+            raise ValueError("Device must be online to queue a job.")
         self._authorize_action(device, action)
         placeholders = ",".join("?" for _ in DISRUPTIVE_ACTIONS)
         active = self.connection.execute(
@@ -960,7 +960,7 @@ class RegistryStore:
         assert cancelled is not None
         return cancelled
 
-    def retry_job(self, job_id: str) -> dict[str, Any]:
+    def retry_job(self, job_id: str, *, override: bool = False) -> dict[str, Any]:
         previous = self.get_job(job_id)
         if previous is None:
             raise LookupError("Job does not exist.")
@@ -971,7 +971,7 @@ class RegistryStore:
                 "Wi-Fi jobs cannot be retried because their credential is not retained."
             )
         replacement = self.create_job(
-            previous["device_id"], previous["action"], previous["payload"]
+            previous["device_id"], previous["action"], previous["payload"], override=override
         )
         if replacement.get("reused"):
             return replacement

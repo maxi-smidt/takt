@@ -56,6 +56,8 @@ test("override is required only while a run is in progress", () => {
     status: { capabilities: ["power-control-v1"], health: { state: "running" } },
   };
   assert.equal(requiresOverride("reboot_device", running), true);
+  assert.equal(requiresOverride("reboot_device", { online: false, status: { health: { state: "unreachable" } } }), false);
+  assert.equal(requiresOverride("reboot_device", { online: false, status: { health: { state: "stopped" } } }), false);
   // A read-only action is never overridable, however busy the timer is.
   assert.equal(requiresOverride("run_health_checks", running), false);
 });

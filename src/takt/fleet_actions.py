@@ -58,7 +58,6 @@ class FleetAction:
     requires_ready: bool = False
     overridable: bool = False
     stages: tuple[str, ...] = field(default_factory=tuple)
-    timeout_seconds: int = 120
     # Minimum takt.protocol.PROTOCOL_VERSION the device must have last reported.
     # Not imported from takt.protocol to keep this module dependency-free; kept
     # in sync by hand when an action needs a newer base protocol than 1.
@@ -72,12 +71,10 @@ FLEET_ACTIONS: dict[str, FleetAction] = {
         disruptive=True,
         requires_ready=True,
         stages=INSTALL_STAGES,
-        timeout_seconds=900,
     ),
     "mirror_now": FleetAction(
         name="mirror_now",
         capability=LEASED_JOBS_CAPABILITY,
-        timeout_seconds=120,
     ),
     "restart_takt": FleetAction(
         name="restart_takt",
@@ -86,14 +83,12 @@ FLEET_ACTIONS: dict[str, FleetAction] = {
         requires_ready=True,
         overridable=True,
         stages=_SERVICE_STAGES,
-        timeout_seconds=120,
     ),
     "start_takt": FleetAction(
         name="start_takt",
         capability=SERVICE_CONTROL_CAPABILITY,
         disruptive=True,
         stages=_SERVICE_STAGES,
-        timeout_seconds=60,
     ),
     "stop_takt": FleetAction(
         name="stop_takt",
@@ -102,7 +97,6 @@ FLEET_ACTIONS: dict[str, FleetAction] = {
         requires_ready=True,
         overridable=True,
         stages=_SERVICE_STAGES,
-        timeout_seconds=60,
     ),
     "reboot_device": FleetAction(
         name="reboot_device",
@@ -111,7 +105,6 @@ FLEET_ACTIONS: dict[str, FleetAction] = {
         requires_ready=True,
         overridable=True,
         stages=_POWER_STAGES,
-        timeout_seconds=90,
     ),
     "shutdown_device": FleetAction(
         name="shutdown_device",
@@ -120,19 +113,16 @@ FLEET_ACTIONS: dict[str, FleetAction] = {
         requires_ready=True,
         overridable=True,
         stages=_POWER_STAGES,
-        timeout_seconds=90,
     ),
     "collect_diagnostics": FleetAction(
         name="collect_diagnostics",
         capability=DIAGNOSTICS_CAPABILITY,
         stages=_DIAGNOSTICS_STAGES,
-        timeout_seconds=120,
     ),
     "run_health_checks": FleetAction(
         name="run_health_checks",
         capability=HEALTH_CHECKS_CAPABILITY,
         stages=_HEALTH_CHECK_STAGES,
-        timeout_seconds=60,
     ),
 }
 

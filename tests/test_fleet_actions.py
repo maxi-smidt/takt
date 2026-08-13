@@ -42,10 +42,6 @@ class FleetActionsTests(unittest.TestCase):
         for name in NO_REQUEUE_ON_LEASE_EXPIRY:
             self.assertEqual(FLEET_ACTIONS[name].capability, "power-control-v1")
 
-    def test_every_action_declares_a_positive_timeout(self) -> None:
-        for action in FLEET_ACTIONS.values():
-            self.assertGreater(action.timeout_seconds, 0)
-
     def test_stages_include_queued_and_a_terminal_state_when_declared(self) -> None:
         for action in FLEET_ACTIONS.values():
             if not action.stages:

@@ -398,8 +398,8 @@ Jede Gerätekarte enthält ein Wartungsfeld mit drei Gruppen:
 | **POWER** | `REBOOT` und `SHUT DOWN` des Raspberry Pi |
 | **DIAGNOSE** | `HEALTH CHECKS` und `DIAGNOSTICS` |
 
-Alle Aktionen sind normale, protokollierte Aufträge mit Fortschritt, Zeitlimit
-und eindeutigem Endergebnis. Sie erscheinen wie Installationen im Auftragsverlauf
+Alle Aktionen sind normale, protokollierte Aufträge mit Fortschritt und eindeutigem
+Endergebnis. Sie erscheinen wie Installationen im Auftragsverlauf
 und lassen sich dort nachvollziehen.
 
 **Laufende Durchgänge sind geschützt.** Vor jedem eingreifenden Auftrag fordert

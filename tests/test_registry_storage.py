@@ -13,7 +13,7 @@ from takt.registry.storage import SCHEMA_VERSION, RegistryStore, utc_iso, utc_no
 
 
 class RegistryStorageTests(unittest.TestCase):
-    def test_never_seen_device_can_receive_first_safe_job(self) -> None:
+    def test_never_seen_device_cannot_receive_a_job(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = RegistryStore(Path(temporary_directory))
             try:
@@ -25,8 +25,8 @@ class RegistryStorageTests(unittest.TestCase):
                     hostname="takt-01",
                     token="a" * 64,
                 )
-                job = store.create_job("12345678-1234-1234-1234-123456789abc", "restart_takt")
-                self.assertEqual(job["status"], "queued")
+                with self.assertRaisesRegex(ValueError, "online"):
+                    store.create_job("12345678-1234-1234-1234-123456789abc", "restart_takt")
             finally:
                 store.close()
 
@@ -393,6 +393,7 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
                     int(store.connection.execute("PRAGMA user_version").fetchone()[0]),
                     SCHEMA_VERSION,
                 )
+                self.assertTrue(list((root / "backups").glob("*pre-migration-v8.sqlite3")))
                 index_sql = str(
                     store.connection.execute(
                         "SELECT sql FROM sqlite_master WHERE type = 'index' "
@@ -436,6 +437,8 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
             try:
                 job = store.create_job(self.DEVICE_ID, "reboot_device", override=True)
                 self.assertTrue(job["payload"]["override"])
+                untrusted = store.create_job(self.DEVICE_ID, "mirror_now", {"override": True})
+                self.assertNotIn("override", untrusted["payload"])
                 audited = store.connection.execute(
                     "SELECT COUNT(*) FROM audit_events WHERE event = 'job_created'"
                 ).fetchone()[0]
@@ -444,6 +447,33 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
                     store.create_job(self.DEVICE_ID, "run_health_checks", override=True)
             finally:
                 store.close()
+
+    def test_retry_requires_fresh_override_consent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(
+                Path(temporary_directory), capabilities=["leased-jobs", "power-control-v1"]
+            )
+            try:
+                original = store.create_job(self.DEVICE_ID, "reboot_device", override=True)
+                claimed = store.claim_next_job(self.DEVICE_ID, "session-a")
+                assert claimed is not None
+                store.update_job(
+                    original["id"], self.DEVICE_ID, "failed", 100, "helper refused",
+                    claimed["lease_id"], stage="failed",
+                )
+                retry = store.retry_job(original["id"])
+                self.assertNotIn("override", retry["payload"])
+                claimed_retry = store.claim_next_job(self.DEVICE_ID, "session-b")
+                assert claimed_retry is not None
+                store.update_job(
+                    retry["id"], self.DEVICE_ID, "failed", 100, "helper refused",
+                    claimed_retry["lease_id"], stage="failed",
+                )
+                explicit = store.retry_job(retry["id"], override=True)
+                self.assertTrue(explicit["payload"]["override"])
+            finally:
+                store.close()
+
 
     def test_conflicting_disruptive_jobs_are_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

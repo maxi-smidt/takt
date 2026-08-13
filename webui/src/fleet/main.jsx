@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -436,8 +436,9 @@ function ConfirmModal({ device, action, onClose, onConfirm }) {
   const definition = MAINTENANCE_ACTIONS[action];
   const needsOverride = requiresOverride(action, device);
   const [override, setOverride] = useState(false);
+  const effectiveOverride = needsOverride && override;
   const timerState = device.status?.health?.state || "unknown";
-  const blocked = needsOverride && !override;
+  const blocked = needsOverride && !effectiveOverride;
   return (
     <Modal title={`${definition.label} · ${device.name}`} eyebrow="CONFIRM MAINTENANCE" onClose={onClose}>
       <div className="confirm-body">
@@ -455,7 +456,7 @@ function ConfirmModal({ device, action, onClose, onConfirm }) {
               <label className="confirm-override">
                 <input
                   type="checkbox"
-                  checked={override}
+                  checked={effectiveOverride}
                   onChange={(event) => setOverride(event.target.checked)}
                 />
                 Interrupt the run anyway
@@ -474,7 +475,7 @@ function ConfirmModal({ device, action, onClose, onConfirm }) {
         <button
           className={definition.destructive ? "danger-action" : ""}
           disabled={blocked}
-          onClick={() => onConfirm(override)}
+          onClick={() => onConfirm(effectiveOverride)}
         >
           {definition.label}
         </button>
@@ -687,6 +688,7 @@ function Dashboard({ session, refreshSession }) {
   const [bundledRelease, setBundledRelease] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [modal, setModal] = useState(null);
+  const diagnosticsSignature = useRef(null);
   const [wifiDevice, setWifiDevice] = useState(null);
   const [confirmation, setConfirmation] = useState(null);
   const [diagnostics, setDiagnostics] = useState({});
@@ -700,14 +702,24 @@ function Dashboard({ session, refreshSession }) {
       setReleases(releaseData.releases);
       setBundledRelease(releaseData.bundled_release || null);
       setJobs(jobData.jobs);
-      const bundles = await Promise.all(
-        deviceData.devices.map((device) =>
-          request(`/api/devices/${device.id}/diagnostics`)
-            .then((data) => [device.id, data.diagnostics])
-            .catch(() => [device.id, []]),
-        ),
-      );
-      setDiagnostics(Object.fromEntries(bundles));
+      const signature = [
+        deviceData.devices.map((device) => device.id).join(","),
+        jobData.jobs
+          .filter((job) => job.action === "collect_diagnostics")
+          .map((job) => `${job.id}:${job.status}`)
+          .join(","),
+      ].join("|");
+      if (signature !== diagnosticsSignature.current) {
+        diagnosticsSignature.current = signature;
+        const bundles = await Promise.all(
+          deviceData.devices.map((device) =>
+            request(`/api/devices/${device.id}/diagnostics`)
+              .then((data) => [device.id, data.diagnostics])
+              .catch(() => [device.id, []]),
+          ),
+        );
+        setDiagnostics(Object.fromEntries(bundles));
+      }
       setError("");
     } catch (failure) {
       setError(failure.message);
@@ -755,8 +767,9 @@ function Dashboard({ session, refreshSession }) {
     }
   };
   const retryJob = async (job) => {
+    if (!window.confirm(`Retry ${job.action.replaceAll("_", " ")}?`)) return;
     try {
-      await request(`/api/jobs/${job.id}/retry`, { method: "POST", body: JSON.stringify({}) }, session.csrf_token);
+      await request(`/api/jobs/${job.id}/retry`, { method: "POST", body: JSON.stringify({ override: false }) }, session.csrf_token);
       await load();
     } catch (failure) {
       setError(failure.message);

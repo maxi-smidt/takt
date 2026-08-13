@@ -90,7 +90,7 @@ export function requiresOverride(action, device) {
   const definition = MAINTENANCE_ACTIONS[action];
   if (!definition?.overridable) return false;
   const state = device.status?.health?.state;
-  return Boolean(state) && state !== "ready";
+  return state === "running";
 }
 
 export function healthTone(healthChecks) {
