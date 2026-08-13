@@ -404,7 +404,239 @@ class ManagementAgentTests(unittest.TestCase):
             current_link=root / "current",
             release_environment=root / "release.env",
             maintenance_marker=root / "maintenance.json",
+            maintenance_helper_path=root / "maintenance-helper",
+            log_directory=root / "logs",
         )
+
+
+class FleetMaintenanceAgentTests(unittest.TestCase):
+    def _agent(self, root: Path, *, helper_verbs: frozenset[str] = frozenset()) -> TaktAgent:
+        config = ManagementAgentTests._config(root, root / "takt.db")
+        with (
+            patch.object(TaktAgent, "_probe_wifi_profile_capability", return_value=False),
+            patch.object(TaktAgent, "_probe_maintenance_helper", return_value=helper_verbs),
+        ):
+            return TaktAgent(config)
+
+    def test_capabilities_follow_the_helper_verb_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            without = self._agent(root)
+            self.assertNotIn("service-control-v1", without._capabilities())
+            self.assertNotIn("power-control-v1", without._capabilities())
+            # Diagnostics and health checks need no privilege, so they stay
+            # available even on a Pi whose installer predates the helper.
+            self.assertIn("diagnostics-v1", without._capabilities())
+            self.assertIn("health-checks-v1", without._capabilities())
+
+            with_helper = self._agent(root, helper_verbs=frozenset({"service", "power", "journal"}))
+            self.assertIn("service-control-v1", with_helper._capabilities())
+            self.assertIn("power-control-v1", with_helper._capabilities())
+
+    def test_missing_helper_probe_degrades_to_no_verbs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = ManagementAgentTests._config(root, root / "takt.db")
+            with patch.object(TaktAgent, "_probe_wifi_profile_capability", return_value=False):
+                agent = TaktAgent(config)
+            self.assertEqual(agent._helper_verbs, frozenset())
+
+    def test_calling_an_unsupported_helper_verb_is_refused_locally(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            agent = self._agent(Path(temporary_directory))
+            with (
+                patch("takt.management.agent.asyncio.create_subprocess_exec") as spawn,
+                self.assertRaisesRegex(RuntimeError, "does not support"),
+            ):
+                asyncio.run(agent._call_helper("power", {"mode": "reboot"}))
+            self.assertEqual(spawn.call_count, 0)
+
+    def test_reboot_reports_its_result_before_powering_down(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = self._agent(root, helper_verbs=frozenset({"power"}))
+            order: list[str] = []
+
+            async def record_event(*args: object, **kwargs: object) -> None:
+                order.append(f"report:{kwargs.get('status') or args[2]}")
+
+            async def record_helper(verb: str, arguments: dict[str, object]) -> dict[str, object]:
+                order.append(f"helper:{verb}:{arguments['mode']}")
+                return {}
+
+            job = {
+                "id": "a" * 24,
+                "action": "reboot_device",
+                "lease_id": "lease-1",
+                "payload": {"override": True},
+            }
+            with (
+                patch.object(TaktAgent, "_call_helper", side_effect=record_helper),
+                patch.object(TaktAgent, "_progress_job", AsyncMock()),
+                patch.object(TaktAgent, "_send_job_event", side_effect=record_event),
+                patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=True)),
+            ):
+                asyncio.run(agent._power_action(AsyncMock(), job))
+            self.assertIn("report:succeeded", order)
+            self.assertEqual(order[-1], "helper:power:reboot")
+            self.assertLess(
+                order.index("report:succeeded"),
+                order.index("helper:power:reboot"),
+                "the outcome must be reported before the device can be killed",
+            )
+
+    def test_reboot_result_stays_durable_when_reporting_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = self._agent(root, helper_verbs=frozenset({"power"}))
+            state_at_power: dict[str, str] = {}
+
+            async def capture(verb: str, arguments: dict[str, object]) -> dict[str, object]:
+                state_at_power["state"] = agent.state_path.read_text(encoding="utf-8")
+                return {}
+
+            job = {
+                "id": "a" * 24,
+                "action": "reboot_device",
+                "lease_id": "lease-1",
+                "payload": {"override": True},
+            }
+            with (
+                patch.object(TaktAgent, "_call_helper", side_effect=capture),
+                patch.object(TaktAgent, "_progress_job", AsyncMock()),
+                # The network is gone, so the registry never hears the result.
+                patch.object(
+                    TaktAgent, "_send_job_event", AsyncMock(side_effect=RuntimeError("offline"))
+                ),
+                patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=True)),
+            ):
+                asyncio.run(agent._power_action(AsyncMock(), job))
+            # It must survive the reboot on disk so the next boot can replay it.
+            self.assertIn("succeeded", state_at_power["state"])
+            self.assertIn("a" * 24, state_at_power["state"])
+
+    def test_power_action_defers_while_a_run_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = self._agent(root, helper_verbs=frozenset({"power"}))
+            job = {"id": "b" * 24, "action": "reboot_device", "lease_id": "l", "payload": {}}
+            with (
+                patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=True)),
+                patch.object(
+                    TaktAgent,
+                    "_acquire_maintenance",
+                    AsyncMock(side_effect=DeferredJob("Waiting for TAKT to be ready")),
+                ),
+                patch.object(TaktAgent, "_call_helper", AsyncMock()) as helper,
+                self.assertRaises(DeferredJob),
+            ):
+                asyncio.run(agent._power_action(AsyncMock(), job))
+            self.assertEqual(helper.call_count, 0, "a busy timer must never be powered down")
+
+    def test_override_skips_the_maintenance_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            agent = self._agent(Path(temporary_directory))
+            job = {"id": "c" * 24, "action": "stop_takt", "payload": {"override": True}}
+            with (
+                patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=True)),
+                patch.object(TaktAgent, "_acquire_maintenance", AsyncMock()) as acquire,
+            ):
+                asyncio.run(agent._require_safe_state(AsyncMock(), job, "Stop"))
+            self.assertEqual(acquire.call_count, 0)
+
+    def test_safe_state_gate_is_skipped_when_the_service_is_already_down(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            agent = self._agent(Path(temporary_directory))
+            job = {"id": "d" * 24, "action": "start_takt", "payload": {}}
+            with (
+                patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=False)),
+                patch.object(TaktAgent, "_acquire_maintenance", AsyncMock()) as acquire,
+            ):
+                asyncio.run(agent._require_safe_state(AsyncMock(), job, "Start"))
+            self.assertEqual(
+                acquire.call_count, 0, "a stopped service has no run to interrupt"
+            )
+
+    def test_health_report_never_opens_the_live_database_for_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = self._agent(root)
+            connection = sqlite3.connect(root / "takt.db")
+            connection.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY)")
+            connection.commit()
+            connection.close()
+            with (
+                patch.object(
+                    TaktAgent,
+                    "_local_health",
+                    AsyncMock(return_value={"ok": True, "state": "ready"}),
+                ),
+                patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=True)),
+            ):
+                report = asyncio.run(agent._health_report(AsyncMock()))
+            statuses = {check["id"]: check["status"] for check in report["checks"]}
+            self.assertEqual(statuses["database_integrity"], "ok")
+            self.assertEqual(statuses["takt_service"], "ok")
+            self.assertTrue(report["summary"]["healthy"])
+            self.assertIsInstance(report["summary"]["healthy"], bool)
+
+    def test_failing_checks_mark_the_report_unhealthy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            agent = self._agent(Path(temporary_directory))
+            with (
+                patch.object(
+                    TaktAgent,
+                    "_local_health",
+                    AsyncMock(return_value={"ok": False, "state": "unreachable"}),
+                ),
+                patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=False)),
+            ):
+                report = asyncio.run(agent._health_report(AsyncMock()))
+            self.assertFalse(report["summary"]["healthy"])
+            self.assertGreaterEqual(report["summary"]["fail"], 2)
+
+    def test_diagnostics_bundle_is_redacted_and_excludes_the_identity_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            token = "b" * 64
+            enrollment_code = "TAKT-4tPk9xQm2LwZaB7cRn3D"
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "takt.log").write_text(
+                f"takt started\nAuthorization: Bearer {token}\npsk=hunter2hunter2\n",
+                encoding="utf-8",
+            )
+            config_path = root / "agent.toml"
+            config_path.write_text(
+                '[agent]\nregistry_url = "http://registry.test"\n'
+                f'enrollment_code = "{enrollment_code}"\n',
+                encoding="utf-8",
+            )
+            agent = self._agent(root)
+            agent.config.config_path = config_path
+            agent.config.enrollment_code = enrollment_code
+            agent.identity.device_token = token
+
+            bundle = agent._build_diagnostics_bundle({"collected_at": "now", "checks": []})
+            try:
+                with tarfile.open(bundle, "r:gz") as archive:
+                    names = archive.getnames()
+                    contents = b""
+                    for name in names:
+                        extracted = archive.extractfile(name)
+                        if extracted is not None:
+                            contents += extracted.read()
+                text = contents.decode("utf-8", errors="replace")
+                self.assertNotIn(token, text)
+                self.assertNotIn("hunter2hunter2", text)
+                self.assertNotIn(enrollment_code, text)
+                self.assertIn("takt started", text, "ordinary log lines must survive")
+                self.assertNotIn(
+                    "agent-identity.json", " ".join(names), "the identity file is never bundled"
+                )
+                self.assertIn("manifest.json", names)
+            finally:
+                bundle.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

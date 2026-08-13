@@ -10,7 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from takt import __version__
-from takt.protocol import PROTOCOL_VERSION
+from takt.fleet_actions import (
+    DISRUPTIVE_ACTIONS,
+    LEASED_JOBS_CAPABILITY,
+    NO_REQUEUE_ON_LEASE_EXPIRY,
+    WIFI_PROFILE_CAPABILITY,
+    get_action,
+)
 from takt.registry.job_secrets import JobSecretCipher, JobSecretError
 
 
@@ -28,23 +34,7 @@ def hash_secret(value: str) -> str:
 
 SCHEMA_VERSION = 10
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
-INSTALL_STAGES = {
-    "queued",
-    "waiting_for_safe_state",
-    "downloading",
-    "verifying",
-    "staging",
-    "activating",
-    "restarting",
-    "health_checking",
-    "succeeded",
-    "rolled_back",
-    "retryable_failure",
-    "intervention_required",
-    "cancelled",
-}
 JOB_LEASE_SECONDS = 120
-WIFI_PROFILE_CAPABILITY = "wifi-profile-v1"
 
 
 SCHEMA = """
@@ -198,6 +188,19 @@ CREATE TABLE IF NOT EXISTS mirror_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_mirror_snapshots_device_received
 ON mirror_snapshots(device_id, received_at DESC);
+
+CREATE TABLE IF NOT EXISTS diagnostics (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    relative_path TEXT NOT NULL UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_diagnostics_device_created
+ON diagnostics(device_id, created_at DESC);
 """
 
 
@@ -209,9 +212,11 @@ class RegistryStore:
         self.release_directory = data_directory / "releases"
         self.mirror_directory = data_directory / "mirrors"
         self.backup_directory = data_directory / "backups"
+        self.diagnostics_directory = data_directory / "diagnostics"
         self.release_directory.mkdir(parents=True, exist_ok=True)
         self.mirror_directory.mkdir(parents=True, exist_ok=True)
         self.backup_directory.mkdir(parents=True, exist_ok=True)
+        self.diagnostics_directory.mkdir(parents=True, exist_ok=True)
         database_existed = self.database_path.exists() and self.database_path.stat().st_size > 0
         self.connection = sqlite3.connect(self.database_path, timeout=10)
         self.database_path.chmod(0o600)
@@ -242,12 +247,9 @@ class RegistryStore:
         self._ensure_column("jobs", "cancel_requested", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("jobs", "retry_of", "TEXT")
         self._ensure_column("jobs", "lease_owner_session", "TEXT")
-        self.connection.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_one_active_disruptive_operation "
-            "ON jobs(device_id) WHERE action IN ('install_release', 'restart_takt') "
-            "AND status IN ('queued', 'claimed', 'running')"
-        )
+        self._rebuild_disruptive_index()
         self._ensure_column("devices", "revoked_at", "TEXT")
+        self._ensure_column("devices", "health_checks_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column("enrollment_codes", "deployment_id", "TEXT")
         self._ensure_column("releases", "source", "TEXT NOT NULL DEFAULT 'upload'")
         self._ensure_column("releases", "commit_sha", "TEXT")
@@ -396,6 +398,7 @@ class RegistryStore:
         for row in rows:
             item = dict(row)
             item["status"] = json.loads(item.pop("status_json"))
+            item["health_checks"] = json.loads(item.pop("health_checks_json") or "{}")
             last_seen = item.get("last_seen_at")
             heartbeat_interval = float(item["status"].get("poll_seconds") or 10)
             online_window = min(max(heartbeat_interval * 3 + 15, 30), 180)
@@ -559,30 +562,63 @@ class RegistryStore:
     def release_path(self, release_id: str) -> Path:
         return self.release_directory / f"{release_id}.tar.gz"
 
+    def _authorize_action(self, device: dict[str, Any], action: str) -> None:
+        fleet_action = get_action(action)
+        assert fleet_action is not None
+        status = device.get("status") or {}
+        if not status:
+            # Never heartbeated: allow queuing so the first safe job is waiting
+            # once the agent connects; unsupported actions simply fail there.
+            return
+        protocol_version = status.get("protocol_version")
+        if protocol_version is not None and int(protocol_version) < fleet_action.min_protocol:
+            raise ValueError(
+                f"This Pi agent's Fleet protocol is too old for '{action}'; "
+                "update the Fleet agent once via SSH to enable it."
+            )
+        if fleet_action.capability == LEASED_JOBS_CAPABILITY:
+            # Every agent that can heartbeat at all supports the baseline
+            # leased-job actions; this is not a negotiated/optional feature.
+            return
+        capabilities = status.get("capabilities") or []
+        if fleet_action.capability not in capabilities:
+            raise ValueError(
+                f"This Pi agent does not support '{action}' yet; "
+                "update the Fleet agent once via SSH to enable it."
+            )
+
     def create_job(
-        self, device_id: str, action: str, payload: dict[str, Any] | None = None
+        self,
+        device_id: str,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        override: bool = False,
     ) -> dict[str, Any]:
-        payload = payload or {}
+        payload = dict(payload or {})
+        fleet_action = get_action(action)
+        if fleet_action is None:
+            raise ValueError("Unsupported action.")
+        if override and not fleet_action.overridable:
+            raise ValueError(f"'{action}' cannot be overridden.")
+        if override:
+            payload["override"] = True
         device = self.get_device(device_id)
         if device is None:
             raise LookupError("Device does not exist.")
         if device.get("revoked_at"):
             raise ValueError("Device access has been revoked.")
-        protocol_version = device.get("status", {}).get("protocol_version")
-        has_heartbeat = bool(device.get("status"))
-        if action in {"install_release", "restart_takt"} and (
-            protocol_version != PROTOCOL_VERSION and (has_heartbeat or protocol_version is not None)
-        ):
-            raise ValueError("This Pi agent is not compatible with safe Fleet operations yet.")
+        self._authorize_action(device, action)
+        placeholders = ",".join("?" for _ in DISRUPTIVE_ACTIONS)
         active = self.connection.execute(
-            """
+            f"""
             SELECT id, action FROM jobs WHERE device_id = ?
                 AND status IN ('queued', 'claimed', 'running')
-                AND action IN ('install_release', 'restart_takt')
+                AND action IN ({placeholders})
             """,
-            (device_id,),
+            (device_id, *DISRUPTIVE_ACTIONS),
         ).fetchone()
-        if active is not None and action in {"install_release", "restart_takt"}:
+        if active is not None and action in DISRUPTIVE_ACTIONS:
             existing = self.get_job(str(active["id"]))
             if (
                 action == "install_release"
@@ -681,6 +717,37 @@ class RegistryStore:
         now_value = utc_now()
         now = utc_iso(now_value)
         with self.connection:
+            # Power actions kill the agent before it can renew its lease; requeuing
+            # them like any other expired lease would make the device reboot or
+            # power off again as soon as it reconnects. Fail them instead — the
+            # operator can see what happened and re-issue deliberately.
+            no_requeue_placeholders = ",".join("?" for _ in NO_REQUEUE_ON_LEASE_EXPIRY)
+            expired_no_requeue = self.connection.execute(
+                f"""
+                SELECT id FROM jobs WHERE device_id = ? AND status IN ('claimed', 'running')
+                    AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
+                    AND action IN ({no_requeue_placeholders})
+                """,
+                (device_id, now, *NO_REQUEUE_ON_LEASE_EXPIRY),
+            ).fetchall()
+            for expired in expired_no_requeue:
+                job_id = str(expired["id"])
+                message = (
+                    "Device did not confirm before its lease expired; the action may or "
+                    "may not have applied. Check the device and retry if needed."
+                )
+                self.connection.execute(
+                    """
+                    UPDATE jobs SET status = 'failed', stage = 'failed', progress = 100,
+                        message = ?, updated_at = ?, completed_at = ?,
+                        lease_id = NULL, lease_expires_at = NULL, lease_owner_session = NULL
+                    WHERE id = ?
+                    """,
+                    (message, now, now, job_id),
+                )
+                self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
+                self._record_job_event(job_id, "failed", "failed", message)
+                self._audit("job_lease_expired_unconfirmed", device_id, {"job_id": job_id})
             self.connection.execute(
                 """
                 UPDATE jobs SET status = 'queued', claimed_at = NULL, lease_id = NULL,
@@ -769,8 +836,9 @@ class RegistryStore:
                 if status == "failed" and current["action"] == "install_release"
                 else str(current["stage"] or "queued")
             )
-        if current["action"] == "install_release" and stage not in INSTALL_STAGES:
-            raise ValueError("Invalid install stage.")
+        action_stages = getattr(get_action(str(current["action"])), "stages", ())
+        if action_stages and stage not in action_stages:
+            raise ValueError("Invalid job stage.")
         transitions = {
             "queued": {"claimed", "cancelled"},
             "claimed": {"queued", "running", *JOB_TERMINAL_STATUSES},
@@ -1081,6 +1149,99 @@ class RegistryStore:
             return self.data_directory / row["relative_path"]
         return self.mirror_directory / f"{device_id}.sqlite3"
 
+    def record_diagnostics(
+        self, device_id: str, job_id: str, source: Path, sha256: str, size: int
+    ) -> dict[str, Any]:
+        created_at = utc_now()
+        bundle_id = secrets.token_hex(12)
+        relative_path = (
+            Path("diagnostics")
+            / device_id
+            / f"{created_at.strftime('%Y%m%dT%H%M%SZ')}-{sha256[:12]}.tar.gz"
+        )
+        target = self.data_directory / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source.replace(target)
+        target.chmod(0o600)
+        try:
+            with self.connection:
+                self.connection.execute(
+                    """
+                    INSERT INTO diagnostics(
+                        id, device_id, job_id, created_at, sha256, size, relative_path
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        bundle_id,
+                        device_id,
+                        job_id,
+                        utc_iso(created_at),
+                        sha256,
+                        size,
+                        str(relative_path),
+                    ),
+                )
+                self._audit(
+                    "diagnostics_received", device_id, {"job_id": job_id, "size": size}
+                )
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        self._prune_diagnostics(device_id)
+        bundle = self.get_diagnostics(bundle_id)
+        assert bundle is not None
+        return bundle
+
+    def get_diagnostics(self, bundle_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM diagnostics WHERE id = ?", (bundle_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_diagnostics(self, device_id: str) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT id, device_id, job_id, created_at, sha256, size FROM diagnostics "
+                "WHERE device_id = ? ORDER BY created_at DESC",
+                (device_id,),
+            )
+        ]
+
+    def diagnostics_for_job(self, job_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM diagnostics WHERE job_id = ? ORDER BY created_at DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def diagnostics_path(self, bundle_id: str) -> Path | None:
+        bundle = self.get_diagnostics(bundle_id)
+        return self.data_directory / bundle["relative_path"] if bundle else None
+
+    def record_health_checks(self, device_id: str, report: dict[str, Any]) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE devices SET health_checks_json = ? WHERE id = ?",
+                (json.dumps(report, separators=(",", ":")), device_id),
+            )
+
+    def _prune_diagnostics(self, device_id: str, *, keep: int = 5) -> None:
+        rows = self.connection.execute(
+            "SELECT id, relative_path FROM diagnostics WHERE device_id = ? "
+            "ORDER BY created_at DESC",
+            (device_id,),
+        ).fetchall()
+        expired = rows[keep:]
+        if not expired:
+            return
+        with self.connection:
+            self.connection.executemany(
+                "DELETE FROM diagnostics WHERE id = ?", [(row["id"],) for row in expired]
+            )
+        for row in expired:
+            (self.data_directory / row["relative_path"]).unlink(missing_ok=True)
+
     def health(self) -> dict[str, Any]:
         try:
             self.connection.execute("SELECT 1").fetchone()
@@ -1256,6 +1417,24 @@ class RegistryStore:
         columns = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _rebuild_disruptive_index(self) -> None:
+        # Derived from the fleet action table rather than hardcoded, so adding a
+        # new disruptive action only needs a SCHEMA_VERSION bump, not a second
+        # place to remember to update.
+        actions = ", ".join(f"'{name}'" for name in sorted(DISRUPTIVE_ACTIONS))
+        index_sql = (
+            "CREATE UNIQUE INDEX idx_jobs_one_active_disruptive_operation ON jobs(device_id) "
+            f"WHERE action IN ({actions}) AND status IN ('queued', 'claimed', 'running')"
+        )
+        existing = self.connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'idx_jobs_one_active_disruptive_operation'"
+        ).fetchone()
+        if existing is not None and existing["sql"] == index_sql:
+            return
+        self.connection.execute("DROP INDEX IF EXISTS idx_jobs_one_active_disruptive_operation")
+        self.connection.execute(index_sql)
 
     @staticmethod
     def _sha256_file(path: Path) -> str:

@@ -9,7 +9,7 @@
     "build": "vite build",
     "build:fleet": "vite build --config vite.fleet.config.js",
     "check": "eslint src",
-    "test:fleet": "node --test src/fleet/wifiValidation.test.js src/fleet/deploymentValidation.test.js src/fleet/releaseSelection.test.js"
+    "test:fleet": "node --test src/fleet/wifiValidation.test.js src/fleet/deploymentValidation.test.js src/fleet/releaseSelection.test.js src/fleet/maintenanceActions.test.js"
   },
   "dependencies": {
     "lucide-react": "^1.29.0",

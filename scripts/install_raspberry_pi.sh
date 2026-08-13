@@ -60,6 +60,7 @@ service_name="takt.service"
 agent_service_name="takt-agent.service"
 bluetooth_agent_service="takt-bluetooth-agent.service"
 wifi_helper_target="/usr/local/libexec/takt-wifi-helper"
+maintenance_helper_target="/usr/local/libexec/takt-maintenance-helper"
 hostname_target="${TAKT_HOSTNAME:-}"
 hostname_change_confirmed="${TAKT_CONFIRM_HOSTNAME_CHANGE:-}"
 port="${TAKT_PORT:-80}"
@@ -274,6 +275,10 @@ fi
 if [[ -x "$wifi_helper_target" ]]; then
   wifi_helper_installed=true
 fi
+
+say "Fleet-Wartungshelfer einrichten"
+sudo install -D -o root -g root -m 0755 \
+  "$project_dir/scripts/takt_maintenance_helper.py" "$maintenance_helper_target"
 
 sudo usermod -a -G gpio,audio "$install_user"
 sudo systemctl enable --now avahi-daemon bluetooth
@@ -492,6 +497,10 @@ sudoers_temp="$(mktemp)"
   if [[ "$wifi_helper_installed" == true ]]; then
     printf '%s ALL=(root) NOPASSWD: %s\n' "$install_user" "$wifi_helper_target"
   fi
+  # The helper takes no argv and reads a strictly validated JSON request on
+  # stdin, so this single grant covers every Fleet maintenance verb without
+  # widening root access beyond the verbs compiled into the helper.
+  printf '%s ALL=(root) NOPASSWD: %s\n' "$install_user" "$maintenance_helper_target"
 } >"$sudoers_temp"
 sudo visudo -cf "$sudoers_temp"
 sudo install -m 0440 "$sudoers_temp" "$sudoers_file"

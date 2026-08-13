@@ -101,14 +101,19 @@ Browser-Oberfläche für:
 - Online-/Offline-Status, TAKT-Version, Timerzustand, Speicher und Temperatur,
 - das Hinterlegen mehrerer benannter TAKT-Versionen,
 - die gezielte Installation einer Version auf einem bestimmten Raspberry Pi,
-- Neustart des TAKT-Dienstes,
+- Start, Stopp und Neustart des TAKT-Dienstes,
+- Neustart und geordnetes Herunterfahren des Raspberry Pi,
+- Gesundheitsprüfungen und ein herunterladbares, geschwärztes Diagnosepaket,
 - den Fortschritt und das Ergebnis jedes Remote-Auftrags,
 - eine automatisch aktualisierte Kopie der Laufdatenbank jedes Geräts.
 
 Die Raspberry Pis bauen ausschließlich ausgehende HTTP(S)-Verbindungen zur
-Registry auf. Nach der einmaligen Einrichtung ist deshalb kein SSH-Zugriff mehr
-notwendig. TAKT und der physische Taster funktionieren auch dann vollständig
-lokal weiter, wenn WLAN oder Registry vorübergehend nicht verfügbar sind.
+Registry auf. Der laufende Betrieb einschließlich Fehlersuche und Wiederherstellung
+erfolgt vollständig über den Fleet Manager; SSH ist nur noch für die einmalige
+Einrichtung und die unter
+[Was weiterhin SSH oder Hardware-Zugriff erfordert](#was-weiterhin-ssh-oder-hardware-zugriff-erfordert)
+genannten Ausnahmen nötig. TAKT und der physische Taster funktionieren auch dann
+vollständig lokal weiter, wenn WLAN oder Registry vorübergehend nicht verfügbar sind.
 
 ### Registry auf Unraid mit Docker starten
 
@@ -332,9 +337,12 @@ der Anmeldung; geht die Antwort verloren, kann dieselbe Anmeldung sicher
 wiederholt werden. Nach Erfolg wird der Einmalcode aus `agent.toml` entfernt.
 
 Wird ein Gerät in der Registry widerrufen, ist sein bisheriges Bearer-Token
-sofort ungültig. Zum erneuten Verbinden die lokale Agentenidentität und die
-Konfiguration auf dem Pi entfernen, danach in der Registry einen neuen Code
-erstellen und den einmaligen Installationsbefehl erneut ausführen:
+sofort ungültig. Das erneute Verbinden ist derzeit eine der wenigen bewusst
+dokumentierten SSH-Ausnahmen (siehe
+[Was weiterhin SSH oder Hardware-Zugriff erfordert](#was-weiterhin-ssh-oder-hardware-zugriff-erfordert)):
+Dazu die lokale Agentenidentität und die Konfiguration auf dem Pi entfernen,
+danach in der Registry einen neuen Code erstellen und den einmaligen
+Installationsbefehl erneut ausführen:
 
 ```bash
 sudo systemctl stop takt-agent.service
@@ -379,6 +387,91 @@ Funktion.
 SSID und Passwort werden vom Browser zur Registry und anschließend zum Pi
 übertragen. Dafür HTTPS oder ein privates VPN verwenden; HTTP schützt diese
 Zugangsdaten nicht.
+
+### Wartung und Wiederherstellung über den Fleet Manager
+
+Jede Gerätekarte enthält ein Wartungsfeld mit drei Gruppen:
+
+| Gruppe | Aktionen |
+|---|---|
+| **SERVICE** | `START`, `STOP`, `RESTART` des TAKT-Dienstes |
+| **POWER** | `REBOOT` und `SHUT DOWN` des Raspberry Pi |
+| **DIAGNOSE** | `HEALTH CHECKS` und `DIAGNOSTICS` |
+
+Alle Aktionen sind normale, protokollierte Aufträge mit Fortschritt, Zeitlimit
+und eindeutigem Endergebnis. Sie erscheinen wie Installationen im Auftragsverlauf
+und lassen sich dort nachvollziehen.
+
+**Laufende Durchgänge sind geschützt.** Vor jedem eingreifenden Auftrag fordert
+der Agent auf dem Pi die lokale Wartungssperre an. Sie wird ausschließlich im
+Zustand `ready` gewährt. Läuft gerade ein Durchgang oder ist ein Ergebnis noch
+nicht gespeichert, wartet der Auftrag sichtbar mit `WAITING FOR SAFE STATE`, bis
+der Pi wieder bereit ist. Diese Prüfung findet unmittelbar vor dem Eingriff auf
+dem Pi statt, nicht im Browser – ein zwischenzeitlich gestarteter Lauf ist damit
+ebenfalls geschützt.
+
+Soll ein laufender Durchgang bewusst abgebrochen werden, verlangt der
+Bestätigungsdialog zusätzlich das Häkchen **Interrupt the run anyway**. Ohne
+dieses Häkchen bleibt die Schaltfläche gesperrt. Der Übersteuerungswunsch wird
+im Auftrag und im Prüfprotokoll festgehalten.
+
+`REBOOT` meldet sein Ergebnis, bevor der Pi heruntergefahren wird, und wird
+niemals automatisch wiederholt: Läuft die Auftragsreservierung ohne Rückmeldung
+ab, gilt der Auftrag als fehlgeschlagen statt erneut ausgeführt zu werden. Ein
+Pi ist typischerweise nach etwa einer Minute wieder online. `SHUT DOWN` bleibt
+bis zum manuellen Einschalten offline.
+
+`HEALTH CHECKS` prüft Dienst, Agent, Anwendung, Speicherplatz, Temperatur,
+SQLite-Integrität der Laufdatenbank, Systemuhr, Registry-Verbindung, den
+Wartungshelfer, GPIO und die WLAN-Verbindung. Das Ergebnis erscheint direkt auf
+der Gerätekarte. Die Datenbank wird dabei ausschließlich lesend geöffnet.
+
+`DIAGNOSTICS` erzeugt ein Paket aus Protokollen, Systemdaten, Diensteinstellungen
+und dem letzten Prüfergebnis und lädt es zur Registry hoch, wo es über die
+Gerätekarte heruntergeladen werden kann. Es werden die fünf neuesten Pakete je
+Gerät aufbewahrt.
+
+**Schwärzung:** Das Paket wird bereits auf dem Pi geschwärzt, bevor es das Gerät
+verlässt. Entfernt werden Anmeldecodes, Bearer-Token, WLAN-Passwörter,
+Administratorpasswörter und private Schlüssel. Die Agentenidentität
+(`agent-identity.json`) und NetworkManager-Profile werden grundsätzlich nicht
+eingepackt; das Paket entsteht aus einer festen Liste von Quellen und niemals
+aus einem Verzeichnisdurchlauf. Die Laufdatenbank ist nicht enthalten – dafür
+gibt es die Spiegelung.
+
+**Verfügbarkeit:** Der Agent meldet bei jedem Heartbeat, welche Fähigkeiten er
+tatsächlich anbietet. Fehlt eine, ist genau diese Schaltfläche deaktiviert und
+nennt im Tooltip den Grund und den nötigen Schritt; alle übrigen Aktionen
+bleiben nutzbar. Ein älterer Agent verliert dadurch nicht den Fernzugriff,
+sondern nur die noch nicht unterstützten Aktionen.
+
+Service- und Power-Aktionen benötigen den eng begrenzten Root-Helfer
+`takt-maintenance-helper`, den das Installationsskript einrichtet. Er nimmt keine
+Kommandozeilenargumente entgegen, liest einen streng geprüften JSON-Auftrag über
+die Standardeingabe und kennt nur eine feste Liste von Verben sowie die beiden
+Units `takt.service` und `takt-agent.service`. Er kann sich selbst nicht
+ersetzen. Vor dieser Version eingerichtete Pis benötigen deshalb einmalig
+erneut `deploy_to_raspberry_pi.sh` beziehungsweise `install_raspberry_pi.sh`.
+
+### Was weiterhin SSH oder Hardware-Zugriff erfordert
+
+Nach der Einrichtung ist für den normalen Betrieb kein SSH nötig. Es bleiben
+folgende bewusst eng gefasste Ausnahmen:
+
+1. **Erstmalige Einrichtung** eines Raspberry Pi sowie der einmalige erneute
+   Installationslauf für Pis, die vor dieser Version eingerichtet wurden.
+2. **Änderungen am Verbsatz des Wartungshelfers.** Der Helfer kann sich aus
+   Sicherheitsgründen nicht selbst aktualisieren: Er ist die Grenze zwischen dem
+   unprivilegierten Agentenbenutzer und Root. Dürfte der Agent ihn ersetzen,
+   könnte ein kompromittierter Agentenbenutzer beliebigen Root-Code ausführen.
+3. **Erneutes Verbinden nach einem Widerruf**, siehe
+   [Raspberry Pi einmalig verbinden](#raspberry-pi-einmalig-verbinden). Ein
+   Fleet-Weg dafür ist als eigener Arbeitsschritt vorgesehen.
+4. **Vollständige WLAN-Verwaltung** über das Anlegen eines Profils hinaus
+   (Auflisten, Ändern, Entfernen, Priorität).
+5. **Hardware- und Betriebssystemfehler**: ein Pi, der nicht mehr startet, keine
+   Netzwerkverbindung aufbaut oder dessen SD-Karte defekt ist, sowie die Prüfung
+   der Taster-, Summer- und Lautsprecherverkabelung.
 
 ### Eine bestimmte TAKT-Version installieren
 
@@ -675,15 +768,18 @@ die Hardware-Anpassung des Tasters konfigurieren.
 
 ## Raspberry-Pi-Betrieb prüfen
 
-Der Serverstatus kann bei der Fehlersuche angezeigt werden:
+Bei einem über die Registry verwalteten Pi ist der Fleet Manager der vorgesehene
+Weg: **HEALTH CHECKS** prüft Dienst, Anwendung, Speicher, Temperatur,
+Datenbankintegrität, Uhr und Verbindung, **DIAGNOSTICS** liefert ein geschwärztes
+Paket mit Protokollen und Systemdaten zum Herunterladen. Beides funktioniert auch
+während eines laufenden Durchgangs, siehe
+[Wartung und Wiederherstellung über den Fleet Manager](#wartung-und-wiederherstellung-über-den-fleet-manager).
+
+Nur als Break-Glass-Diagnose direkt am Gerät – etwa wenn der Pi die Registry
+nicht mehr erreicht – lassen sich Status und Protokoll lokal abfragen:
 
 ```bash
 systemctl status takt.service
-```
-
-Die letzten Meldungen stehen im Systemprotokoll:
-
-```bash
 journalctl -u takt.service -n 100 --no-pager
 ```
 
@@ -744,6 +840,14 @@ Mit installierten Entwicklungsabhängigkeiten:
 
 - Installationsskript und Autostart auf dem konkreten Raspberry Pi wiederholt
   validieren,
+- Wartungshelfer, Neustart und Herunterfahren auf echter Hardware validieren,
 - GPIO-Taster in wiederholten Hardware-Zyklen validieren,
 - visuelle Screenshot-Tests bei 1280×720 und 1920×1080 ergänzen,
 - optionalen Nur-Anzeige-Zugriff für zusätzliche Netzwerkgeräte ergänzen.
+
+Für den Fleet Manager sind als eigene Arbeitsschritte vorgesehen:
+
+- Reparatur und Neuinstallation von TAKT-Dienst und Agent über die Registry,
+- Rotation der Gerätezugangsdaten und erneutes Anmelden ohne SSH,
+- vollständige WLAN-Verwaltung (auflisten, ändern, entfernen, Priorität),
+- Wiederherstellung eines bekannten guten Release- oder Datenbankstands.

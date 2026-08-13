@@ -18,6 +18,7 @@ from typing import Any
 
 from aiohttp import web
 
+from takt.fleet_actions import ALLOWED_ACTIONS
 from takt.protocol import PROTOCOL_VERSION
 from takt.registry.auth import COOKIE_NAME, AdminAuth
 from takt.registry.bundled_release import ReleaseValidationError, validate_release_archive
@@ -42,8 +43,8 @@ MIRROR_LAST_ATTEMPT_KEY = web.AppKey("registry_mirror_last_attempt", dict)
 VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 DEVICE_ID_PATTERN = re.compile(r"^[0-9a-f-]{16,64}$")
 DEVICE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
-ALLOWED_ACTIONS = {"install_release", "mirror_now", "restart_takt"}
 JSON_LIMIT = 64 * 1024
+MAX_DIAGNOSTICS_BYTES = 8 * 1024 * 1024
 DEPLOYMENT_EVENT_POLL_SECONDS = 2
 LOGGER = logging.getLogger(__name__)
 
@@ -127,11 +128,16 @@ def create_registry_app(
     app.router.add_post("/api/devices/{device_id}/wifi-networks", create_wifi_network)
     app.router.add_post("/api/devices/{device_id}/revoke", revoke_device)
     app.router.add_get("/api/devices/{device_id}/mirror", download_mirror)
+    app.router.add_get("/api/devices/{device_id}/diagnostics", device_diagnostics)
+    app.router.add_get(
+        "/api/devices/{device_id}/diagnostics/{diagnostics_id}", download_diagnostics
+    )
     app.router.add_post("/agent/enroll", agent_enroll)
     app.router.add_post("/agent/heartbeat", agent_heartbeat)
     app.router.add_post("/agent/status", agent_status)
     app.router.add_post("/agent/jobs/{job_id}", agent_job_update)
     app.router.add_get("/agent/jobs/{job_id}/artifact", agent_artifact)
+    app.router.add_put("/agent/jobs/{job_id}/artifact", agent_diagnostics_upload)
     app.router.add_post("/agent/mirror", agent_mirror)
     app.router.add_static("/assets", STATIC_ROOT / "assets", append_version=True)
     app.router.add_static("/static", STATIC_ROOT, append_version=True)
@@ -505,9 +511,12 @@ async def create_job(request: web.Request) -> web.Response:
     payload = body.get("payload", {})
     if not isinstance(payload, dict):
         raise web.HTTPBadRequest(text="Job payload must be an object.")
+    override = body.get("override", False)
+    if not isinstance(override, bool):
+        raise web.HTTPBadRequest(text="Job override must be a boolean.")
     try:
         job = request.app[STORE_KEY].create_job(
-            request.match_info["device_id"], str(action), payload
+            request.match_info["device_id"], str(action), payload, override=override
         )
     except LookupError as error:
         raise web.HTTPNotFound(text=str(error)) from error
@@ -640,7 +649,47 @@ async def agent_job_update(request: web.Request) -> web.Response:
         ):
             raise web.HTTPConflict(text=str(error)) from error
         raise web.HTTPBadRequest(text=str(error)) from error
+    if job["action"] == "run_health_checks" and job["status"] == "succeeded":
+        report = _health_report_payload(body.get("result"))
+        if report is not None:
+            request.app[STORE_KEY].record_health_checks(device_id, report)
     return web.json_response({"job": job})
+
+
+def _health_report_payload(value: Any) -> dict[str, Any] | None:
+    """Normalize an agent-reported health report before it is persisted."""
+    if not isinstance(value, dict):
+        return None
+    raw_checks = value.get("checks")
+    if not isinstance(raw_checks, list):
+        return None
+    checks: list[dict[str, Any]] = []
+    for item in raw_checks[:40]:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", ""))[:16]
+        if status not in {"ok", "warn", "fail", "skipped"}:
+            continue
+        checks.append(
+            {
+                "id": str(item.get("id", ""))[:64],
+                "label": str(item.get("label", ""))[:80],
+                "status": status,
+                "detail": str(item.get("detail", ""))[:400],
+            }
+        )
+    if not checks:
+        return None
+    counts = {status: 0 for status in ("ok", "warn", "fail", "skipped")}
+    for check in checks:
+        counts[str(check["status"])] += 1
+    return {
+        "schema": 1,
+        "collected_at": utc_iso(),
+        # "healthy", not "ok": the per-status counts below already use "ok".
+        "summary": {"healthy": counts["fail"] == 0, **counts},
+        "checks": checks,
+    }
 
 
 async def agent_artifact(request: web.Request) -> web.StreamResponse:
@@ -663,6 +712,84 @@ async def agent_artifact(request: web.Request) -> web.StreamResponse:
             "Content-Disposition": f'attachment; filename="takt-{release["version"]}.tar.gz"',
             "X-TAKT-SHA256": release["sha256"],
         },
+    )
+
+
+async def agent_diagnostics_upload(request: web.Request) -> web.Response:
+    device_id = _device(request)
+    store = request.app[STORE_KEY]
+    job = store.job_for_device(request.match_info["job_id"], device_id)
+    if (
+        job is None
+        or job["action"] != "collect_diagnostics"
+        or job["status"] not in {"claimed", "running"}
+        or not request.headers.get("X-Job-Lease")
+        or not secrets_compare(request.headers["X-Job-Lease"], str(job["lease_id"] or ""))
+    ):
+        raise web.HTTPNotFound(text="Diagnostics job does not exist.")
+    expected_sha = request.headers.get("X-TAKT-SHA256", "")
+    digest = hashlib.sha256()
+    size = 0
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=store.data_directory, delete=False) as temporary:
+            temp_path = Path(temporary.name)
+            deadline = time.monotonic() + 5 * 60
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise web.HTTPRequestTimeout(text="Diagnostics upload timed out.")
+                try:
+                    chunk = await asyncio.wait_for(
+                        request.content.read(256 * 1024), timeout=min(30, remaining)
+                    )
+                except TimeoutError as error:
+                    raise web.HTTPRequestTimeout(text="Diagnostics upload stalled.") from error
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_DIAGNOSTICS_BYTES:
+                    raise web.HTTPRequestEntityTooLarge(
+                        max_size=MAX_DIAGNOSTICS_BYTES, actual_size=size
+                    )
+                digest.update(chunk)
+                temporary.write(chunk)
+        if not expected_sha or digest.hexdigest() != expected_sha:
+            raise web.HTTPBadRequest(text="Diagnostics checksum does not match.")
+        bundle = store.record_diagnostics(
+            device_id, str(job["id"]), temp_path, digest.hexdigest(), size
+        )
+        temp_path = None
+        return web.json_response({"ok": True, "diagnostics_id": bundle["id"]})
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+async def download_diagnostics(request: web.Request) -> web.StreamResponse:
+    _admin(request)
+    store = request.app[STORE_KEY]
+    bundle = store.get_diagnostics(request.match_info["diagnostics_id"])
+    if bundle is None or bundle["device_id"] != request.match_info["device_id"]:
+        raise web.HTTPNotFound(text="Diagnostics bundle does not exist.")
+    path = store.data_directory / bundle["relative_path"]
+    if not path.is_file():
+        raise web.HTTPNotFound(text="Diagnostics bundle is no longer stored.")
+    return web.FileResponse(
+        path,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="takt-diagnostics-{bundle["id"]}.tar.gz"'
+            ),
+            "Cache-Control": "no-store, private",
+        },
+    )
+
+
+async def device_diagnostics(request: web.Request) -> web.Response:
+    _admin(request)
+    return web.json_response(
+        {"diagnostics": request.app[STORE_KEY].list_diagnostics(request.match_info["device_id"])}
     )
 
 
