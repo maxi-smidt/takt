@@ -1,5 +1,28 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+bootstrap_config=""
+non_interactive=false
+while (($#)); do
+  case "$1" in
+    --bootstrap-config)
+      (($# >= 2)) || { printf "FEHLER: --bootstrap-config benötigt einen Pfad.\n" >&2; exit 2; }
+      bootstrap_config="$2"
+      shift 2
+      ;;
+    --non-interactive)
+      non_interactive=true
+      shift
+      ;;
+    --help)
+      printf "%s\n" "Usage: install_raspberry_pi.sh [--bootstrap-config PATH] [--non-interactive]"
+      exit 0
+      ;;
+    *)
+      printf "FEHLER: Unbekanntes Argument: %s\n" "$1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # Allow launching with `sudo ./install_raspberry_pi.sh`: re-exec as the
 # invoking normal user before touching anything, so the rest of the script
@@ -52,6 +75,40 @@ fail() {
   printf '\nFEHLER: %s\n' "$1" >&2
   exit 1
 }
+if [[ -n "$bootstrap_config" ]]; then
+  [[ -r "$bootstrap_config" ]] || fail "Bootstrap-Konfiguration fehlt."
+  bootstrap_values="$(python3 - "$bootstrap_config" <<'PY'
+from pathlib import Path
+import shlex
+import sys
+import tomllib
+
+data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+bootstrap = data.get("bootstrap")
+if not isinstance(bootstrap, dict):
+    raise SystemExit("Bootstrap-Konfiguration ist ungültig.")
+for key, shell_name in (
+    ("registry_url", "registry_url"),
+    ("enrollment_code", "enrollment_code"),
+    ("device_name", "device_name"),
+    ("hostname", "hostname_target"),
+):
+    value = bootstrap.get(key)
+    if not isinstance(value, str) or not value:
+        raise SystemExit(f"Bootstrap-Wert fehlt: {key}")
+    print(f"{shell_name}={shlex.quote(value)}")
+allow_http = bootstrap.get("allow_insecure_http", False)
+if not isinstance(allow_http, bool):
+    raise SystemExit("allow_insecure_http muss boolean sein.")
+print(f"allow_insecure_http={str(allow_http).lower()}")
+PY
+  )"
+  eval "$bootstrap_values"
+fi
+
+if [[ "$non_interactive" == true ]]; then
+  sudo() { command sudo -n "$@"; }
+fi
 
 cleanup() {
   [[ -z "${unit_file:-}" ]] || rm -f "$unit_file"
@@ -477,7 +534,7 @@ printf '\nFERTIG · TAKT läuft headless und ist im lokalen Netzwerk erreichbar:
 printf 'Der physische Taster verwendet GPIO17 und GND.\n'
 printf 'Ein Bildschirm oder Desktop auf dem Raspberry Pi ist nicht erforderlich.\n'
 
-if [[ -t 0 ]]; then
+if [[ "$non_interactive" != true && -t 0 ]]; then
   printf '\nJetzt neu starten, um die neue Headless- und Audio-Konfiguration vollständig zu übernehmen? [J/n] '
   read -r answer
   if [[ -z "$answer" || "$answer" =~ ^[JjYy]$ ]]; then

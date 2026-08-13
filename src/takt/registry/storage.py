@@ -25,7 +25,7 @@ def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 JOB_LEASE_SECONDS = 120
 WIFI_PROFILE_CAPABILITY = "wifi-profile-v1"
 
@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS enrollment_codes (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     used_at TEXT,
-    label TEXT NOT NULL DEFAULT ''
+    label TEXT NOT NULL DEFAULT '',
+    deployment_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS releases (
@@ -65,6 +66,49 @@ CREATE TABLE IF NOT EXISTS releases (
     sha256 TEXT NOT NULL,
     size INTEGER NOT NULL,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS deployments (
+    id TEXT PRIMARY KEY,
+    target TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    ssh_user TEXT NOT NULL,
+    device_name TEXT NOT NULL,
+    requested_hostname TEXT NOT NULL,
+    registry_url TEXT NOT NULL,
+    allow_insecure_http INTEGER NOT NULL DEFAULT 0,
+    release_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    host_key TEXT,
+    host_key_fingerprint TEXT,
+    device_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_deployments_target_status
+ON deployments(target, port, status, created_at);
+
+CREATE TABLE IF NOT EXISTS deployment_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deployment_id TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    level TEXT NOT NULL,
+    message TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deployment_events_deployment
+ON deployment_events(deployment_id, id);
+
+CREATE TABLE IF NOT EXISTS trusted_ssh_hosts (
+    target_key TEXT PRIMARY KEY,
+    host_key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    trusted_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -153,6 +197,15 @@ class RegistryStore:
         self._ensure_column("jobs", "lease_expires_at", "TEXT")
         self._ensure_column("jobs", "lease_owner_session", "TEXT")
         self._ensure_column("devices", "revoked_at", "TEXT")
+        self._ensure_column("enrollment_codes", "deployment_id", "TEXT")
+        self.connection.execute(
+            """
+            UPDATE deployments SET status = 'interrupted', stage = 'interrupted',
+                message = 'Registry restarted while deployment was active', updated_at = ?
+            WHERE status IN ('pending', 'running')
+            """,
+            (utc_iso(),),
+        )
         self.connection.execute(
             """
             UPDATE jobs SET status = 'queued', claimed_at = NULL,
@@ -168,16 +221,25 @@ class RegistryStore:
         self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.connection.close()
 
-    def create_enrollment_code(self, label: str = "", minutes: int = 60) -> str:
+    def create_enrollment_code(
+        self, label: str = "", minutes: int = 60, deployment_id: str | None = None
+    ) -> str:
         code = f"TAKT-{secrets.token_urlsafe(18)}"
         now = utc_now()
         with self.connection:
             self.connection.execute(
                 """
-                INSERT INTO enrollment_codes(code_hash, created_at, expires_at, label)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO enrollment_codes(
+                    code_hash, created_at, expires_at, label, deployment_id
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (hash_secret(code), utc_iso(now), utc_iso(now + timedelta(minutes=minutes)), label),
+                (
+                    hash_secret(code),
+                    utc_iso(now),
+                    utc_iso(now + timedelta(minutes=minutes)),
+                    label,
+                    deployment_id,
+                ),
             )
             self._audit("enrollment_code_created", details={"label": label})
         return code
@@ -209,6 +271,7 @@ class RegistryStore:
                     )
                     if consumed.rowcount:
                         self._audit("enrollment_code_consumed", device_id)
+                    self._link_deployment_for_code(hash_secret(code), device_id)
                 return token
             raise ValueError("This device ID is already enrolled with another secret.")
         code_hash = hash_secret(code)
@@ -231,6 +294,7 @@ class RegistryStore:
                 """,
                 (device_id, name, hostname, hash_secret(token), utc_iso(now)),
             )
+            self._link_deployment_for_code(code_hash, device_id)
             self._audit("device_enrolled", device_id, {"name": name, "hostname": hostname})
         return token
 
@@ -915,3 +979,222 @@ class RegistryStore:
             )
         for row in expired:
             (self.data_directory / row["relative_path"]).unlink(missing_ok=True)
+    def create_deployment(
+        self,
+        *,
+        target: str,
+        port: int,
+        ssh_user: str,
+        device_name: str,
+        requested_hostname: str,
+        registry_url: str,
+        allow_insecure_http: bool,
+        release_id: str,
+    ) -> dict[str, Any]:
+        release = self.connection.execute(
+            "SELECT id FROM releases WHERE id = ?", (release_id,)
+        ).fetchone()
+        if release is None:
+            raise ValueError("Release not found.")
+        active = self.connection.execute(
+            """
+            SELECT 1 FROM deployments
+            WHERE target = ? AND port = ?
+              AND status NOT IN ('succeeded', 'failed', 'cancelled', 'interrupted')
+            LIMIT 1
+            """,
+            (target, port),
+        ).fetchone()
+        if active is not None:
+            raise ValueError("A deployment for this target is already active.")
+        deployment_id = secrets.token_hex(12)
+        now = utc_iso()
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO deployments(
+                    id, target, port, ssh_user, device_name, requested_hostname,
+                    registry_url, allow_insecure_http, release_id, status, stage,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'starting', ?, ?)
+                """,
+                (
+                    deployment_id,
+                    target,
+                    port,
+                    ssh_user,
+                    device_name,
+                    requested_hostname,
+                    registry_url,
+                    int(allow_insecure_http),
+                    release_id,
+                    now,
+                    now,
+                ),
+            )
+            self._audit("deployment_created", deployment_id, {"target": target})
+            self.connection.execute(
+                """
+                INSERT INTO deployment_events(
+                    deployment_id, created_at, stage, level, message
+                ) VALUES (?, ?, 'starting', 'info', 'Deployment queued')
+                """,
+                (deployment_id, now),
+            )
+        return self.get_deployment(deployment_id)
+
+    def get_deployment(self, deployment_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT deployments.*, releases.version AS release_version
+            FROM deployments
+            LEFT JOIN releases ON releases.id = deployments.release_id
+            WHERE deployments.id = ?
+            """,
+            (deployment_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_deployments(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT deployments.*, releases.version AS release_version
+            FROM deployments
+            LEFT JOIN releases ON releases.id = deployments.release_id
+            ORDER BY deployments.created_at DESC
+            LIMIT ?
+            """,
+            (max(1, min(limit, 500)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_deployment(self, deployment_id: str, **changes: Any) -> dict[str, Any]:
+        allowed = {
+            "status",
+            "stage",
+            "message",
+            "host_key",
+            "host_key_fingerprint",
+            "device_id",
+            "completed_at",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValueError(f"Unsupported deployment fields: {sorted(unknown)}")
+        if not changes:
+            result = self.get_deployment(deployment_id)
+            if result is None:
+                raise KeyError(deployment_id)
+            return result
+        assignments = ["updated_at = ?"]
+        values: list[Any] = [utc_iso()]
+        for key, value in changes.items():
+            assignments.append(f"{key} = ?")
+            values.append(value)
+        values.append(deployment_id)
+        with self.connection:
+            updated = self.connection.execute(
+                f"UPDATE deployments SET {', '.join(assignments)} WHERE id = ?",
+                values,
+            )
+        if not updated.rowcount:
+            raise KeyError(deployment_id)
+        result = self.get_deployment(deployment_id)
+        assert result is not None
+        return result
+
+    def record_deployment_event(
+        self,
+        deployment_id: str,
+        stage: str,
+        message: str,
+        *,
+        level: str = "info",
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        now = utc_iso()
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO deployment_events(
+                    deployment_id, created_at, stage, level, message
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (deployment_id, stage, level, message),
+            )
+            changes: dict[str, Any] = {"stage": stage, "message": message}
+            if status is not None:
+                changes["status"] = status
+                if status in {"succeeded", "failed", "cancelled", "interrupted"}:
+                    changes["completed_at"] = now
+            assignments = ["updated_at = ?"]
+            values: list[Any] = [now]
+            for key, value in changes.items():
+                assignments.append(f"{key} = ?")
+                values.append(value)
+            values.append(deployment_id)
+            self.connection.execute(
+                f"UPDATE deployments SET {', '.join(assignments)} WHERE id = ?",
+                values,
+            )
+        return self.get_deployment(deployment_id) or {}
+
+    def list_deployment_events(
+        self, deployment_id: str, after: int = 0
+    ) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT id, deployment_id, created_at, stage, level, message
+            FROM deployment_events
+            WHERE deployment_id = ? AND id > ?
+            ORDER BY id
+            """,
+            (deployment_id, max(0, after)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_trusted_ssh_host(self, target_key: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM trusted_ssh_hosts WHERE target_key = ?", (target_key,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def trust_ssh_host(
+        self,
+        target_key: str,
+        host_key: str,
+        fingerprint: str,
+        *,
+        replace: bool = False,
+    ) -> None:
+        existing = self.get_trusted_ssh_host(target_key)
+        if existing and existing["host_key"] != host_key and not replace:
+            raise ValueError("SSH host key changed; explicit replacement is required.")
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO trusted_ssh_hosts(target_key, host_key, fingerprint, trusted_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(target_key) DO UPDATE SET
+                    host_key = excluded.host_key,
+                    fingerprint = excluded.fingerprint,
+                    trusted_at = excluded.trusted_at
+                """,
+                (target_key, host_key, fingerprint, utc_iso()),
+            )
+
+    @staticmethod
+    def deployment_target_key(target: str, port: int) -> str:
+        return f"{target}:{port}"
+
+    def _link_deployment_for_code(self, code_hash: str, device_id: str) -> None:
+        self.connection.execute(
+            """
+            UPDATE deployments
+            SET device_id = ?, updated_at = ?
+            WHERE id = (
+                SELECT deployment_id FROM enrollment_codes WHERE code_hash = ?
+            )
+            """,
+            (device_id, utc_iso(), code_hash),
+        )
