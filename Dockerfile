@@ -40,6 +40,9 @@ RUN python -m pip install --no-index --find-links=/wheels "takt[registry]" \
         --home-dir /home/takt --shell /usr/sbin/nologin takt \
     && install -d -o takt -g takt /data
 
+COPY bundled-release/ /opt/takt/bundled-release/
+ENV TAKT_BUNDLED_RELEASE_DIR=/opt/takt/bundled-release
+
 USER takt
 WORKDIR /home/takt
 

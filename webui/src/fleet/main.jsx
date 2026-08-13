@@ -29,6 +29,7 @@ import {
 import "./styles.css";
 import { wifiNetworkError } from "./wifiValidation.js";
 import { deploymentTargetError } from "./deploymentValidation.js";
+import { preferredReleaseId } from "./releaseSelection.js";
 
 async function request(url, options = {}, csrf = "") {
   const headers = { ...options.headers };
@@ -148,7 +149,7 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
     ssh_user: "",
     target: "raspberrypi.local",
     registry_url: window.location.origin,
-    release_id: releases[0]?.id || "",
+    release_id: preferredReleaseId(releases),
     allow_insecure_http: false,
   });
   const [deployment, setDeployment] = useState(null);
@@ -276,7 +277,7 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
             <label className="field-label">RASPBERRY PI RELEASE
               <select value={fields.release_id} onChange={(event) => update("release_id", event.target.value)} required>
                 <option value="">SELECT A RELEASE</option>
-                {releases.map((release) => <option value={release.id} key={release.id}>{release.version}</option>)}
+                {releases.map((release) => <option value={release.id} key={release.id}>{release.version}{release.source === "bundled" ? " · VERIFIED" : ""}</option>)}
               </select>
             </label>
             {insecureRemoteHttp(fields.registry_url) && (
@@ -417,8 +418,8 @@ function WifiModal({ device, csrf, onClose, onCreated }) {
 }
 
 function DeviceCard({ device, releases, job, onJob, onCancel, onRetry, onRevoke, onWifi }) {
-  const [releaseId, setReleaseId] = useState(releases[0]?.id || "");
-  const effectiveReleaseId = releaseId || releases[0]?.id || "";
+  const [releaseId, setReleaseId] = useState(preferredReleaseId(releases));
+  const effectiveReleaseId = releaseId || preferredReleaseId(releases);
   const status = device.status || {};
   const health = status.health || {};
   const updateRecovery = status.update_recovery?.stuck ? status.update_recovery : null;
@@ -498,7 +499,7 @@ function DeviceCard({ device, releases, job, onJob, onCancel, onRetry, onRevoke,
         <label>INSTALL VERSION
           <select value={effectiveReleaseId} onChange={(event) => setReleaseId(event.target.value)}>
             {!releases.length && <option value="">No releases uploaded</option>}
-            {releases.map((release) => <option value={release.id} key={release.id}>{release.version}</option>)}
+            {releases.map((release) => <option value={release.id} key={release.id}>{release.version}{release.source === "bundled" ? " · VERIFIED" : ""}</option>)}
           </select>
         </label>
         <button
@@ -547,6 +548,7 @@ function JobRow({ job, onCancel, onRetry }) {
 function Dashboard({ session, refreshSession }) {
   const [devices, setDevices] = useState([]);
   const [releases, setReleases] = useState([]);
+  const [bundledRelease, setBundledRelease] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [modal, setModal] = useState(null);
   const [wifiDevice, setWifiDevice] = useState(null);
@@ -558,6 +560,7 @@ function Dashboard({ session, refreshSession }) {
       ]);
       setDevices(deviceData.devices);
       setReleases(releaseData.releases);
+      setBundledRelease(releaseData.bundled_release || null);
       setJobs(jobData.jobs);
       setError("");
     } catch (failure) {
@@ -647,6 +650,7 @@ function Dashboard({ session, refreshSession }) {
           </div>
         </section>
         {insecureLan && <div className="security-warning"><WifiOff size={16} /><span><strong>UNENCRYPTED REGISTRY</strong> Use HTTPS or a private Tailscale/WireGuard network before installing releases or operating outside an isolated LAN.</span></div>}
+        {bundledRelease?.status === "error" && <div className="security-warning is-danger"><TriangleAlert size={16} /><span><strong>BUNDLED RELEASE UNAVAILABLE</strong> {bundledRelease.detail || `Reason: ${bundledRelease.reason}`}. Upload a release manually until this image is rebuilt.</span></div>}
         {error && <div className="global-error"><WifiOff size={16} />{error}</div>}
         <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></section>
         <section className="device-grid">

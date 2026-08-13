@@ -34,37 +34,6 @@ jobs:
         working-directory: webui
       - run: npm run check && npm run test:fleet && npm run build:fleet
         working-directory: webui
-      - name: Smoke-test the registry container
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          data_directory="${RUNNER_TEMP}/takt-registry-smoke"
-          mkdir -p "$data_directory"
-          sudo chown 10001:10001 "$data_directory"
-          docker build --target registry --tag takt-registry:smoke .
-          docker run --detach --name takt-registry-smoke \
-            --read-only \
-            --tmpfs /tmp:size=64m,mode=1777 \
-            --cap-drop ALL \
-            --security-opt no-new-privileges \
-            --publish 127.0.0.1:18090:8090 \
-            --env TAKT_REGISTRY_ADMIN_PASSWORD=workflow-smoke-password \
-            --volume "${data_directory}:/data" \
-            takt-registry:smoke
-          cleanup() {
-            docker logs takt-registry-smoke || true
-            docker rm --force takt-registry-smoke || true
-          }
-          trap cleanup EXIT
-          for attempt in {1..30}; do
-            if curl --fail --silent --show-error \
-              http://127.0.0.1:18090/health > /dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          printf 'Registry container did not become healthy.\n' >&2
-          exit 1
 
   package-pi:
     needs: quality
@@ -130,21 +99,101 @@ jobs:
             dist/takt-raspberry-pi-${{ steps.package.outputs.version }}.manifest.json
           if-no-files-found: error
           retention-days: 30
-      - name: Assemble Unraid Compose bundle
-        run: |
-          mkdir -p dist/unraid-stack
-          cp compose.yaml dist/unraid-stack/compose.yaml
-          cp .env.example dist/unraid-stack/takt-registry.env.example
-          cp unraid/takt-registry.xml dist/unraid-stack/takt-registry.xml
-      - uses: actions/upload-artifact@v4
+
+  container:
+    needs: package-pi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: takt-unraid-stack-${{ steps.package.outputs.version }}
-          path: dist/unraid-stack/*
-          if-no-files-found: error
-          retention-days: 30
+          name: takt-raspberry-pi-${{ needs.package-pi.outputs.version }}
+          path: bundled-release
+      - name: Validate the Compose stack
+        run: |
+          TAKT_REGISTRY_ADMIN_PASSWORD=workflow-compose-check docker compose config --quiet
+      - name: Build the registry image with the bundled release
+        run: docker build --target registry --tag takt-registry:bundle .
+      - name: Verify the bundled release imports, is served, and is idempotent
+        env:
+          VERSION: ${{ needs.package-pi.outputs.version }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          data_directory="${RUNNER_TEMP}/takt-registry-bundle"
+          mkdir -p "$data_directory"
+          sudo chown 10001:10001 "$data_directory"
+          jar="${RUNNER_TEMP}/takt-registry-bundle-cookies"
+
+          run_container() {
+            docker run --detach --name takt-registry-bundle \
+              --read-only \
+              --tmpfs /tmp:size=64m,mode=1777 \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --publish 127.0.0.1:18091:8090 \
+              --env TAKT_REGISTRY_ADMIN_PASSWORD=workflow-bundle-password \
+              --volume "${data_directory}:/data" \
+              takt-registry:bundle
+          }
+          cleanup() {
+            docker logs takt-registry-bundle || true
+            docker rm --force takt-registry-bundle || true
+          }
+          trap cleanup EXIT
+
+          wait_healthy() {
+            for attempt in {1..30}; do
+              if curl --fail --silent --show-error http://127.0.0.1:18091/health -o "$1"; then
+                return 0
+              fi
+              sleep 1
+            done
+            printf 'Registry container did not become healthy.\n' >&2
+            return 1
+          }
+          expect_status() {
+            local actual
+            actual="$(jq -r '.bundled_release.status' "$1")"
+            if [[ "$actual" != "$2" ]]; then
+              printf 'Expected bundled_release.status=%s, got %s (%s)\n' "$2" "$actual" "$(cat "$1")" >&2
+              return 1
+            fi
+          }
+
+          run_container
+          wait_healthy health-first.json
+          expect_status health-first.json imported
+
+          curl --fail --silent --show-error -c "$jar" \
+            -H 'Content-Type: application/json' \
+            -d '{"password":"workflow-bundle-password"}' \
+            http://127.0.0.1:18091/api/session -o /dev/null
+          releases_json="$(curl --fail --silent --show-error -b "$jar" http://127.0.0.1:18091/api/releases)"
+          release_version="$(printf '%s' "$releases_json" | jq -r '.releases[] | select(.source=="bundled") | .version')"
+          release_sha="$(printf '%s' "$releases_json" | jq -r '.releases[] | select(.source=="bundled") | .sha256')"
+          manifest_sha="$(jq -r .sha256 "bundled-release/takt-raspberry-pi-${VERSION}.manifest.json")"
+          if [[ "$release_version" != "$VERSION" ]]; then
+            printf 'Expected bundled release %s in /api/releases, got %s\n' "$VERSION" "${release_version:-<none>}" >&2
+            exit 1
+          fi
+          if [[ "$release_sha" != "$manifest_sha" ]]; then
+            printf 'Bundled release sha256 %s does not match manifest %s\n' "$release_sha" "$manifest_sha" >&2
+            exit 1
+          fi
+
+          docker rm --force takt-registry-bundle
+          run_container
+          wait_healthy health-second.json
+          expect_status health-second.json present
+          release_count="$(curl --fail --silent --show-error -b "$jar" http://127.0.0.1:18091/api/releases | jq '.releases | length')"
+          if [[ "$release_count" != "1" ]]; then
+            printf 'Expected exactly one release after a repeated import, got %s\n' "$release_count" >&2
+            exit 1
+          fi
 
   publish-container:
-    needs: quality
+    needs: [package-pi, container]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -153,6 +202,10 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: takt-raspberry-pi-${{ needs.package-pi.outputs.version }}
+          path: bundled-release
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -182,6 +235,26 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
+      - name: Assemble a digest-pinned Unraid Compose bundle
+        env:
+          VERSION: ${{ needs.package-pi.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          pinned_image="ghcr.io/maxi-smidt/takt-registry:${VERSION}@${IMAGE_DIGEST}"
+          mkdir -p dist/unraid-stack
+          sed "s#ghcr.io/maxi-smidt/takt-registry:latest#${pinned_image}#" \
+            compose.yaml > dist/unraid-stack/compose.yaml
+          sed -E "s#^TAKT_REGISTRY_IMAGE=.*#TAKT_REGISTRY_IMAGE=${pinned_image}#" \
+            .env.example > dist/unraid-stack/takt-registry.env.example
+          sed "s#ghcr.io/maxi-smidt/takt-registry:latest#${pinned_image}#" \
+            unraid/takt-registry.xml > dist/unraid-stack/takt-registry.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: takt-unraid-stack-${{ needs.package-pi.outputs.version }}
+          path: dist/unraid-stack/*
+          if-no-files-found: error
+          retention-days: 30
 
   publish-release:
     if: github.ref_type == 'tag'

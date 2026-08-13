@@ -58,6 +58,7 @@ say "Sauberes Raspberry-Pi-Paket erstellen"
     --exclude="$project_name/.env" \
     --exclude="$project_name/.env.*" \
     --exclude="$project_name/dist" \
+    --exclude="$project_name/bundled-release" \
     --exclude="$project_name/build" \
     --exclude="$project_name/.pytest_cache" \
     --exclude="$project_name/.ruff_cache" \
