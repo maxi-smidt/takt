@@ -274,23 +274,35 @@ class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
             "takt.registry.deployment.asyncssh.connect", new_callable=AsyncMock
         ) as connect:
             connect.return_value = object()
-            for credential in credentials:
-                with self.subTest(credential=bool(credential.ssh_private_key)):
-                    result = await manager._connect(deployment, credential)
-                    self.assertIs(result, connect.return_value)
-                    options = connect.await_args.kwargs
-                    self.assertIsNotNone(options["known_hosts"])
-                    if credential.ssh_private_key:
-                        self.assertNotIn("password", options)
-                        self.assertEqual(len(options["client_keys"]), 1)
+            for port in (22, 2222):
+                deployment["port"] = port
+                for credential in credentials:
+                    with self.subTest(
+                        port=port, credential=bool(credential.ssh_private_key)
+                    ):
+                        result = await manager._connect(deployment, credential)
+                        self.assertIs(result, connect.return_value)
+                        options = connect.await_args.kwargs
+                        known_hosts = options["known_hosts"]
+                        matched_keys = known_hosts.match(
+                            deployment["target"], "192.0.2.10", port
+                        )[0]
+                        self.assertEqual(len(matched_keys), 1)
                         self.assertEqual(
-                            options["client_keys"][0].export_public_key("openssh"),
+                            matched_keys[0].export_public_key("openssh"),
                             host_key.export_public_key("openssh"),
                         )
-                    else:
-                        self.assertEqual(options["password"], "correct horse")
-                        self.assertNotIn("client_keys", options)
-                    connect.reset_mock()
+                        if credential.ssh_private_key:
+                            self.assertNotIn("password", options)
+                            self.assertEqual(len(options["client_keys"]), 1)
+                            self.assertEqual(
+                                options["client_keys"][0].export_public_key("openssh"),
+                                host_key.export_public_key("openssh"),
+                            )
+                        else:
+                            self.assertEqual(options["password"], "correct horse")
+                            self.assertNotIn("client_keys", options)
+                        connect.reset_mock()
 
     async def test_hostname_change_reconnects_and_audits(self) -> None:
         class Store:
