@@ -235,16 +235,39 @@ Versionstags (`v*`) und manuell:
 
 - Ruff, Pytest, ESLint und der Registry-UI-Build müssen zuerst erfolgreich
   sein.
-- Danach wird `ghcr.io/maxi-smidt/takt-registry` für `linux/amd64` und
-  `linux/arm64` veröffentlicht. `latest` folgt `main`; zusätzlich gibt es
-  `sha-...` und bei Versionstags beispielsweise `0.2.0` sowie `0.2`.
-- Das Raspberry-Pi-Paket wird zusammen mit Prüfsumme und JSON-Manifest für 30
-  Tage als Actions-Artefakt abgelegt.
+- Anschließend baut genau **ein** Job (`package-pi`) das Raspberry-Pi-Paket
+  samt Prüfsumme und JSON-Manifest (Version, Commit, Größe, SHA-256) und legt
+  es 30 Tage als Actions-Artefakt ab.
+- Ein `container`-Job lädt dieses Paket in `bundled-release/` und baut daraus
+  das Registry-Image lokal, bevor irgendetwas veröffentlicht wird. Er prüft,
+  dass `/health` das Paket als importiert meldet, dass `/api/releases`
+  dieselbe Version mit `source: "bundled"` und passender Prüfsumme zeigt, und
+  dass ein zweiter Start gegen denselben Datenordner keine Dopplung erzeugt.
+  Erst wenn das steht, wird veröffentlicht.
+- `ghcr.io/maxi-smidt/takt-registry` wird für `linux/amd64` und
+  `linux/arm64` veröffentlicht, mit demselben `bundled-release/`-Paket im
+  Image. `latest` folgt `main`; zusätzlich gibt es `sha-...` und bei
+  Versionstags beispielsweise `0.2.0` sowie `0.2`. Weil jedes Image sein
+  eigenes, geprüftes Pi-Paket enthält, bleiben `latest` und das mitgelieferte
+  Paket immer zueinander passend.
 - `compose.yaml`, die Environment-Vorlage und das Unraid-XML werden zusätzlich
-  als kleiner Unraid-Stack-Artefakt veröffentlicht.
+  als Unraid-Stack-Artefakt veröffentlicht — mit dem `image:`-Verweis fest auf
+  `ghcr.io/maxi-smidt/takt-registry:<version>@<digest>` gepinnt, auch wenn das
+  Repository selbst weiterhin `latest` referenziert. Für auditierbare
+  Deployments `TAKT_REGISTRY_IMAGE` in der eigenen `.env` auf eine feste
+  Version (z. B. `0.2.0`) statt `latest` setzen.
 - Ein Tag wie `v0.2.0` muss exakt zur Version in `pyproject.toml` passen und
   erzeugt eine dauerhafte GitHub Release mit Pi-Paket, Prüfsumme, Manifest,
   Unraid-Stack-Dateien und dem exakten Digest des Registry-Images.
+
+Ein frischer `docker compose up` hat die zur Registry-Version passende
+Raspberry-Pi-Version deshalb bereits in der Versionsbibliothek, ohne
+manuellen Upload — sichtbar in der Fleet-Oberfläche am Zusatz „· VERIFIED“.
+Fehlt das gebündelte Paket, ist es beschädigt, passt nicht zur laufenden
+Version oder kollidiert mit einer bereits hochgeladenen, abweichenden
+Version, bleibt es unangeboten und ein Hinweis erscheint in der
+Fleet-Oberfläche; eine Versionskollision meldet zusätzlich `/health` als
+fehlerhaft (HTTP 503).
 
 Vor dem ersten Unraid-Pull muss das einmalig erzeugte GHCR-Paket in GitHub auf
 **Public** gestellt werden. Danach benötigt der Unraid-Stack keine GitHub-
@@ -357,7 +380,11 @@ Zugangsdaten nicht.
 
 ### Eine bestimmte TAKT-Version installieren
 
-Zuerst das normale Raspberry-Pi-Paket erstellen:
+Die zur laufenden Registry-Version passende Version steht nach dem Start
+bereits ohne Upload in der Versionsbibliothek (mit dem Zusatz
+„· VERIFIED“ markiert) und ist auf jeder Geräte-Karte direkt auswählbar.
+Für ältere Versionen oder einen selbst gebauten Stand weiterhin manuell
+paketieren:
 
 ```bash
 ./scripts/package_for_raspberry_pi.sh

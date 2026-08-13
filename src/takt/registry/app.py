@@ -10,10 +10,8 @@ import math
 import re
 import secrets
 import sqlite3
-import tarfile
 import tempfile
 import time
-import tomllib
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
@@ -22,6 +20,7 @@ from aiohttp import web
 
 from takt.protocol import PROTOCOL_VERSION
 from takt.registry.auth import COOKIE_NAME, AdminAuth
+from takt.registry.bundled_release import ReleaseValidationError, validate_release_archive
 from takt.registry.deployment import DeploymentCredentials, DeploymentManager, validate_registry_url
 from takt.registry.storage import RegistryStore, utc_iso
 
@@ -411,7 +410,10 @@ async def enrollment_code(request: web.Request) -> web.Response:
 
 async def releases(request: web.Request) -> web.Response:
     _admin(request)
-    return web.json_response({"releases": request.app[STORE_KEY].list_releases()})
+    store = request.app[STORE_KEY]
+    return web.json_response(
+        {"releases": store.list_releases(), "bundled_release": store.bundled_release_status}
+    )
 
 
 async def upload_release(request: web.Request) -> web.Response:
@@ -777,52 +779,10 @@ def _validate_mirror(path: Path) -> int:
 
 
 def _validate_release_archive(path: Path, expected_version: str) -> None:
-    package_version = ""
     try:
-        with tarfile.open(path, "r:gz") as archive:
-            names = set()
-            pyproject_members: list[tarfile.TarInfo] = []
-            expanded_size = 0
-            for member in archive.getmembers():
-                member_path = Path(member.name)
-                expanded_size += max(member.size, 0)
-                if (
-                    member_path.is_absolute()
-                    or ".." in member_path.parts
-                    or member.issym()
-                    or member.islnk()
-                    or member.isdev()
-                ):
-                    raise web.HTTPBadRequest(text="Release contains an unsafe archive path.")
-                if expanded_size > 500 * 1024 * 1024:
-                    raise web.HTTPBadRequest(text="Expanded release is too large.")
-                names.add(member.name.rstrip("/"))
-                if member.isfile() and (
-                    member.name == "pyproject.toml" or member.name.endswith("/pyproject.toml")
-                ):
-                    pyproject_members.append(member)
-            if len(pyproject_members) != 1:
-                raise web.HTTPBadRequest(text="Release must contain exactly one pyproject.toml.")
-            pyproject_file = archive.extractfile(pyproject_members[0])
-            if pyproject_file is None or pyproject_members[0].size > 1024 * 1024:
-                raise web.HTTPBadRequest(text="Release pyproject.toml is invalid.")
-            metadata = tomllib.loads(pyproject_file.read().decode("utf-8"))
-            package_version = str(metadata.get("project", {}).get("version", ""))
-    except web.HTTPException:
-        raise
-    except (OSError, UnicodeDecodeError, tarfile.TarError, tomllib.TOMLDecodeError) as error:
-        raise web.HTTPBadRequest(text="Release is not a readable gzip tar archive.") from error
-    if not any(name.endswith("/pyproject.toml") or name == "pyproject.toml" for name in names):
-        raise web.HTTPBadRequest(text="Release does not contain pyproject.toml.")
-    if not any(name.endswith("/src/takt/web/static/index.html") for name in names):
-        raise web.HTTPBadRequest(text="Release does not contain the built TAKT web interface.")
-    if package_version != expected_version:
-        raise web.HTTPBadRequest(
-            text=(
-                f"Release version {package_version or 'missing'} does not match "
-                f"the requested version {expected_version}."
-            )
-        )
+        validate_release_archive(path, expected_version)
+    except ReleaseValidationError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
 
 
 async def _json(request: web.Request, *, max_bytes: int = JSON_LIMIT) -> dict[str, Any]:

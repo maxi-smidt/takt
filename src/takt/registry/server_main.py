@@ -11,7 +11,10 @@ from aiohttp import web
 
 from takt.registry.app import create_registry_app
 from takt.registry.auth import AdminAuth
+from takt.registry.bundled_release import import_bundled_release
 from takt.registry.storage import RegistryStore
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -65,6 +68,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     lock_handle = _acquire_instance_lock(data_directory)
     store = RegistryStore(data_directory)
+    bundled_release_directory = os.environ.get("TAKT_BUNDLED_RELEASE_DIR")
+    store.bundled_release_status = import_bundled_release(
+        store, Path(bundled_release_directory) if bundled_release_directory else None
+    )
+    LOGGER.info("Bundled release import: %s", store.bundled_release_status)
     try:
         auth = AdminAuth(password, data_directory)
     except Exception:

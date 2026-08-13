@@ -26,7 +26,7 @@ def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
 INSTALL_STAGES = {
     "queued",
@@ -216,6 +216,7 @@ class RegistryStore:
         self.database_path.chmod(0o600)
         self.connection.row_factory = sqlite3.Row
         self._job_secret_cipher: JobSecretCipher | None = None
+        self.bundled_release_status: dict[str, Any] = {"status": "absent"}
         self.connection.execute("PRAGMA busy_timeout = 10000")
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA synchronous = FULL")
@@ -247,6 +248,8 @@ class RegistryStore:
         )
         self._ensure_column("devices", "revoked_at", "TEXT")
         self._ensure_column("enrollment_codes", "deployment_id", "TEXT")
+        self._ensure_column("releases", "source", "TEXT NOT NULL DEFAULT 'upload'")
+        self._ensure_column("releases", "commit_sha", "TEXT")
         self.connection.execute(
             """
             UPDATE deployments SET status = 'interrupted', stage = 'interrupted',
@@ -440,7 +443,15 @@ class RegistryStore:
         return device
 
     def add_release(
-        self, *, version: str, filename: str, sha256: str, size: int, source: Path
+        self,
+        *,
+        version: str,
+        filename: str,
+        sha256: str,
+        size: int,
+        source: Path,
+        release_source: str = "upload",
+        commit_sha: str | None = None,
     ) -> dict[str, Any]:
         release_id = secrets.token_hex(12)
         target = self.release_path(release_id)
@@ -449,12 +460,25 @@ class RegistryStore:
             with self.connection:
                 self.connection.execute(
                     """
-                    INSERT INTO releases(id, version, filename, sha256, size, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO releases(
+                        id, version, filename, sha256, size, created_at, source, commit_sha
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (release_id, version, filename, sha256, size, utc_iso()),
+                    (
+                        release_id,
+                        version,
+                        filename,
+                        sha256,
+                        size,
+                        utc_iso(),
+                        release_source,
+                        commit_sha,
+                    ),
                 )
-                self._audit("release_uploaded", details={"version": version, "sha256": sha256})
+                self._audit(
+                    "release_uploaded",
+                    details={"version": version, "sha256": sha256, "source": release_source},
+                )
         except Exception:
             target.unlink(missing_ok=True)
             raise
@@ -475,6 +499,58 @@ class RegistryStore:
             "SELECT * FROM releases WHERE id = ?", (release_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def get_release_by_version(self, version: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM releases WHERE version = ?", (version,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def mark_release_bundled(self, release_id: str, *, commit_sha: str | None) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE releases SET source = 'bundled', "
+                "commit_sha = COALESCE(commit_sha, ?) WHERE id = ?",
+                (commit_sha, release_id),
+            )
+
+    def replace_bundled_release(
+        self,
+        release_id: str,
+        *,
+        filename: str,
+        sha256: str,
+        size: int,
+        source: Path,
+        commit_sha: str | None,
+    ) -> dict[str, Any]:
+        """Overwrite an existing release's bytes and metadata in place.
+
+        Used to refresh a previously bundled release whose packaged bytes
+        changed without a version bump, or to repair a release whose
+        persisted artifact went missing or was damaged independently of its
+        database row.
+        """
+        previous = self.get_release(release_id)
+        target = self.release_path(release_id)
+        source.replace(target)
+        with self.connection:
+            self.connection.execute(
+                "UPDATE releases SET filename = ?, sha256 = ?, size = ?, "
+                "source = 'bundled', commit_sha = ? WHERE id = ?",
+                (filename, sha256, size, commit_sha, release_id),
+            )
+            self._audit(
+                "release_bundled_refreshed",
+                details={
+                    "version": previous["version"] if previous else None,
+                    "previous_sha256": previous["sha256"] if previous else None,
+                    "sha256": sha256,
+                },
+            )
+        release = self.get_release(release_id)
+        assert release is not None
+        return release
 
     def release_path(self, release_id: str) -> Path:
         return self.release_directory / f"{release_id}.tar.gz"
@@ -1011,8 +1087,9 @@ class RegistryStore:
             database_ok = False
         latest_backup = self.latest_backup()
         disk_free = shutil.disk_usage(self.data_directory).free
+        bundled_release_ok = self.bundled_release_status.get("reason") != "collision"
         return {
-            "ok": database_ok and disk_free > 1024 * 1024,
+            "ok": database_ok and disk_free > 1024 * 1024 and bundled_release_ok,
             "service": "takt-registry",
             "version": __version__,
             "schema_version": schema_version,
@@ -1024,6 +1101,7 @@ class RegistryStore:
             "last_backup_at": datetime.fromtimestamp(latest_backup.stat().st_mtime, UTC).isoformat()
             if latest_backup
             else None,
+            "bundled_release": self.bundled_release_status,
         }
 
     def backup_database(self, *, label: str = "automatic", retain: int = 14) -> Path:
