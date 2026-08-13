@@ -273,6 +273,22 @@ class RegistryApplicationTests(unittest.TestCase):
                     ) as response:
                         self.assertEqual(response.status, 409)
                     async with client.post(
+                        f"{base_url}/agent/status",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "app_version": "0.2.0",
+                            "agent_version": "0.2.0",
+                            "health": {"ok": True, "state": "ready", "version": "0.2.0"},
+                            "protocol_version": 1,
+                            "agent_session_id": "session-a",
+                            "poll_seconds": 10,
+                        },
+                        headers=agent_headers,
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+
+                    async with client.post(
                         f"{base_url}/agent/jobs/{job['id']}",
                         json={
                             "status": "succeeded",
@@ -301,7 +317,7 @@ class RegistryApplicationTests(unittest.TestCase):
 
                     async with client.get(f"{base_url}/api/devices") as response:
                         device = (await response.json())["devices"][0]
-                        self.assertEqual(device["app_version"], "0.1.0")
+                        self.assertEqual(device["app_version"], "0.2.0")
                         self.assertEqual(device["run_count"], 0)
                         self.assertIsNotNone(device["last_mirror_at"])
 

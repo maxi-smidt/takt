@@ -26,7 +26,23 @@ def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
+INSTALL_STAGES = {
+    "queued",
+    "waiting_for_safe_state",
+    "downloading",
+    "verifying",
+    "staging",
+    "activating",
+    "restarting",
+    "health_checking",
+    "succeeded",
+    "rolled_back",
+    "retryable_failure",
+    "intervention_required",
+    "cancelled",
+}
 JOB_LEASE_SECONDS = 120
 WIFI_PROFILE_CAPABILITY = "wifi-profile-v1"
 
@@ -127,11 +143,31 @@ CREATE TABLE IF NOT EXISTS jobs (
     attempt INTEGER NOT NULL DEFAULT 0,
     lease_id TEXT,
     lease_expires_at TEXT,
-    lease_owner_session TEXT
+    lease_owner_session TEXT,
+    stage TEXT NOT NULL DEFAULT 'queued',
+    current_version TEXT,
+    target_version TEXT,
+    bytes_downloaded INTEGER,
+    bytes_total INTEGER,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    retry_of TEXT REFERENCES jobs(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_device_status
 ON jobs(device_id, status, created_at);
+
+
+CREATE TABLE IF NOT EXISTS job_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    message TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_events_job
+ON job_events(job_id, id);
 
 CREATE TABLE IF NOT EXISTS job_secrets (
     job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
@@ -196,7 +232,19 @@ class RegistryStore:
         self._ensure_column("jobs", "attempt", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("jobs", "lease_id", "TEXT")
         self._ensure_column("jobs", "lease_expires_at", "TEXT")
+        self._ensure_column("jobs", "stage", "TEXT NOT NULL DEFAULT 'queued'")
+        self._ensure_column("jobs", "current_version", "TEXT")
+        self._ensure_column("jobs", "target_version", "TEXT")
+        self._ensure_column("jobs", "bytes_downloaded", "INTEGER")
+        self._ensure_column("jobs", "bytes_total", "INTEGER")
+        self._ensure_column("jobs", "cancel_requested", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("jobs", "retry_of", "TEXT")
         self._ensure_column("jobs", "lease_owner_session", "TEXT")
+        self.connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_one_active_disruptive_operation "
+            "ON jobs(device_id) WHERE action IN ('install_release', 'restart_takt') "
+            "AND status IN ('queued', 'claimed', 'running')"
+        )
         self._ensure_column("devices", "revoked_at", "TEXT")
         self._ensure_column("enrollment_codes", "deployment_id", "TEXT")
         self.connection.execute(
@@ -434,6 +482,7 @@ class RegistryStore:
     def create_job(
         self, device_id: str, action: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
+        payload = payload or {}
         device = self.get_device(device_id)
         if device is None:
             raise LookupError("Device does not exist.")
@@ -444,22 +493,31 @@ class RegistryStore:
         if action in {"install_release", "restart_takt"} and (
             protocol_version != PROTOCOL_VERSION and (has_heartbeat or protocol_version is not None)
         ):
-            raise ValueError(
-                "This Pi agent is incompatible with safe remote operations; update it once via SSH."
-            )
+            raise ValueError("This Pi agent is not compatible with safe Fleet operations yet.")
         active = self.connection.execute(
             """
-            SELECT 1 FROM jobs WHERE device_id = ?
+            SELECT id, action FROM jobs WHERE device_id = ?
                 AND status IN ('queued', 'claimed', 'running')
                 AND action IN ('install_release', 'restart_takt')
             """,
             (device_id,),
         ).fetchone()
         if active is not None and action in {"install_release", "restart_takt"}:
+            existing = self.get_job(str(active["id"]))
+            if (
+                action == "install_release"
+                and active["action"] == action
+                and existing is not None
+                and existing["payload"].get("release_id") == payload.get("release_id")
+            ):
+                existing["reused"] = True
+                return existing
             raise ValueError("Another disruptive operation is already queued for this device.")
+        release: dict[str, Any] | None = None
         if action == "install_release":
-            release_id = str((payload or {}).get("release_id", ""))
-            if self.get_release(release_id) is None:
+            release_id = str(payload.get("release_id", ""))
+            release = self.get_release(release_id)
+            if release is None:
                 raise ValueError("Release does not exist.")
         job_id = secrets.token_hex(12)
         now = utc_iso()
@@ -467,11 +525,23 @@ class RegistryStore:
             self.connection.execute(
                 """
                 INSERT INTO jobs(
-                    id, device_id, action, payload_json, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'queued', ?, ?)
+                    id, device_id, action, payload_json, status, stage, current_version,
+                    target_version, bytes_total, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'queued', 'queued', ?, ?, ?, ?, ?)
                 """,
-                (job_id, device_id, action, json.dumps(payload or {}), now, now),
+                (
+                    job_id,
+                    device_id,
+                    action,
+                    json.dumps(payload),
+                    device.get("app_version"),
+                    release.get("version") if release else None,
+                    release.get("size") if release else None,
+                    now,
+                    now,
+                ),
             )
+            self._record_job_event(job_id, "queued", "queued", "Job queued")
             self._audit("job_created", device_id, {"job_id": job_id, "action": action})
         job = self.get_job(job_id)
         assert job is not None
@@ -521,6 +591,7 @@ class RegistryStore:
                 """,
                 (job_id, nonce, ciphertext, now),
             )
+            self._record_job_event(job_id, "queued", "queued", "Job queued")
             self._audit("job_created", device_id, {"job_id": job_id, "action": action})
         job = self.get_job(job_id)
         assert job is not None
@@ -587,27 +658,43 @@ class RegistryStore:
         progress: int,
         message: str,
         lease_id: str | None = None,
+        *,
+        stage: str | None = None,
+        bytes_downloaded: int | None = None,
+        bytes_total: int | None = None,
     ) -> dict[str, Any]:
-        allowed = {"queued", "claimed", "running", "succeeded", "failed", "rolled_back"}
+        allowed = {"queued", "claimed", "running", *JOB_TERMINAL_STATUSES}
         if status not in allowed:
             raise ValueError("Invalid job status.")
         current = self.connection.execute(
-            "SELECT status, lease_id FROM jobs WHERE id = ? AND device_id = ?",
+            """
+            SELECT status, lease_id, stage, action, target_version, bytes_downloaded, bytes_total
+            FROM jobs WHERE id = ? AND device_id = ?
+            """,
             (job_id, device_id),
         ).fetchone()
         if current is None:
             raise LookupError("Job does not exist.")
-        terminal = {"succeeded", "failed", "rolled_back"}
-        if current["status"] in terminal:
+        if current["status"] in JOB_TERMINAL_STATUSES:
             if status == current["status"]:
                 job = self.get_job(job_id)
                 assert job is not None
                 return job
             raise ValueError("Completed jobs cannot change state.")
+        if stage is None:
+            stage = (
+                status
+                if status in {"succeeded", "rolled_back", "cancelled"}
+                else "intervention_required"
+                if status == "failed" and current["action"] == "install_release"
+                else str(current["stage"] or "queued")
+            )
+        if current["action"] == "install_release" and stage not in INSTALL_STAGES:
+            raise ValueError("Invalid install stage.")
         transitions = {
-            "queued": {"claimed"},
-            "claimed": {"queued", "running", *terminal},
-            "running": {"queued", "running", *terminal},
+            "queued": {"claimed", "cancelled"},
+            "claimed": {"queued", "running", *JOB_TERMINAL_STATUSES},
+            "running": {"queued", "running", *JOB_TERMINAL_STATUSES},
         }
         if status != current["status"] and status not in transitions[current["status"]]:
             raise ValueError(f"Invalid job transition: {current['status']} -> {status}.")
@@ -616,31 +703,55 @@ class RegistryStore:
                 raise ValueError("A job lease is required for this operation.")
             if not secrets.compare_digest(lease_id, current["lease_id"]):
                 raise ValueError("Job lease no longer belongs to this agent operation.")
-        completed_at = utc_iso() if status in {"succeeded", "failed", "rolled_back"} else None
+        if status == "succeeded" and current["action"] == "install_release":
+            if not self._install_success_is_confirmed(
+                device_id, str(current["target_version"] or "")
+            ):
+                raise ValueError(
+                    "Expected version and healthy agent status have not been confirmed."
+                )
+        completed_at = utc_iso() if status in JOB_TERMINAL_STATUSES else None
         lease_expires_at = (
             utc_iso(utc_now() + timedelta(seconds=JOB_LEASE_SECONDS))
             if status in {"claimed", "running"}
             else None
         )
+        downloaded = (
+            current["bytes_downloaded"]
+            if bytes_downloaded is None
+            else min(max(int(bytes_downloaded), 0), 250 * 1024 * 1024)
+        )
+        total = (
+            current["bytes_total"]
+            if bytes_total is None
+            else min(max(int(bytes_total), 0), 250 * 1024 * 1024)
+        )
+        if downloaded is not None and total is not None and downloaded > total:
+            raise ValueError("Downloaded bytes exceed release size.")
         with self.connection:
             cursor = self.connection.execute(
                 """
-                UPDATE jobs SET status = ?, progress = ?, message = ?, updated_at = ?,
+                UPDATE jobs SET status = ?, stage = ?, progress = ?, message = ?, updated_at = ?,
+                    bytes_downloaded = ?, bytes_total = ?,
                     completed_at = COALESCE(?, completed_at),
                     claimed_at = CASE WHEN ? = 'queued' THEN NULL ELSE claimed_at END,
-                    lease_id = CASE WHEN ? IN ('queued', 'succeeded', 'failed', 'rolled_back')
-                        THEN NULL ELSE lease_id END,
+                    lease_id = CASE WHEN ? IN (
+                        'queued', 'succeeded', 'failed', 'rolled_back', 'cancelled'
+                    ) THEN NULL ELSE lease_id END,
                     lease_owner_session = CASE
-                        WHEN ? IN ('queued', 'succeeded', 'failed', 'rolled_back')
+                        WHEN ? IN ('queued', 'succeeded', 'failed', 'rolled_back', 'cancelled')
                         THEN NULL ELSE lease_owner_session END,
                     lease_expires_at = ?
                 WHERE id = ? AND device_id = ?
                 """,
                 (
                     status,
+                    stage,
                     min(max(progress, 0), 100),
                     message[:2000],
                     utc_iso(),
+                    downloaded,
+                    total,
                     completed_at,
                     status,
                     status,
@@ -652,6 +763,8 @@ class RegistryStore:
             )
             if not cursor.rowcount:
                 raise LookupError("Job does not exist.")
+            if status != current["status"] or stage != current["stage"]:
+                self._record_job_event(job_id, status, stage, message[:2000])
             if completed_at:
                 self._audit("job_completed", device_id, {"job_id": job_id, "status": status})
                 self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
@@ -661,6 +774,98 @@ class RegistryStore:
         job = self.get_job(job_id)
         assert job is not None
         return job
+
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        job = self.get_job(job_id)
+        if job is None:
+            raise LookupError("Job does not exist.")
+        if job["status"] in JOB_TERMINAL_STATUSES:
+            return job
+        if job["stage"] in {"activating", "restarting", "health_checking"}:
+            raise ValueError("This install is past its cancellation checkpoint.")
+        now = utc_iso()
+        with self.connection:
+            if job["status"] in {"queued", "claimed"}:
+                self.connection.execute(
+                    """
+                    UPDATE jobs SET status = 'cancelled', stage = 'cancelled', progress = 100,
+                        message = 'Cancelled before activation', updated_at = ?, completed_at = ?,
+                        lease_id = NULL, lease_expires_at = NULL, lease_owner_session = NULL
+                    WHERE id = ?
+                    """,
+                    (now, now, job_id),
+                )
+                self._record_job_event(
+                    job_id, "cancelled", "cancelled", "Cancelled before activation"
+                )
+            else:
+                message = "Cancellation requested; stopping at the next safe checkpoint"
+                self.connection.execute(
+                    "UPDATE jobs SET cancel_requested = 1, message = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (message, now, job_id),
+                )
+                self._record_job_event(job_id, job["status"], job["stage"], message)
+            self._audit("job_cancel_requested", job["device_id"], {"job_id": job_id})
+        cancelled = self.get_job(job_id)
+        assert cancelled is not None
+        return cancelled
+
+    def retry_job(self, job_id: str) -> dict[str, Any]:
+        previous = self.get_job(job_id)
+        if previous is None:
+            raise LookupError("Job does not exist.")
+        if previous["status"] not in {"failed", "rolled_back", "cancelled"}:
+            raise ValueError("Only an unsuccessful completed job can be retried.")
+        replacement = self.create_job(
+            previous["device_id"], previous["action"], previous["payload"]
+        )
+        if replacement.get("reused"):
+            return replacement
+        with self.connection:
+            self.connection.execute(
+                "UPDATE jobs SET retry_of = ? WHERE id = ?", (job_id, replacement["id"])
+            )
+            self._record_job_event(replacement["id"], "queued", "queued", f"Retry of {job_id}")
+            self._audit(
+                "job_retried",
+                previous["device_id"],
+                {"job_id": replacement["id"], "retry_of": job_id},
+            )
+        retried = self.get_job(replacement["id"])
+        assert retried is not None
+        return retried
+
+    def list_job_events(self, job_id: str) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT * FROM job_events WHERE job_id = ? ORDER BY id", (job_id,)
+            ).fetchall()
+        ]
+
+    def _install_success_is_confirmed(self, device_id: str, target_version: str) -> bool:
+        device = self.get_device(device_id)
+        status = (device or {}).get("status", {})
+        health = status.get("health") or {}
+        return bool(
+            target_version
+            and device
+            and device.get("online")
+            and status.get("app_version") == target_version
+            and health.get("ok")
+            and health.get("state") == "ready"
+            and health.get("version") == target_version
+        )
+
+    def _record_job_event(self, job_id: str, status: str, stage: str, message: str) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO job_events(job_id, created_at, status, stage, message)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (job_id, utc_iso(), status, stage, message[:2000]),
+        )
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         row = self.connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -985,8 +1190,8 @@ class RegistryStore:
                 "DELETE FROM mirror_snapshots WHERE id = ?",
                 [(row["id"],) for row in expired],
             )
-        for row in expired:
             (self.data_directory / row["relative_path"]).unlink(missing_ok=True)
+
     def create_deployment(
         self,
         *,
@@ -1145,7 +1350,6 @@ class RegistryStore:
         )
         if not updated.rowcount:
             raise KeyError(deployment_id)
-
     def list_deployment_events(
         self, deployment_id: str, after: int = 0
     ) -> list[dict[str, Any]]:

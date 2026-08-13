@@ -416,7 +416,7 @@ function WifiModal({ device, csrf, onClose, onCreated }) {
   );
 }
 
-function DeviceCard({ device, releases, onJob, onRevoke, onWifi }) {
+function DeviceCard({ device, releases, job, onJob, onCancel, onRetry, onRevoke, onWifi }) {
   const [releaseId, setReleaseId] = useState(releases[0]?.id || "");
   const effectiveReleaseId = releaseId || releases[0]?.id || "";
   const status = device.status || {};
@@ -434,12 +434,18 @@ function DeviceCard({ device, releases, onJob, onRevoke, onWifi }) {
     protocolVersion != null ? `protocol ${protocolVersion}` : "waiting for heartbeat",
     status.registry_transport === "insecure-http-opt-in" ? "HTTP opt-in" : status.registry_transport,
   ].filter(Boolean);
+  const installActive = job && ["queued", "claimed", "running"].includes(job.status);
+  const installRetryable = job && ["rolled_back", "failed", "cancelled"].includes(job.status);
+  const canCancel = installActive && !["activating", "restarting", "health_checking"].includes(job.stage);
+  const stageLabel = job?.stage?.replaceAll("_", " ") || job?.status;
+  const transfer = job?.bytes_total != null
+    ? `${bytes(job.bytes_downloaded || 0)} / ${bytes(job.bytes_total)}` : null;
   return (
     <article className={`device-card ${device.online ? "is-online" : "is-offline"} ${updateRecovery ? "has-recovery" : ""} ${device.revoked_at ? "is-revoked" : ""}`}>
       <header>
         <div className="device-icon"><Server size={19} /></div>
         <div className="device-title">
-          <div><span className="status-dot" />{device.revoked_at ? "REVOKED" : updateRecovery ? "REPAIR REQUIRED" : device.online ? "ONLINE" : "OFFLINE"}</div>
+          <div><span className="status-dot" />{device.revoked_at ? "REVOKED" : updateRecovery ? "FLEET RECOVERY NEEDED" : device.online ? "ONLINE" : "OFFLINE"}</div>
           <h3>{device.name}</h3>
           <small>{device.hostname}</small>
         </div>
@@ -454,16 +460,16 @@ function DeviceCard({ device, releases, onJob, onRevoke, onWifi }) {
       <div className={`connection-row ${protocolOk || !protocolLegacy ? "" : "connection-warning"}`}>
         <Radio size={15} />
         <span>AGENT LINK<small>{connectionParts.join(" · ")}</small></span>
-        <strong>{protocolOk ? "COMPATIBLE" : protocolLegacy ? "UPDATE VIA SSH" : "WAITING FOR HEARTBEAT"}</strong>
+        <strong>{protocolOk ? "COMPATIBLE" : protocolLegacy ? "FLEET AGENT UPDATE REQUIRED" : "WAITING FOR HEARTBEAT"}</strong>
       </div>
       {updateRecovery && (
         <div className="recovery-row" role="alert">
           <TriangleAlert size={16} />
           <span>
-            UPDATE RECOVERY BLOCKED
-            <small>{updateRecovery.phase || "unknown"} · {updateRecovery.error || "Manual repair is required."}</small>
+            UPDATE RECOVERY NEEDS FLEET ATTENTION
+            <small>{updateRecovery.phase || "unknown"} · {updateRecovery.error || "Use the available Fleet retry control."}</small>
           </span>
-          <strong>MANUAL REPAIR</strong>
+          <strong>FLEET RECOVERY</strong>
         </div>
       )}
       <div className="mirror-row">
@@ -475,6 +481,19 @@ function DeviceCard({ device, releases, onJob, onRevoke, onWifi }) {
           <a href={`/api/devices/${device.id}/mirror`} title="Download mirrored database"><Download size={16} /></a>
         )}
       </div>
+      {job && (
+        <div className="recovery-row" role="status">
+          <Activity size={16} />
+          <span>
+            INSTALL {job.current_version || device.app_version || "—"} → {job.target_version || "—"}
+            <small>{stageLabel} · {job.message || "Waiting for agent"}{transfer ? ` · ${transfer}` : ""} · updated {timeAgo(job.updated_at)}</small>
+          </span>
+          <div>
+            {canCancel && <button className="secondary-button" onClick={() => onCancel(job)}>CANCEL</button>}
+            {installRetryable && <button className="secondary-button" onClick={() => onRetry(job)}><RotateCcw size={14} /> RETRY</button>}
+          </div>
+        </div>
+      )}
       <div className="update-control">
         <label>INSTALL VERSION
           <select value={effectiveReleaseId} onChange={(event) => setReleaseId(event.target.value)}>
@@ -483,8 +502,8 @@ function DeviceCard({ device, releases, onJob, onRevoke, onWifi }) {
           </select>
         </label>
         <button
-          disabled={!device.online || protocolLegacy || !effectiveReleaseId || updateRecovery || device.revoked_at}
-          title={protocolLegacy ? "Update the Pi agent once via SSH before remote installs" : ""}
+          disabled={!device.online || protocolLegacy || !effectiveReleaseId || updateRecovery || device.revoked_at || installActive}
+          title={protocolLegacy ? "This Pi needs a compatible Fleet agent before remote installs" : ""}
           onClick={() => onJob(device, "install_release", { release_id: effectiveReleaseId })}
         ><CloudDownload size={16} /> INSTALL</button>
       </div>
@@ -502,7 +521,7 @@ function DeviceCard({ device, releases, onJob, onRevoke, onWifi }) {
   );
 }
 
-function JobRow({ job }) {
+function JobRow({ job, onCancel, onRetry }) {
   const active = ["queued", "claimed", "running"].includes(job.status);
   const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
   return (
@@ -510,7 +529,7 @@ function JobRow({ job }) {
       <div className={`job-icon status-${job.status}`}>{active ? <RefreshCw size={15} /> : job.status === "succeeded" ? <Check size={15} /> : <X size={15} />}</div>
       <div className="job-copy">
         <strong>{job.action.replaceAll("_", " ")}</strong>
-        <span>{job.device_name} · {job.message || job.status}{job.attempt > 1 ? ` · attempt ${job.attempt}` : ""}</span>
+        <span>{job.device_name} · {job.stage?.replaceAll("_", " ") || job.status} · {job.message || job.status}{job.bytes_total != null ? ` · ${bytes(job.bytes_downloaded || 0)} / ${bytes(job.bytes_total)}` : ""}{job.attempt > 1 ? ` · attempt ${job.attempt}` : ""}</span>
       </div>
       <progress
         className="job-progress"
@@ -518,6 +537,8 @@ function JobRow({ job }) {
         value={progress}
         aria-label={`${job.action.replaceAll("_", " ")} progress`}
       />
+      {active && !["activating", "restarting", "health_checking"].includes(job.stage) && <button className="secondary-button" onClick={() => onCancel(job)}>CANCEL</button>}
+      {["rolled_back", "failed", "cancelled"].includes(job.status) && <button className="secondary-button" onClick={() => onRetry(job)}><RotateCcw size={14} /> RETRY</button>}
       <time>{timeAgo(job.updated_at)}</time>
     </div>
   );
@@ -566,6 +587,24 @@ function Dashboard({ session, refreshSession }) {
       setError(failure.message);
     }
   };
+  const cancelJob = async (job) => {
+    if (!window.confirm(`Cancel ${job.action.replaceAll("_", " ")}?`)) return;
+    try {
+      await request(`/api/jobs/${job.id}/cancel`, { method: "POST", body: JSON.stringify({}) }, session.csrf_token);
+      await load();
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+  const retryJob = async (job) => {
+    try {
+      await request(`/api/jobs/${job.id}/retry`, { method: "POST", body: JSON.stringify({}) }, session.csrf_token);
+      await load();
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+
   const revokeDevice = async (device) => {
     if (!window.confirm(`${device.name}: permanently revoke this device credential?`)) return;
     try {
@@ -611,13 +650,13 @@ function Dashboard({ session, refreshSession }) {
         {error && <div className="global-error"><WifiOff size={16} />{error}</div>}
         <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></section>
         <section className="device-grid">
-          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} onJob={createJob} onRevoke={revokeDevice} onWifi={setWifiDevice} />)}
+          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release" && ["queued", "claimed", "running", "rolled_back", "failed", "cancelled"].includes(job.status))} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onRevoke={revokeDevice} onWifi={setWifiDevice} />)}
           {!devices.length && <div className="empty-card"><Server size={28} /><h3>NO DEVICES ENROLLED</h3><p>Start a guided deployment to connect the first Raspberry Pi.</p><button className="primary-button" onClick={() => setModal("enroll")}>ENROLL FIRST DEVICE</button></div>}
         </section>
         <section className="operations">
           <div className="section-heading"><div><span>02 · ACTIVITY</span><h2>DEPLOYMENT JOBS</h2></div></div>
           <div className="job-list">
-            {jobs.slice(0, 12).map((job) => <JobRow key={job.id} job={job} />)}
+            {jobs.slice(0, 12).map((job) => <JobRow key={job.id} job={job} onCancel={cancelJob} onRetry={retryJob} />)}
             {!jobs.length && <div className="jobs-empty">No remote operations have been requested.</div>}
           </div>
         </section>

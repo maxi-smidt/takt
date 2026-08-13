@@ -205,6 +205,10 @@ class RolledBackJob(Exception):
     pass
 
 
+class CancelledJob(Exception):
+    pass
+
+
 class RetryableJob(Exception):
     pass
 
@@ -510,8 +514,15 @@ class TaktAgent:
             "progress": 1,
             "message": f"Starting {action}",
             "control_lost": False,
+            "cancel_requested": False,
         }
-        await self._progress_job(session, job_id, 1, f"Starting {action}")
+        await self._progress_job(
+            session,
+            job_id,
+            1,
+            f"Starting {action}",
+            stage="waiting_for_safe_state" if action == "install_release" else None,
+        )
         renew_task = asyncio.create_task(self._renew_job_lease(session), name=f"renew-job-{job_id}")
         try:
             if action == "install_release":
@@ -535,13 +546,23 @@ class TaktAgent:
             else:
                 raise RuntimeError(f"Unsupported job action: {action}")
         except DeferredJob as error:
-            await self._queue_job(session, job_id, str(error))
+            await self._queue_job(session, job_id, str(error), stage="waiting_for_safe_state")
             return
         except RetryableJob as error:
-            await self._queue_job(session, job_id, f"Temporary connection problem: {error}")
+            await self._queue_job(
+                session, job_id, f"Temporary connection problem: {error}", stage="retryable_failure"
+            )
             return
+        except CancelledJob as error:
+            await self._remember_result(session, job_id, "cancelled", str(error), stage="cancelled")
+            self._remove_maintenance_marker()
+            self._clear_update_journal(job_id)
+            return
+
         except RolledBackJob as error:
-            await self._remember_result(session, job_id, "rolled_back", str(error))
+            await self._remember_result(
+                session, job_id, "rolled_back", str(error), stage="rolled_back"
+            )
             self._clear_update_journal(job_id)
             return
         except Exception as error:
@@ -549,7 +570,13 @@ class TaktAgent:
             if action == "install_release" and self.update_journal_path.exists():
                 LOGGER.warning("update_recovery_scheduled id=%s", job_id)
                 return
-            await self._remember_result(session, job_id, "failed", str(error))
+            await self._remember_result(
+                session,
+                job_id,
+                "failed",
+                str(error),
+                stage="intervention_required" if action == "install_release" else None,
+            )
             return
         finally:
             renew_task.cancel()
@@ -561,6 +588,7 @@ class TaktAgent:
             job_id,
             "succeeded",
             f"{action} completed",
+            stage="succeeded" if action == "install_release" else None,
             lease_id=lease_id,
         )
         if action == "install_release":
@@ -663,13 +691,27 @@ class TaktAgent:
             raise RuntimeError("Release size is invalid or exceeds the agent limit.")
         health = await self._local_health(session)
         if health.get("state") != "ready":
+            await self._progress_job(
+                session, job_id, 1, "Waiting for a safe timer state", stage="waiting_for_safe_state"
+            )
             raise DeferredJob(
                 f"Waiting for TAKT to be ready (current state: {health.get('state', 'unknown')})."
             )
         if health.get("ok") and health.get("version") == version:
-            await self._progress_job(session, job_id, 95, f"TAKT {version} is already active")
+            await self._progress_job(
+                session, job_id, 95, f"TAKT {version} is already active", stage="health_checking"
+            )
+            await self._report_recovery_failure(session)
             return
-        await self._progress_job(session, job_id, 5, "Downloading release")
+        await self._progress_job(
+            session,
+            job_id,
+            5,
+            "Downloading release",
+            stage="downloading",
+            bytes_downloaded=0,
+            bytes_total=expected_size,
+        )
         artifact = self.config.data_directory / f"{expected_sha256}.tar.gz.part"
         download_complete = False
         try:
@@ -681,7 +723,7 @@ class TaktAgent:
                 expected_sha256=expected_sha256,
             )
             download_complete = True
-            await self._progress_job(session, job_id, 25, "Preparing release")
+            await self._progress_job(session, job_id, 25, "Staging release", stage="staging")
             project_directory = await asyncio.to_thread(
                 self._prepare_release, artifact, version, job_id
             )
@@ -710,22 +752,32 @@ class TaktAgent:
             self._write_maintenance_marker(job_id, version)
             backup: Path | None = None
             self._assert_job_control()
-            await self._progress_job(session, job_id, 70, "Stopping TAKT safely")
+            await self._progress_job(
+                session, job_id, 70, "Stopping TAKT safely", stage="activating"
+            )
             await self._systemctl("stop", self.config.service_name)
             self._update_journal_phase(journal, "stopped")
             try:
-                await self._progress_job(session, job_id, 75, "Backing up run data")
+                await self._progress_job(
+                    session, job_id, 75, "Backing up run data", stage="activating"
+                )
                 backup = await asyncio.to_thread(self._backup_before_update, version)
                 journal["backup"] = str(backup) if backup else None
                 self._update_journal_phase(journal, "backed_up")
                 self._assert_job_control()
-                await self._progress_job(session, job_id, 80, "Activating release")
+                await self._progress_job(
+                    session, job_id, 80, "Activating release", stage="activating"
+                )
                 self._update_journal_phase(journal, "activating")
                 self._switch_current(project_directory)
                 self._write_release_version(version)
                 self._update_journal_phase(journal, "activated")
                 self._assert_job_control()
+                await self._progress_job(session, job_id, 85, "Restarting TAKT", stage="restarting")
                 await self._systemctl("start", self.config.service_name)
+                await self._progress_job(
+                    session, job_id, 90, "Checking TAKT health", stage="health_checking"
+                )
                 await self._wait_for_health(session, version)
                 self._update_journal_phase(journal, "healthy")
                 self._remove_maintenance_marker()
@@ -743,6 +795,7 @@ class TaktAgent:
                 self._write_release_version(previous_version or "unknown")
                 if backup is not None:
                     await asyncio.to_thread(self._restore_database_backup, backup)
+                await self._progress_job(session, job_id, 85, "Restarting TAKT", stage="restarting")
                 await self._systemctl("start", self.config.service_name)
                 await self._wait_for_health(session, previous_version or "")
                 self._update_journal_phase(journal, "rolled_back")
@@ -750,7 +803,10 @@ class TaktAgent:
                 raise RolledBackJob(
                     f"Release {version} failed and the previous release was restored: {error}"
                 ) from error
-            await self._progress_job(session, job_id, 95, f"TAKT {version} is healthy")
+            await self._report_recovery_failure(session)
+            await self._progress_job(
+                session, job_id, 95, f"TAKT {version} is healthy", stage="health_checking"
+            )
             try:
                 await self._upload_mirror(session)
             except Exception as error:
@@ -1012,6 +1068,16 @@ class TaktAgent:
                             artifact.unlink(missing_ok=True)
                             raise RuntimeError("Registry sent more release data than declared.")
                         handle.write(chunk)
+                        await self._progress_job(
+                            session,
+                            job_id,
+                            5 + int(20 * downloaded / expected_size),
+                            f"Downloading release ({downloaded} of {expected_size} bytes)",
+                            stage="downloading",
+                            bytes_downloaded=downloaded,
+                            bytes_total=expected_size,
+                        )
+                        self._assert_job_control()
         except (ClientError, TimeoutError) as error:
             raise RetryableJob(f"release transfer interrupted: {error}") from error
         actual_size = artifact.stat().st_size if artifact.exists() else 0
@@ -1019,27 +1085,58 @@ class TaktAgent:
             raise RetryableJob(
                 f"release transfer is incomplete ({actual_size} of {expected_size} bytes)"
             )
+        await self._progress_job(
+            session,
+            job_id,
+            25,
+            "Verifying release checksum",
+            stage="verifying",
+            bytes_downloaded=actual_size,
+            bytes_total=expected_size,
+        )
+        self._assert_job_control()
         digest = await asyncio.to_thread(self._sha256, artifact)
         if digest != expected_sha256:
             artifact.unlink(missing_ok=True)
             raise RuntimeError("Downloaded release checksum does not match.")
 
     async def _progress_job(
-        self, session: ClientSession, job_id: str, progress: int, message: str
+        self,
+        session: ClientSession,
+        job_id: str,
+        progress: int,
+        message: str,
+        *,
+        stage: str | None = None,
+        bytes_downloaded: int | None = None,
+        bytes_total: int | None = None,
     ) -> None:
         if self._active_job and self._active_job["id"] == job_id:
             self._active_job["progress"] = progress
             self._active_job["message"] = message
+            if stage is not None:
+                self._active_job["stage"] = stage
         try:
-            await self._send_job_event(session, job_id, "running", progress, message)
+            await self._send_job_event(
+                session,
+                job_id,
+                "running",
+                progress,
+                message,
+                stage=stage,
+                bytes_downloaded=bytes_downloaded,
+                bytes_total=bytes_total,
+            )
         except StaleJobResult:
             raise
         except Exception as error:
             LOGGER.warning("job_progress_pending id=%s error=%s", job_id, error)
 
-    async def _queue_job(self, session: ClientSession, job_id: str, message: str) -> None:
+    async def _queue_job(
+        self, session: ClientSession, job_id: str, message: str, *, stage: str | None = None
+    ) -> None:
         try:
-            await self._send_job_event(session, job_id, "queued", 0, message)
+            await self._send_job_event(session, job_id, "queued", 0, message, stage=stage)
         except StaleJobResult:
             raise
         except Exception as error:
@@ -1053,6 +1150,7 @@ class TaktAgent:
         message: str,
         *,
         lease_id: str = "",
+        stage: str | None = None,
     ) -> None:
         if not lease_id and self._active_job and self._active_job["id"] == job_id:
             lease_id = str(self._active_job["lease_id"])
@@ -1061,6 +1159,7 @@ class TaktAgent:
             "progress": 100,
             "message": message[:2000],
             "lease_id": lease_id,
+            "stage": stage,
         }
         while len(self.state.pending_results) > 100:
             self.state.pending_results.pop(next(iter(self.state.pending_results)))
@@ -1087,6 +1186,7 @@ class TaktAgent:
                     int(result["progress"]),
                     str(result["message"]),
                     lease_id=str(result.get("lease_id") or ""),
+                    stage=str(result.get("stage")) if result.get("stage") else None,
                 )
             except StaleJobResult as error:
                 LOGGER.warning("stale_job_result_dropped id=%s error=%s", job_id, error)
@@ -1108,6 +1208,7 @@ class TaktAgent:
                     "running",
                     int(active["progress"]),
                     str(active["message"]),
+                    stage=str(active.get("stage")) if active.get("stage") else None,
                 )
             except StaleJobResult as error:
                 active["control_lost"] = True
@@ -1125,6 +1226,9 @@ class TaktAgent:
         message: str,
         *,
         lease_id: str = "",
+        stage: str | None = None,
+        bytes_downloaded: int | None = None,
+        bytes_total: int | None = None,
     ) -> None:
         if not lease_id and self._active_job and self._active_job["id"] == job_id:
             lease_id = str(self._active_job["lease_id"])
@@ -1135,6 +1239,9 @@ class TaktAgent:
                 "progress": progress,
                 "message": message,
                 "lease_id": lease_id,
+                "stage": stage,
+                "bytes_downloaded": bytes_downloaded,
+                "bytes_total": bytes_total,
             },
             headers=self._headers(),
             timeout=ClientTimeout(total=25, connect=10, sock_read=15),
@@ -1143,6 +1250,10 @@ class TaktAgent:
                 raise StaleJobResult(await response.text())
             if response.status != 200:
                 raise RuntimeError(f"Could not report job progress: {await response.text()}")
+            body = await response.json()
+            returned_job = body.get("job", {})
+            if self._active_job and self._active_job["id"] == job_id:
+                self._active_job["cancel_requested"] = bool(returned_job.get("cancel_requested"))
 
     async def _recover_interrupted_update(self, session: ClientSession) -> None:
         journal = self._load_update_journal()
@@ -1328,6 +1439,8 @@ class TaktAgent:
     def _assert_job_control(self) -> None:
         if self._active_job and self._active_job.get("control_lost"):
             raise StaleJobResult("Registry revoked or reassigned this job lease.")
+        if self._active_job and self._active_job.get("cancel_requested"):
+            raise CancelledJob("Installation was cancelled before activation.")
 
     def _switch_current(self, target: Path) -> None:
         self.config.current_link.parent.mkdir(parents=True, exist_ok=True)
