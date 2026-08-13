@@ -183,7 +183,7 @@ Main-Branch-Stand; für reproduzierbare Unraid-Deployments einen Commit- oder
 Versions-Tag in `TAKT_REGISTRY_IMAGE` verwenden.
 
 Im Compose-Manager-Plugin wird dieses Verzeichnis als Stack importiert. Für
-`TAKT_REGISTRY_IMAGE` kann `latest`, ein Versionstag wie `0.2.0` oder ein
+`TAKT_REGISTRY_IMAGE` kann `latest`, ein Versionstag wie `0.3.0` oder ein
 unveränderlicher `sha-...`-Tag eingetragen werden. Mit
 `TAKT_REGISTRY_PULL_POLICY=always` prüft Compose bei jedem Start auf ein
 aktualisiertes Image.
@@ -244,7 +244,7 @@ Versionstags (`v*`) und manuell:
 - `ghcr.io/maxi-smidt/takt-registry` wird für `linux/amd64` und
   `linux/arm64` veröffentlicht, mit demselben `bundled-release/`-Paket im
   Image. `latest` folgt `main`; zusätzlich gibt es `sha-...` und bei
-  Versionstags beispielsweise `0.2.0` sowie `0.2`. Weil jedes Image sein
+  Versionstags beispielsweise `0.3.0` sowie `0.3`. Weil jedes Image sein
   eigenes, geprüftes Pi-Paket enthält, bleiben `latest` und das mitgelieferte
   Paket immer zueinander passend.
 - `compose.yaml`, die Environment-Vorlage und das Unraid-XML werden zusätzlich
@@ -252,8 +252,8 @@ Versionstags (`v*`) und manuell:
   `ghcr.io/maxi-smidt/takt-registry:<version>@<digest>` gepinnt, auch wenn das
   Repository selbst weiterhin `latest` referenziert. Für auditierbare
   Deployments `TAKT_REGISTRY_IMAGE` in der eigenen `.env` auf eine feste
-  Version (z. B. `0.2.0`) statt `latest` setzen.
-- Ein Tag wie `v0.2.0` muss exakt zur Version in `pyproject.toml` passen und
+  Version (z. B. `0.3.0`) statt `latest` setzen.
+- Ein Tag wie `v0.3.0` muss exakt zur Version in `pyproject.toml` passen und
   erzeugt eine dauerhafte GitHub Release mit Pi-Paket, Prüfsumme, Manifest,
   Unraid-Stack-Dateien und dem exakten Digest des Registry-Images.
 
@@ -394,7 +394,7 @@ paketieren:
 
 Vor dem Paketieren muss die Version in `pyproject.toml` stimmen. In der Registry
 anschließend **Add release** wählen, exakt dieselbe Versionsbezeichnung wie
-`0.2.0` vergeben und `dist/takt-raspberry-pi.tar.gz` hochladen. Abweichende
+`0.3.0` vergeben und `dist/takt-raspberry-pi.tar.gz` hochladen. Abweichende
 Paket- und Eingabeversionen weist die Registry zurück. Auf der Karte des
 gewünschten Pis kann genau diese Version ausgewählt und mit **Install**
 beauftragt werden.
