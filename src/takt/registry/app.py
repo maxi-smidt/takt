@@ -116,6 +116,9 @@ def create_registry_app(
     app.router.add_get("/api/releases", releases)
     app.router.add_post("/api/releases", upload_release)
     app.router.add_get("/api/jobs", jobs)
+    app.router.add_get("/api/jobs/{job_id}/events", job_events)
+    app.router.add_post("/api/jobs/{job_id}/cancel", cancel_job)
+    app.router.add_post("/api/jobs/{job_id}/retry", retry_job)
     app.router.add_post("/api/devices/{device_id}/jobs", create_job)
     app.router.add_post("/api/devices/{device_id}/wifi-networks", create_wifi_network)
     app.router.add_post("/api/devices/{device_id}/revoke", revoke_device)
@@ -607,12 +610,16 @@ async def agent_job_update(request: web.Request) -> web.Response:
             int(body.get("progress", 0)),
             str(body.get("message", "")),
             str(body.get("lease_id")) if body.get("lease_id") else None,
+            stage=str(body.get("stage")) if body.get("stage") else None,
+            bytes_downloaded=body.get("bytes_downloaded"),
+            bytes_total=body.get("bytes_total"),
         )
     except LookupError as error:
         raise web.HTTPNotFound(text=str(error)) from error
     except (TypeError, ValueError) as error:
         if any(
-            marker in str(error).lower() for marker in ("lease", "completed jobs", "job transition")
+            marker in str(error).lower()
+            for marker in ("lease", "completed jobs", "job transition", "expected version")
         ):
             raise web.HTTPConflict(text=str(error)) from error
         raise web.HTTPBadRequest(text=str(error)) from error
@@ -1057,3 +1064,35 @@ async def _registry_maintenance(app: web.Application):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+async def job_events(request: web.Request) -> web.Response:
+    _admin(request)
+    job = request.app[STORE_KEY].get_job(request.match_info["job_id"])
+    if job is None:
+        raise web.HTTPNotFound(text="Job does not exist.")
+    return web.json_response(
+        {"job": job, "events": request.app[STORE_KEY].list_job_events(job["id"])}
+    )
+
+
+async def cancel_job(request: web.Request) -> web.Response:
+    _admin(request, csrf=True)
+    try:
+        job = request.app[STORE_KEY].cancel_job(request.match_info["job_id"])
+    except LookupError as error:
+        raise web.HTTPNotFound(text=str(error)) from error
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    return web.json_response({"job": job})
+
+
+async def retry_job(request: web.Request) -> web.Response:
+    _admin(request, csrf=True)
+    try:
+        job = request.app[STORE_KEY].retry_job(request.match_info["job_id"])
+    except LookupError as error:
+        raise web.HTTPNotFound(text=str(error)) from error
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
+    return web.json_response({"job": job}, status=201)

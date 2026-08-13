@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from takt.management.agent import (
     AgentConfig,
+    CancelledJob,
     DeferredJob,
     Identity,
     StaleJobResult,
@@ -287,6 +288,50 @@ class ManagementAgentTests(unittest.TestCase):
             systemctl.assert_awaited_once_with("restart", agent.config.service_name)
             wait_for_health.assert_awaited_once_with(session, "0.1.0")
             self.assertFalse(agent.config.maintenance_marker.exists())
+
+    def test_install_cancellation_after_activating_progress_avoids_shutdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            job_id = "d" * 24
+            agent._active_job = {"id": job_id, "cancel_requested": False}
+            session = object()
+            prepared = root / "prepared"
+            prepared.mkdir()
+
+            async def publish_progress(*_args, **kwargs) -> None:
+                if kwargs.get("stage") == "activating":
+                    agent._active_job["cancel_requested"] = True
+
+            async def download_release(*_args, **kwargs) -> None:
+                kwargs["artifact"].write_bytes(b"release")
+
+            release = {
+                "version": "0.2.0",
+                "sha256": "a" * 64,
+                "size": 7,
+            }
+            with (
+                patch.object(agent, "_local_health", AsyncMock(return_value={"state": "ready"})),
+                patch.object(agent, "_progress_job", AsyncMock(side_effect=publish_progress)),
+                patch.object(agent, "_download_release", AsyncMock(side_effect=download_release)),
+                patch.object(agent, "_prepare_release", return_value=prepared),
+                patch.object(
+                    agent, "_acquire_maintenance", AsyncMock(return_value="maintenance-token")
+                ),
+                patch.object(agent, "_release_maintenance", AsyncMock()) as release_maintenance,
+                patch.object(agent, "_systemctl", AsyncMock()) as systemctl,
+            ):
+                with self.assertRaises(CancelledJob):
+                    asyncio.run(
+                        agent._install_release(
+                            session,
+                            {"id": job_id, "release": release},  # type: ignore[arg-type]
+                        )
+                    )
+            systemctl.assert_not_awaited()
+            release_maintenance.assert_awaited_once_with(session, "maintenance-token")
+            self.assertFalse(prepared.exists())
 
     def test_wifi_profile_is_sent_to_helper_over_stdin(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

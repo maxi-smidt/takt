@@ -37,6 +37,33 @@ class RegistryStorageTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "newer"):
                 RegistryStore(root)
 
+    def test_v7_registry_upgrades_before_creating_the_active_job_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            connection = sqlite3.connect(root / "registry.db")
+            connection.execute(
+                "CREATE TABLE jobs (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, "
+                "action TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}', "
+                "status TEXT NOT NULL, progress INTEGER NOT NULL DEFAULT 0, "
+                "message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, "
+                "updated_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, "
+                "attempt INTEGER NOT NULL DEFAULT 0, lease_id TEXT, "
+                "lease_expires_at TEXT, lease_owner_session TEXT)"
+            )
+            connection.execute("PRAGMA user_version = 7")
+            connection.close()
+            store = RegistryStore(root)
+            try:
+                columns = {row[1] for row in store.connection.execute("PRAGMA table_info(jobs)")}
+                self.assertTrue({"stage", "target_version", "cancel_requested"} <= columns)
+                index = store.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' "
+                    "AND name = 'idx_jobs_one_active_disruptive_operation'"
+                ).fetchone()
+                self.assertIsNotNone(index)
+            finally:
+                store.close()
+
     def test_wifi_job_secret_is_encrypted_durable_and_removed_on_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -99,6 +126,14 @@ class RegistryStorageTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM job_secrets"
                 ).fetchone()[0]
                 self.assertEqual(secret_count, 0)
+                queued = store.create_wifi_job(device_id, "Timing Hall", password)
+                store.cancel_job(queued["id"])
+                secret_count = store.connection.execute(
+                    "SELECT COUNT(*) FROM job_secrets"
+                ).fetchone()[0]
+                self.assertEqual(secret_count, 0)
+                with self.assertRaisesRegex(ValueError, "cannot be retried"):
+                    store.retry_job(queued["id"])
             finally:
                 store.close()
 
@@ -184,6 +219,122 @@ class RegistryStorageTests(unittest.TestCase):
                     1,
                 )
                 self.assertEqual(mirror.read_bytes(), content)
+            finally:
+                store.close()
+
+    def test_pruning_mirror_snapshots_removes_every_expired_blob(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            device_id = "12345678-1234-1234-1234-123456789abc"
+            store = RegistryStore(root)
+            try:
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token="a" * 64,
+                )
+                rows = []
+                for index in range(2):
+                    relative_path = Path("mirrors") / device_id / f"expired-{index}.sqlite3"
+                    blob = root / relative_path
+                    blob.parent.mkdir(parents=True, exist_ok=True)
+                    blob.write_bytes(f"snapshot-{index}".encode())
+                    rows.append(
+                        (
+                            f"snapshot-{index}",
+                            device_id,
+                            f"2020-01-0{index + 1}T00:00:00+00:00",
+                            f"{index + 1:064x}",
+                            10,
+                            index,
+                            str(relative_path),
+                        )
+                    )
+                store.connection.executemany(
+                    "INSERT INTO mirror_snapshots "
+                    "(id, device_id, received_at, sha256, size, run_count, relative_path) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+                store._prune_mirror_snapshots(device_id, recent=0, daily=0)
+                self.assertEqual(
+                    store.connection.execute("SELECT COUNT(*) FROM mirror_snapshots").fetchone()[0],
+                    0,
+                )
+                self.assertFalse((root / rows[0][-1]).exists())
+                self.assertFalse((root / rows[1][-1]).exists())
+            finally:
+                store.close()
+
+    def test_install_job_is_idempotent_cancellable_and_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            device_id = "12345678-1234-1234-1234-123456789abc"
+            store = RegistryStore(root)
+            try:
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token="a" * 64,
+                )
+                store.update_heartbeat(
+                    device_id, {"protocol_version": 1, "app_version": "0.1.0", "poll_seconds": 10}
+                )
+                source = root / "release.tar.gz"
+                source.write_bytes(b"release")
+                release = store.add_release(
+                    version="0.2.0",
+                    filename=source.name,
+                    sha256=hashlib.sha256(b"release").hexdigest(),
+                    size=source.stat().st_size,
+                    source=source,
+                )
+                first = store.create_job(
+                    device_id, "install_release", {"release_id": release["id"]}
+                )
+                duplicate = store.create_job(
+                    device_id, "install_release", {"release_id": release["id"]}
+                )
+                self.assertEqual(duplicate["id"], first["id"])
+                self.assertTrue(duplicate["reused"])
+                self.assertEqual(first["current_version"], "0.1.0")
+                self.assertEqual(first["target_version"], "0.2.0")
+
+                claimed = store.claim_next_job(device_id, "session-a")
+                assert claimed is not None
+                store.update_job(
+                    first["id"],
+                    device_id,
+                    "running",
+                    10,
+                    "Downloading",
+                    claimed["lease_id"],
+                    stage="downloading",
+                    bytes_downloaded=1,
+                    bytes_total=release["size"],
+                )
+                requested = store.cancel_job(first["id"])
+                self.assertTrue(requested["cancel_requested"])
+                cancelled = store.update_job(
+                    first["id"],
+                    device_id,
+                    "cancelled",
+                    100,
+                    "Cancelled",
+                    claimed["lease_id"],
+                    stage="cancelled",
+                )
+                self.assertEqual(cancelled["status"], "cancelled")
+                retry = store.retry_job(first["id"])
+                self.assertEqual(retry["retry_of"], first["id"])
+                self.assertEqual(retry["stage"], "queued")
+                self.assertGreaterEqual(len(store.list_job_events(first["id"])), 3)
             finally:
                 store.close()
 
