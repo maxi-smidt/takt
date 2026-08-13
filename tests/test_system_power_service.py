@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pathlib
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -26,6 +27,24 @@ class SystemPowerServiceTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_install_units_keep_bluetooth_optional_and_agent_bounded(self) -> None:
+        root = pathlib.Path(__file__).parents[1]
+        script = (root / "scripts" / "install_raspberry_pi.sh").read_text(encoding="utf-8")
+        agent = (
+            script.split("bluetooth_agent_unit=\"$(mktemp)\"", 1)[1]
+            .split("say \"Headless-Audio", 1)[0]
+        )
+        takt = (
+            script.split("unit_file=\"$(mktemp)\"", 1)[1]
+            .split("if [[ -f \"$agent_config\"", 1)[0]
+        )
+        self.assertIn("\"Restart=on-failure\"", agent)
+        self.assertIn("\"TimeoutStopSec=10\"", agent)
+        self.assertIn("\"After=network-online.target\"", takt)
+        self.assertIn("\"Wants=network-online.target\"", takt)
+        self.assertNotIn("bluetooth.target", takt)
+        self.assertNotIn("sound.target", takt)
 
     @patch.object(SystemPowerService, "_read_model", return_value="MacBook Pro")
     @patch("takt.application.system_power_service.platform.system", return_value="Darwin")

@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import signal
+import time
 from pathlib import Path
 
 from aiohttp import web
@@ -142,12 +143,16 @@ async def _serve(args: argparse.Namespace) -> None:
         LOGGER.info("server_ready url=http://%s:%s", host, port)
         await stop_event.wait()
     finally:
+        shutdown_started = time.monotonic()
         await runtime.close()
         await runner.cleanup()
         buzzer.close()
         button_input.close()
         repository.close()
-        LOGGER.info("server_shutdown")
+        LOGGER.info(
+            "server_shutdown elapsed_ms=%d",
+            round((time.monotonic() - shutdown_started) * 1000),
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

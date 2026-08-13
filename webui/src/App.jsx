@@ -1101,13 +1101,17 @@ function App() {
   const handleConfirm = async () => {
     if (!confirmation) return;
     setConfirmationBusy(true);
+    if (confirmation.operation === "shutdown") {
+      setFeedback("Herunterfahren wird angefordert …");
+    }
     try {
-      const result = await confirmPrepared(confirmation.confirmation_id);
+      const result = await confirmPrepared(confirmation.confirmation_id, confirmation.operation);
       setFeedback(result.message);
       setToast(result.message);
       setConfirmation(null);
       setTimeout(() => setToast(null), 2500);
     } catch (error) {
+      if (confirmation.operation === "shutdown") setFeedback("");
       setToast(error.message);
       setTimeout(() => setToast(null), 3000);
     } finally {

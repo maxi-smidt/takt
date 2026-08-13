@@ -206,12 +206,12 @@ export function useTaktServer() {
     })
   ), []);
 
-  const confirmPrepared = useCallback(async (token) => {
+  const confirmPrepared = useCallback(async (token, operation) => {
     const result = await fetchJson(`/api/confirmations/${token}`, {
       method: "POST",
       body: "{}",
     });
-    await refreshHistory();
+    if (operation !== "shutdown") await refreshHistory();
     return result;
   }, [refreshHistory]);
 
