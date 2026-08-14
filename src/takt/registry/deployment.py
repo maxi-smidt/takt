@@ -135,6 +135,9 @@ class DeploymentManager:
         deployment = self._deployment(deployment_id)
         if deployment["status"] not in TERMINAL_STATUSES:
             raise ValueError("Only a finished deployment can be retried.")
+        task = self._tasks.get(deployment_id)
+        if task and not task.done():
+            raise ValueError("Deployment is still active.")
         self.store.ensure_deployment_target_available(deployment["target"], deployment["port"])
         credentials = self._credentials.pop(deployment_id, None)
         if credentials:
@@ -153,21 +156,30 @@ class DeploymentManager:
         self.start_discovery(deployment_id)
         return self._deployment(deployment_id)
 
-    def cancel(self, deployment_id: str) -> dict[str, Any]:
+    async def cancel(self, deployment_id: str) -> dict[str, Any]:
         deployment = self._deployment(deployment_id)
         task = self._tasks.get(deployment_id)
         if deployment["status"] in TERMINAL_STATUSES:
             return deployment
         if task and not task.done():
             task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if self._tasks.get(deployment_id) is task:
+            self._tasks.pop(deployment_id, None)
         credentials = self._credentials.pop(deployment_id, None)
         if credentials:
             credentials.clear()
+        deployment = self._deployment(deployment_id)
+        if deployment["status"] in TERMINAL_STATUSES:
+            return deployment
         return self._event(deployment_id, "cancelled", "Deployment cancelled", status="cancelled")
 
     def _start(self, deployment_id: str, coroutine: Any) -> None:
         old = self._tasks.get(deployment_id)
         if old and not old.done():
+            close = getattr(coroutine, "close", None)
+            if close:
+                close()
             return
         task = asyncio.create_task(
             coroutine, name=f"deployment-{deployment_id}"
@@ -306,7 +318,7 @@ class DeploymentManager:
                         deployment["release_version"],
                         expected_hostname=expected_hostname,
                     )
-                await self._reboot(connection, deployment_id)
+                await self._reboot(connection, deployment_id, credentials)
                 await self._wait_for_agent(
                     deployment_id,
                     deployment["release_version"],
@@ -471,7 +483,11 @@ class DeploymentManager:
         except Exception as error:
             try:
                 await self._rollback_hostname(
-                    connection, deployment_id, current_hostname, requested_hostname
+                    connection,
+                    deployment_id,
+                    current_hostname,
+                    requested_hostname,
+                    credentials,
                 )
             except Exception as rollback_error:
                 raise RuntimeError(
@@ -556,16 +572,9 @@ class DeploymentManager:
         )
         sudo_password = credentials.sudo_password or credentials.ssh_password
         if sudo_password:
-            command = (
-                "set -eu; IFS= read -r _takt_sudo_password; "
-                "printf '%s\\n' \"$_takt_sudo_password\" | sudo -S -p '' -v; "
-                "unset _takt_sudo_password; "
-                "(while sleep 60; do sudo -n -v; done) & _takt_sudo_refresh=$!; "
-                "trap 'kill $_takt_sudo_refresh 2>/dev/null || true' EXIT; "
-                + installer
-            )
+            command = installer + " --sudo-password-stdin"
         else:
-            command = "set -eu; sudo -n -v; " + installer
+            command = installer
         self._event(
             deployment_id,
             "authorizing",
@@ -633,17 +642,33 @@ class DeploymentManager:
         deployment_id: str,
         hostname: str,
         from_hostname: str,
+        credentials: DeploymentCredentials,
     ) -> None:
         self._event(deployment_id, "hostname", "Restoring the previous Pi hostname.", level="error")
-        command = (
-            "set -eu; sudo hostnamectl set-hostname "
-            f"{shlex.quote(hostname)}; sudo systemctl restart avahi-daemon"
+        sudo_password = credentials.sudo_password or credentials.ssh_password
+        commands = (
+            "hostnamectl set-hostname "
+            f"{shlex.quote(hostname)}",
+            "systemctl restart avahi-daemon",
         )
+        if sudo_password:
+            command = (
+                "set -eu; IFS= read -r _takt_sudo_password; "
+                + "; ".join(
+                    r'printf "%s\n" "$_takt_sudo_password" | sudo -S -p "" ' + item
+                    for item in commands
+                )
+            )
+        else:
+            command = "set -eu; " + "; ".join(
+                "sudo -n " + item for item in commands
+            )
         stdout, stderr, exit_status = await self._command(
             connection,
             deployment_id,
             "hostname",
             command,
+            input_text=sudo_password or None,
             timeout=COMMAND_TIMEOUT,
         )
         if exit_status:
@@ -656,12 +681,27 @@ class DeploymentManager:
         )
 
     async def _reboot(
-        self, connection: asyncssh.SSHClientConnection, deployment_id: str
+        self,
+        connection: asyncssh.SSHClientConnection,
+        deployment_id: str,
+        credentials: DeploymentCredentials,
     ) -> None:
         self._event(deployment_id, "reboot", "Restarting the Pi to apply headless and audio setup.")
+        sudo_password = credentials.sudo_password or credentials.ssh_password
+        if sudo_password:
+            command = (
+                "set -eu; IFS= read -r _takt_sudo_password; "
+                r"""printf "%s\n" "$_takt_sudo_password" | sudo -S -p "" systemctl reboot"""
+            )
+        else:
+            command = "sudo -n systemctl reboot"
         try:
             stdout, stderr, exit_status = await self._command(
-                connection, deployment_id, "reboot", "sudo -n systemctl reboot"
+                connection,
+                deployment_id,
+                "reboot",
+                command,
+                input_text=sudo_password or None,
             )
         except (asyncssh.ConnectionLost, ConnectionResetError, BrokenPipeError):
             return
