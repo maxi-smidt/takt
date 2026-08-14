@@ -183,6 +183,23 @@ class FastApiRegistryTests(unittest.TestCase):
         )
         self.assertEqual(heartbeat.payload()["capabilities"], ["x"] * 20)
 
+    def test_index_reports_missing_static_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_directory = Path(temporary_directory)
+            store = RegistryStore(data_directory, allow_thread_handoff=True)
+            auth = AdminAuth("correct-horse-battery", data_directory)
+            try:
+                with patch(
+                    "takt.registry.fastapi_app.STATIC_ROOT",
+                    data_directory / "missing",
+                ):
+                    with TestClient(create_fastapi_app(store, auth)) as client:
+                        response = client.get("/")
+                self.assertEqual(response.status_code, 500)
+                self.assertIn("scripts/build_registry_ui.sh", response.text)
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -57,6 +57,7 @@ from takt.registry.auth import COOKIE_NAME, AdminAuth, CsrfError, SessionError
 from takt.registry.bundled_release import ReleaseValidationError, validate_release_archive
 from takt.registry.deployment import DeploymentCredentials, DeploymentManager
 from takt.registry.storage import RegistryStore, utc_iso
+from takt.static_assets import require_static_assets
 
 STATIC_ROOT = Path(__file__).with_name("static")
 JSON_LIMIT = 64 * 1024
@@ -555,6 +556,10 @@ def create_fastapi_app(
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
+        try:
+            require_static_assets(STATIC_ROOT, "fleet.html", "scripts/build_registry_ui.sh")
+        except RuntimeError as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
         return FileResponse(STATIC_ROOT / "fleet.html")
 
     @app.get("/health", response_model=HealthResponse)
@@ -1167,12 +1172,14 @@ def create_fastapi_app(
         finally:
             active.discard(device_id)
 
-    app.mount(
-        "/assets",
-        StaticFiles(directory=STATIC_ROOT / "assets"),
-        name="assets",
-    )
-    app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
+    if (STATIC_ROOT / "assets").is_dir():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=STATIC_ROOT / "assets"),
+            name="assets",
+        )
+    if STATIC_ROOT.is_dir():
+        app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
     app.add_middleware(
         MultipartBodyLimitMiddleware,
         route_lookup=lambda method, path: _route_path(app, method, path),
