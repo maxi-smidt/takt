@@ -19,7 +19,7 @@ class FastApiRegistryTests(unittest.TestCase):
     def test_health_openapi_login_and_agent_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_directory = Path(temporary_directory)
-            store = RegistryStore(data_directory)
+            store = RegistryStore(data_directory, allow_thread_handoff=True)
             auth = AdminAuth("correct-horse-battery", data_directory)
             try:
                 with TestClient(create_fastapi_app(store, auth)) as client:
