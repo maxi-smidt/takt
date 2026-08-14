@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,20 @@ from takt.persistence.database import connect_database
 
 class SQLiteRunRepository:
     """Transactional local run repository."""
+    CSV_EXPORT_COLUMNS = (
+        "id",
+        "run_number",
+        "session_date",
+        "started_at",
+        "stopped_at",
+        "saved_at",
+        "actual_time_ms",
+        "added_time_ms",
+        "total_time_ms",
+        "note",
+        "created_at",
+        "updated_at",
+    )
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
@@ -160,11 +175,49 @@ class SQLiteRunRepository:
 
     def backup_to(self, target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        destination = sqlite3.connect(target)
+        source = self._open_export_connection()
         try:
-            self.connection.backup(destination)
+            destination = sqlite3.connect(target)
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
         finally:
-            destination.close()
+            source.close()
+
+    def export_runs_csv(self, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = self._open_export_connection()
+        try:
+            rows = source.execute(
+                """
+                SELECT id, run_number, session_date, started_at, stopped_at, saved_at,
+                       actual_time_ms, added_time_ms, total_time_ms, note,
+                       created_at, updated_at
+                FROM runs
+                ORDER BY started_at ASC, id ASC
+                """
+            ).fetchall()
+        finally:
+            source.close()
+        with target.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(self.CSV_EXPORT_COLUMNS)
+            writer.writerows(
+                tuple(self._csv_value(row[column]) for column in self.CSV_EXPORT_COLUMNS)
+                for row in rows
+            )
+
+    def _open_export_connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database_path, timeout=10.0)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    @staticmethod
+    def _csv_value(value: object) -> object:
+        if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+            return chr(39) + value
+        return value
 
     @staticmethod
     def _row_to_run(row: sqlite3.Row) -> Run:

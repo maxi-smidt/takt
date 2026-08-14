@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, requestJson } from "./httpClient";
+import { ApiError, requestBlob, requestJson } from "./httpClient";
 
 describe("requestJson", () => {
   it("serializes JSON bodies and applies CSRF without touching multipart", async () => {
@@ -66,6 +66,38 @@ describe("requestJson", () => {
         throw new Error("invalid state");
       }),
     ).rejects.toThrow("invalid state");
+    vi.restoreAllMocks();
+  });
+  it("downloads binary files and preserves the server filename", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("sqlite-bytes", {
+        status: 200,
+        headers: {
+          "Content-Disposition": "attachment; filename=takt-2026-08-14.db",
+        },
+      }),
+    );
+    const result = await requestBlob(
+      "/api/database/export?format=db",
+      "fallback.db",
+    );
+    expect(result.filename).toBe("takt-2026-08-14.db");
+    expect(await result.blob.text()).toBe("sqlite-bytes");
+    vi.restoreAllMocks();
+  });
+
+  it("preserves plain-text export errors", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("Datenexport ist nicht möglich.", { status: 409 }),
+    );
+    await expect(
+      requestBlob("/api/database/export?format=csv", "fallback.csv"),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        status: 409,
+        message: "Datenexport ist nicht möglich.",
+      }),
+    );
     vi.restoreAllMocks();
   });
 });

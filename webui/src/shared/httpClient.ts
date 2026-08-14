@@ -84,6 +84,21 @@ export async function requestJson<T>(
   }
 }
 
+export async function requestBlob(
+  url: string,
+  fallbackFilename: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new ApiError(response.status, errorMessage(text, response.status));
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const filename =
+    /filename="?([^";]+)"?/i.exec(disposition)?.[1] || fallbackFilename;
+  return { blob: await response.blob(), filename };
+}
+
 export function withTimeout(
   signal: AbortSignal | undefined,
   milliseconds: number,

@@ -146,7 +146,7 @@ class WebRuntime:
         self._schedule_state_broadcast()
 
     def primary_press(self, source: str = "web") -> bool:
-        if self._start_task is not None and not self._start_task.done():
+        if self.start_sequence_active:
             return self._cancel_start_sequence(source)
         if self._maintenance_active() and self.controller.state in (
             TimerState.READY,
@@ -239,7 +239,7 @@ class WebRuntime:
             TimerState.SAVED_CONFIRMATION,
         ):
             return GestureMode.IMMEDIATE
-        if self._start_task is not None and not self._start_task.done():
+        if self.start_sequence_active:
             return GestureMode.IMMEDIATE
         return GestureMode.IGNORE
 
@@ -312,7 +312,7 @@ class WebRuntime:
             raise MaintenanceUnavailable(
                 f"TAKT is {self.controller.state.value}; maintenance requires ready state."
             )
-        if self._start_task is not None and not self._start_task.done():
+        if self.start_sequence_active:
             raise MaintenanceUnavailable("A timer start sequence is already active.")
         self._maintenance_lease = MaintenanceLease(
             token=secrets.token_urlsafe(32),
@@ -357,6 +357,14 @@ class WebRuntime:
         self._expire_maintenance(now)
         return self._maintenance_payload(now)
 
+    @property
+    def start_sequence_active(self) -> bool:
+        return self._start_task is not None and not self._start_task.done()
+
+    @property
+    def data_export_blocked(self) -> bool:
+        return self.controller.state is TimerState.RUNNING or self.start_sequence_active
+
     def state_payload(self) -> dict[str, object]:
         payload = serialize_snapshot(
             self.controller.snapshot(),
@@ -373,7 +381,7 @@ class WebRuntime:
                 round((self._start_deadline - asyncio.get_running_loop().time()) * 1000),
             )
         payload["start_sequence"] = {
-            "active": self._start_task is not None and not self._start_task.done(),
+            "active": self.start_sequence_active,
             "phase": self._start_phase,
             "remaining_ms": remaining_ms,
             "error": self._start_error,
@@ -575,7 +583,7 @@ class WebRuntime:
                 self.controller.refresh()
                 await asyncio.sleep(0.033)
             else:
-                if self._start_task is not None and not self._start_task.done():
+                if self.start_sequence_active:
                     self._schedule_state_broadcast()
                 if (
                     self.controller.state is TimerState.SAVED_CONFIRMATION
@@ -717,7 +725,7 @@ class WebRuntime:
 
     def _maintenance_payload(self, now: float) -> dict[str, object]:
         current = self._maintenance_lease
-        start_sequence_active = self._start_task is not None and not self._start_task.done()
+        start_sequence_active = self.start_sequence_active
         persistent = self._persistent_maintenance_active()
         return {
             "held": current is not None or persistent,

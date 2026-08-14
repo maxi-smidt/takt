@@ -1019,6 +1019,15 @@ kbd {
   gap: 8px;
 }
 
+.export-tile {
+  grid-column: 1 / -1;
+}
+
+.system-tile .export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
 .system-tile {
   min-width: 0;
   min-height: 53px;

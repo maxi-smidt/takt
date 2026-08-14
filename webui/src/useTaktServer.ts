@@ -15,7 +15,7 @@ import {
   parsePiEvent,
   parseSystemResponse,
 } from "./shared/contracts";
-import { requestJson, withTimeout } from "./shared/httpClient";
+import { requestBlob, requestJson, withTimeout } from "./shared/httpClient";
 
 const EMPTY_STATE: TimerStatePayload = {
   state: "ready",
@@ -63,6 +63,7 @@ const EMPTY_SYSTEM: SystemPayload = {
 };
 const VALID_PERIODS = ["7", "30", "90", "all"] as const;
 export type ChartPeriod = (typeof VALID_PERIODS)[number];
+export type DataExportFormat = "db" | "csv";
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const LIVENESS_TIMEOUT_MS = 45_000;
@@ -99,6 +100,7 @@ export interface TaktServerState {
     runId?: number | null,
     deltaMs?: number,
   ) => Promise<ConfirmationPayload>;
+  downloadExport: (format: DataExportFormat) => Promise<string>;
   confirmPrepared: (
     token: string,
     operation: string,
@@ -501,6 +503,24 @@ export function useTaktServer(): TaktServerState {
     },
     [refreshHistory],
   );
+  const downloadExport = useCallback(async (format: DataExportFormat) => {
+    if (isFileMode()) throw new Error("Der Datenexport ist im Vorschaumodus nicht verfügbar.");
+    const fallbackFilename = format === "db" ? "takt.db" : "takt-runs.csv";
+    const result = await requestBlob(
+      `/api/database/export?format=${format}`,
+      fallbackFilename,
+    );
+    const objectUrl = URL.createObjectURL(result.blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = result.filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 500);
+    return result.filename;
+  }, []);
+
   const setChartDays = useCallback(
     async (period: string) => {
       if (!VALID_PERIODS.includes(period as ChartPeriod)) return;
@@ -526,6 +546,7 @@ export function useTaktServer(): TaktServerState {
     sendAction,
     sendAudioRequest,
     prepareConfirmation,
+    downloadExport,
     confirmPrepared,
   };
 }
