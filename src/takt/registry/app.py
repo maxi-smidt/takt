@@ -94,7 +94,6 @@ async def security_headers(request: web.Request, handler: Any) -> web.StreamResp
 def create_registry_app(
     store: RegistryStore, auth: AdminAuth, *, secure_cookies: bool = False
 ) -> web.Application:
-    require_static_assets(STATIC_ROOT, "fleet.html", "scripts/build_registry_ui.sh")
     app = web.Application(client_max_size=256 * 1024 * 1024, middlewares=[security_headers])
     app[STORE_KEY] = store
     app[AUTH_KEY] = auth
@@ -141,14 +140,20 @@ def create_registry_app(
     app.router.add_get("/agent/jobs/{job_id}/artifact", agent_artifact)
     app.router.add_put("/agent/jobs/{job_id}/artifact", agent_diagnostics_upload)
     app.router.add_post("/agent/mirror", agent_mirror)
-    app.router.add_static("/assets", STATIC_ROOT / "assets", append_version=True)
-    app.router.add_static("/static", STATIC_ROOT, append_version=True)
+    if (STATIC_ROOT / "assets").is_dir():
+        app.router.add_static("/assets", STATIC_ROOT / "assets", append_version=True)
+    if STATIC_ROOT.is_dir():
+        app.router.add_static("/static", STATIC_ROOT, append_version=True)
     app.cleanup_ctx.append(_registry_maintenance)
     app.cleanup_ctx.append(_deployment_cleanup)
     return app
 
 
 async def index(request: web.Request) -> web.FileResponse:
+    try:
+        require_static_assets(STATIC_ROOT, "fleet.html", "scripts/build_registry_ui.sh")
+    except RuntimeError as error:
+        raise web.HTTPInternalServerError(text=str(error)) from error
     return web.FileResponse(STATIC_ROOT / "fleet.html")
 
 

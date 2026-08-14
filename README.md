@@ -642,6 +642,9 @@ http://127.0.0.1:8080
 Der Entwicklungsschnellstart bindet den Server absichtlich nur an den Laptop
 selbst. Auf dem Pi übernimmt das Installationsskript den Netzwerkzugriff.
 
+`launch_web_dev.sh` startet den Python-Server ohne Node.js oder Frontend-Build;
+für die Browser-Oberfläche vorher `./scripts/build_web_ui.sh` ausführen.
+
 ### Browser-Oberfläche weiterentwickeln
 
 Der React-Quellcode liegt unter `webui/`. Die fertig gebauten, vollständig
@@ -833,6 +836,15 @@ Für einen isolierten Test lässt sich ein anderer Speicherort angeben:
 ```
 
 ## Tests
+
+Die Python-Tests können ohne gebaute Frontend-Dateien ausgeführt werden; die
+Browser-Asset-Prüfung wird dann übersprungen. Für die vollständige Suite mit
+UI-Abdeckung zuerst beide Oberflächen bauen:
+
+```bash
+./scripts/build_web_ui.sh
+./scripts/build_registry_ui.sh
+```
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests

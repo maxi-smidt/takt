@@ -22,7 +22,6 @@ RUNTIME_KEY = web.AppKey("runtime", WebRuntime)
 
 
 def create_web_app(runtime: WebRuntime) -> web.Application:
-    require_static_assets(STATIC_ROOT, "index.html", "scripts/build_web_ui.sh")
     app = web.Application(client_max_size=128 * 1024, middlewares=[same_origin_requests])
     app[RUNTIME_KEY] = runtime
     app.on_response_prepare.append(_set_security_headers)
@@ -42,8 +41,10 @@ def create_web_app(runtime: WebRuntime) -> web.Application:
     app.router.add_post("/api/audio/test", audio_test)
     app.router.add_post("/api/confirmations", prepare_confirmation)
     app.router.add_post("/api/confirmations/{token}", confirm)
-    app.router.add_static("/assets", STATIC_ROOT / "assets", append_version=True)
-    app.router.add_static("/static", STATIC_ROOT, append_version=True)
+    if (STATIC_ROOT / "assets").is_dir():
+        app.router.add_static("/assets", STATIC_ROOT / "assets", append_version=True)
+    if STATIC_ROOT.is_dir():
+        app.router.add_static("/static", STATIC_ROOT, append_version=True)
     return app
 
 
@@ -61,6 +62,10 @@ async def _set_security_headers(
 
 
 async def index(request: web.Request) -> web.FileResponse:
+    try:
+        require_static_assets(STATIC_ROOT, "index.html", "scripts/build_web_ui.sh")
+    except RuntimeError as error:
+        raise web.HTTPInternalServerError(text=str(error)) from error
     return web.FileResponse(STATIC_ROOT / "index.html")
 
 

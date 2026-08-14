@@ -188,6 +188,9 @@ class WebApplicationTests(unittest.TestCase):
                         self.assertFalse(conflict["acquired"])
                         self.assertEqual(conflict["maintenance"]["timer_state"], "running")
 
+                    if not (STATIC_ROOT / "index.html").is_file() or not (STATIC_ROOT / "assets").is_dir():
+                        self.skipTest("Frontend assets are not built; run scripts/build_web_ui.sh")
+
                     async with client.get(base_url) as response:
                         self.assertEqual(response.status, 200)
                         page = await response.text()
