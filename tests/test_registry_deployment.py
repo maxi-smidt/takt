@@ -464,6 +464,8 @@ class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
         password_command = calls[-1][0][3]
         self.assertEqual("secret", calls[-1][1]["input_text"])
         self.assertEqual(2, password_command.count("sudo -S -p \"\""))
+        self.assertIn("\\n", password_command)
+        self.assertNotIn("\n", password_command)
         self.assertNotIn("secret", password_command)
 
         await manager._rollback_hostname(
@@ -477,6 +479,31 @@ class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(calls[-1][1]["input_text"])
         self.assertEqual(2, nopasswd_command.count("sudo -n "))
         self.assertNotIn("sudo -S", nopasswd_command)
+
+    async def test_reboot_uses_credentials_for_password_or_nopasswd_sudo(self) -> None:
+        manager = object.__new__(DeploymentManager)
+        manager._event = lambda *args, **kwargs: None
+        calls = []
+
+        async def command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return "", "", 0
+
+        manager._command = command
+        await manager._reboot(
+            object(), "deployment", DeploymentCredentials(sudo_password="secret")
+        )
+        password_command = calls[-1][0][3]
+        self.assertEqual("secret", calls[-1][1]["input_text"])
+        self.assertIn("sudo -S -p \"\" systemctl reboot", password_command)
+        self.assertIn("\\n", password_command)
+        self.assertNotIn("\n", password_command)
+        self.assertNotIn("secret", password_command)
+
+        await manager._reboot(object(), "deployment", DeploymentCredentials())
+        nopasswd_command = calls[-1][0][3]
+        self.assertIsNone(calls[-1][1]["input_text"])
+        self.assertEqual("sudo -n systemctl reboot", nopasswd_command)
 
     async def test_cancel_waits_for_cleanup_before_retry(self) -> None:
         class Store:
@@ -515,6 +542,19 @@ class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(active_task())
         manager._tasks["deployment"] = task
         await asyncio.sleep(0)
+
+        store.status = "succeeded"
+        with self.assertRaisesRegex(ValueError, "still active"):
+            manager.retry("deployment")
+        self.assertEqual("succeeded", store.status)
+
+        async def dropped() -> None:
+            pass
+
+        dropped_coroutine = dropped()
+        manager._start("deployment", dropped_coroutine)
+        self.assertIsNone(dropped_coroutine.cr_frame)
+        store.status = "running"
 
         cancelled = await manager.cancel("deployment")
         self.assertTrue(cleanup_finished.is_set())

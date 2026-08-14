@@ -135,6 +135,9 @@ class DeploymentManager:
         deployment = self._deployment(deployment_id)
         if deployment["status"] not in TERMINAL_STATUSES:
             raise ValueError("Only a finished deployment can be retried.")
+        task = self._tasks.get(deployment_id)
+        if task and not task.done():
+            raise ValueError("Deployment is still active.")
         self.store.ensure_deployment_target_available(deployment["target"], deployment["port"])
         credentials = self._credentials.pop(deployment_id, None)
         if credentials:
@@ -174,6 +177,9 @@ class DeploymentManager:
     def _start(self, deployment_id: str, coroutine: Any) -> None:
         old = self._tasks.get(deployment_id)
         if old and not old.done():
+            close = getattr(coroutine, "close", None)
+            if close:
+                close()
             return
         task = asyncio.create_task(
             coroutine, name=f"deployment-{deployment_id}"
@@ -312,7 +318,7 @@ class DeploymentManager:
                         deployment["release_version"],
                         expected_hostname=expected_hostname,
                     )
-                await self._reboot(connection, deployment_id)
+                await self._reboot(connection, deployment_id, credentials)
                 await self._wait_for_agent(
                     deployment_id,
                     deployment["release_version"],
@@ -649,7 +655,7 @@ class DeploymentManager:
             command = (
                 "set -eu; IFS= read -r _takt_sudo_password; "
                 + "; ".join(
-                    'printf "%s\n" "$_takt_sudo_password" | sudo -S -p "" ' + item
+                    r'printf "%s\n" "$_takt_sudo_password" | sudo -S -p "" ' + item
                     for item in commands
                 )
             )
@@ -675,12 +681,27 @@ class DeploymentManager:
         )
 
     async def _reboot(
-        self, connection: asyncssh.SSHClientConnection, deployment_id: str
+        self,
+        connection: asyncssh.SSHClientConnection,
+        deployment_id: str,
+        credentials: DeploymentCredentials,
     ) -> None:
         self._event(deployment_id, "reboot", "Restarting the Pi to apply headless and audio setup.")
+        sudo_password = credentials.sudo_password or credentials.ssh_password
+        if sudo_password:
+            command = (
+                "set -eu; IFS= read -r _takt_sudo_password; "
+                r"""printf "%s\n" "$_takt_sudo_password" | sudo -S -p "" systemctl reboot"""
+            )
+        else:
+            command = "sudo -n systemctl reboot"
         try:
             stdout, stderr, exit_status = await self._command(
-                connection, deployment_id, "reboot", "sudo -n systemctl reboot"
+                connection,
+                deployment_id,
+                "reboot",
+                command,
+                input_text=sudo_password or None,
             )
         except (asyncssh.ConnectionLost, ConnectionResetError, BrokenPipeError):
             return
