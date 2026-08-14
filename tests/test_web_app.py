@@ -86,6 +86,12 @@ class WebApplicationTests(unittest.TestCase):
                         self.assertEqual(bootstrap["history"]["today"], [])
                         self.assertEqual(bootstrap["system"]["audio"]["output"], "off")
 
+                    async with client.ws_connect(f"{base_url}/api/events") as websocket:
+                        initial_event = await websocket.receive_json()
+                        self.assertEqual(initial_event["type"], "state")
+                        await websocket.send_str("ping")
+                        self.assertEqual((await websocket.receive()).data, "pong")
+
                     async with client.post(
                         f"{base_url}/api/audio/settings",
                         json={

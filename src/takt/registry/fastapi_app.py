@@ -1167,12 +1167,14 @@ def create_fastapi_app(
         finally:
             active.discard(device_id)
 
-    app.mount(
-        "/assets",
-        StaticFiles(directory=STATIC_ROOT / "assets"),
-        name="assets",
-    )
-    app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
+    if (STATIC_ROOT / "assets").is_dir():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=STATIC_ROOT / "assets"),
+            name="assets",
+        )
+    if STATIC_ROOT.is_dir():
+        app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
     app.add_middleware(
         MultipartBodyLimitMiddleware,
         route_lookup=lambda method, path: _route_path(app, method, path),
