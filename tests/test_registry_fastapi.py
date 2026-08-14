@@ -5,6 +5,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -29,8 +30,25 @@ class FastApiRegistryTests(unittest.TestCase):
 
                     openapi = client.get("/openapi.json")
                     self.assertEqual(openapi.status_code, 200)
-                    self.assertIn("/agent/heartbeat", openapi.json()["paths"])
-                    self.assertIn("LoginRequest", openapi.json()["components"]["schemas"])
+                    openapi_payload = openapi.json()
+                    self.assertIn("/agent/heartbeat", openapi_payload["paths"])
+                    self.assertIn("LoginRequest", openapi_payload["components"]["schemas"])
+                    self.assertFalse(
+                        any(
+                            parameter["name"] == "csrf"
+                            for operation in openapi_payload["paths"].values()
+                            for parameters in operation.values()
+                            if isinstance(parameters, dict)
+                            for parameter in parameters.get("parameters", [])
+                        )
+                    )
+
+                    unknown_route = client.post(
+                        "/api/not-a-route/jobs",
+                        content="{}",
+                        headers={"Content-Type": "text/plain"},
+                    )
+                    self.assertEqual(unknown_route.status_code, 404)
 
                     wrong_content_type = client.post(
                         "/api/session",
@@ -45,6 +63,32 @@ class FastApiRegistryTests(unittest.TestCase):
                     )
                     self.assertEqual(login.status_code, 200)
                     csrf = client.get("/api/session").json()["csrf_token"]
+
+                    with patch.object(
+                        store, "create_job", return_value={"id": "job"}
+                    ) as create_job:
+                        created_job = client.post(
+                            "/api/devices/device-1/jobs",
+                            json={
+                                "action": "restart_takt",
+                                "payload": {},
+                                "override": True,
+                            },
+                            headers={"X-CSRF-Token": csrf},
+                        )
+                    self.assertEqual(created_job.status_code, 201)
+                    self.assertTrue(create_job.call_args.kwargs["override"])
+
+                    with patch.object(
+                        store, "retry_job", return_value={"id": "retry"}
+                    ) as retry_job:
+                        retried_job = client.post(
+                            "/api/jobs/job-1/retry",
+                            json={"override": True},
+                            headers={"X-CSRF-Token": csrf},
+                        )
+                    self.assertEqual(retried_job.status_code, 201)
+                    self.assertTrue(retry_job.call_args.kwargs["override"])
 
                     release_archive = io.BytesIO()
                     with tarfile.open(fileobj=release_archive, mode="w:gz") as archive:
@@ -68,6 +112,16 @@ class FastApiRegistryTests(unittest.TestCase):
                         headers={"X-CSRF-Token": csrf},
                     )
                     self.assertEqual(release.status_code, 201)
+
+                    malformed_multipart = client.post(
+                        "/api/releases",
+                        content=b"not-a-multipart-body",
+                        headers={
+                            "Content-Type": "multipart/form-data; boundary=invalid",
+                            "X-CSRF-Token": csrf,
+                        },
+                    )
+                    self.assertEqual(malformed_multipart.status_code, 400)
 
                     enrollment_response = client.post(
                         "/api/enrollment-codes",

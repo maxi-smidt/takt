@@ -350,6 +350,7 @@ class HeartbeatRequest(ApiModel):
 class JobCreateRequest(ApiModel):
     action: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    override: StrictBool = False
 
     @field_validator("action")
     @classmethod
@@ -357,6 +358,10 @@ class JobCreateRequest(ApiModel):
         if value not in ALLOWED_ACTIONS:
             raise ValueError("Unsupported action.")
         return value
+
+
+class JobOverrideRequest(ApiModel):
+    override: StrictBool = False
 
 
 class JobUpdateRequest(ApiModel):

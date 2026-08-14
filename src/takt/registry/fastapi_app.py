@@ -18,7 +18,7 @@ import secrets
 import sqlite3
 import tempfile
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -26,8 +26,10 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from python_multipart.exceptions import MultipartParseError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException
 from starlette.staticfiles import StaticFiles
 
 from takt.protocol import PROTOCOL_VERSION
@@ -43,6 +45,7 @@ from takt.registry.api_models import (
     HealthResponse,
     HeartbeatRequest,
     JobCreateRequest,
+    JobOverrideRequest,
     JobUpdateRequest,
     LabelRequest,
     LoginRequest,
@@ -58,6 +61,7 @@ from takt.registry.storage import RegistryStore, utc_iso
 STATIC_ROOT = Path(__file__).with_name("static")
 JSON_LIMIT = 64 * 1024
 MAX_RELEASE_BYTES = 250 * 1024 * 1024
+MAX_RELEASE_REQUEST_BYTES = 256 * 1024 * 1024
 MAX_MIRROR_BYTES = 128 * 1024 * 1024
 MAX_DIAGNOSTICS_BYTES = 8 * 1024 * 1024
 DEPLOYMENT_EVENT_POLL_SECONDS = 2
@@ -105,7 +109,7 @@ def _auth(request: Request) -> AdminAuth:
     return request.app.state.auth
 
 
-def _admin(request: Request, *, csrf: bool = False) -> dict[str, object]:
+def _verify_admin(request: Request, *, csrf: bool) -> dict[str, object]:
     try:
         return _auth(request).verify_session(
             request.cookies.get(COOKIE_NAME, ""),
@@ -118,8 +122,12 @@ def _admin(request: Request, *, csrf: bool = False) -> dict[str, object]:
         raise HTTPException(status_code=401, detail=str(error)) from error
 
 
+def _admin(request: Request) -> dict[str, object]:
+    return _verify_admin(request, csrf=False)
+
+
 def _admin_csrf(request: Request) -> dict[str, object]:
-    return _admin(request, csrf=True)
+    return _verify_admin(request, csrf=True)
 
 
 _ADMIN_DEPENDENCY = Depends(_admin)
@@ -168,33 +176,117 @@ _JSON_BODY_PATHS = {
     ("POST", "/agent/heartbeat"),
     ("POST", "/agent/status"),
     ("POST", "/agent/jobs/{job_id}"),
+    ("POST", "/api/jobs/{job_id}/retry"),
 }
 
 
-def _requires_json_body(method: str, path: str) -> bool:
-    if (method, path) in _JSON_BODY_PATHS:
-        return True
-    if method != "POST":
-        return False
-    return (
-        path.endswith(("/jobs", "/wifi-networks", "/host-key", "/credentials"))
-        or path.startswith("/agent/jobs/")
-    )
+def _route_path(app: FastAPI, method: str, path: str) -> str | None:
+    for route in app.router.routes:
+        methods = getattr(route, "methods", None)
+        if methods and method not in methods:
+            continue
+        path_regex = getattr(route, "path_regex", None)
+        if path_regex is not None and path_regex.match(path):
+            return getattr(route, "path", None)
+    return None
 
 
-def _json_limit(path: str) -> int:
-    if path in {"/api/session", "/api/enrollment-codes"} or path.endswith("/host-key"):
-        return 8 * 1024
-    if path.endswith("/credentials"):
-        return 128 * 1024
-    if (
-        path == "/api/deployments"
-        or path.endswith("/jobs")
-        or path.endswith("/wifi-networks")
-        or path.startswith("/agent/jobs/")
+def _requires_json_body(method: str, route_path: str | None) -> bool:
+    return route_path is not None and (method, route_path) in _JSON_BODY_PATHS
+
+
+def _json_limit(route_path: str) -> int:
+    if route_path in {"/api/session", "/api/enrollment-codes"} or route_path.endswith(
+        "/host-key"
     ):
+        return 8 * 1024
+    if route_path.endswith("/credentials"):
+        return 128 * 1024
+    if route_path in {
+        "/api/deployments",
+        "/api/devices/{device_id}/jobs",
+        "/api/devices/{device_id}/wifi-networks",
+        "/agent/jobs/{job_id}",
+        "/api/jobs/{job_id}/retry",
+    }:
         return 16 * 1024
     return JSON_LIMIT
+
+
+class RequestBodyTooLarge(Exception):
+    pass
+
+
+class MultipartBodyLimitMiddleware:
+    def __init__(self, app: Any, route_lookup: Callable[[str, str], str | None]) -> None:
+        self.app = app
+        self.route_lookup = route_lookup
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        content_type = next(
+            (
+                value.decode("latin-1")
+                for key, value in scope.get("headers", [])
+                if key.lower() == b"content-type"
+            ),
+            "",
+        ).split(";", 1)[0].lower()
+        route_path = self.route_lookup(scope.get("method", ""), scope.get("path", ""))
+        if (
+            scope.get("method") != "POST"
+            or route_path != "/api/releases"
+            or content_type != "multipart/form-data"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        content_length = next(
+            (
+                value.decode("latin-1")
+                for key, value in scope.get("headers", [])
+                if key.lower() == b"content-length"
+            ),
+            None,
+        )
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except ValueError:
+                declared_length = -1
+            if declared_length < 0:
+                await _send_body_error(scope, receive, send, "Invalid Content-Length.", 400)
+                return
+            if declared_length > MAX_RELEASE_REQUEST_BYTES:
+                await _send_body_error(scope, receive, send, "Request body is too large.", 413)
+                return
+
+        received = 0
+
+        async def limited_receive() -> dict[str, Any]:
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > MAX_RELEASE_REQUEST_BYTES:
+                    raise RequestBodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except RequestBodyTooLarge:
+            await _send_body_error(scope, receive, send, "Request body is too large.", 413)
+
+
+async def _send_body_error(
+    scope: dict[str, Any], receive: Any, send: Any, message: str, status_code: int
+) -> None:
+    request = Request(scope, receive)
+    response = PlainTextResponse(message, status_code=status_code)
+    _set_security_headers(request, response)
+    await response(scope, receive, send)
 
 
 def _secrets_compare(left: str, right: str) -> bool:
@@ -335,11 +427,12 @@ async def _stream_upload(
                 digest.update(chunk)
                 temporary.write(chunk)
         assert temporary_path is not None
-        return temporary_path, digest.hexdigest(), size
-    except Exception:
+        completed_path = temporary_path
+        temporary_path = None
+        return completed_path, digest.hexdigest(), size
+    finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-        raise
 
 
 @asynccontextmanager
@@ -390,7 +483,8 @@ def create_fastapi_app(
 
     @app.middleware("http")
     async def registry_middleware(request: Request, call_next: Any) -> Any:
-        if _requires_json_body(request.method, request.url.path):
+        route_path = _route_path(app, request.method, request.url.path)
+        if _requires_json_body(request.method, route_path):
             if request.headers.get("content-type", "").split(";", 1)[0].lower() != (
                 "application/json"
             ):
@@ -399,13 +493,23 @@ def create_fastapi_app(
                 )
                 _set_security_headers(request, response)
                 return response
-            limit = _json_limit(request.url.path)
-            if request.headers.get("content-length") is not None and int(
-                request.headers["content-length"]
-            ) > limit:
-                response = PlainTextResponse("Request body is too large.", status_code=413)
-                _set_security_headers(request, response)
-                return response
+            limit = _json_limit(route_path)
+            content_length = request.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    declared_length = int(content_length)
+                except ValueError:
+                    response = PlainTextResponse("Invalid Content-Length.", status_code=400)
+                    _set_security_headers(request, response)
+                    return response
+                if declared_length < 0:
+                    response = PlainTextResponse("Invalid Content-Length.", status_code=400)
+                    _set_security_headers(request, response)
+                    return response
+                if declared_length > limit:
+                    response = PlainTextResponse("Request body is too large.", status_code=413)
+                    _set_security_headers(request, response)
+                    return response
             body = await request.body()
             if len(body) > limit:
                 response = PlainTextResponse("Request body is too large.", status_code=413)
@@ -430,6 +534,22 @@ def create_fastapi_app(
         request: Request, exc: RequestValidationError
     ) -> PlainTextResponse:
         response = PlainTextResponse(_json_error_message(exc), status_code=400)
+        _set_security_headers(request, response)
+        return response
+
+    @app.exception_handler(MultiPartException)
+    async def multipart_exception_handler(
+        request: Request, exc: MultiPartException
+    ) -> PlainTextResponse:
+        response = PlainTextResponse(str(exc), status_code=400)
+        _set_security_headers(request, response)
+        return response
+
+    @app.exception_handler(MultipartParseError)
+    async def multipart_parse_error_handler(
+        request: Request, exc: MultipartParseError
+    ) -> PlainTextResponse:
+        response = PlainTextResponse(str(exc), status_code=400)
         _set_security_headers(request, response)
         return response
 
@@ -703,7 +823,7 @@ def create_fastapi_app(
             if not original_filename.endswith(".tar.gz"):
                 raise HTTPException(status_code=400, detail="Release must be a .tar.gz archive.")
             try:
-                validate_release_archive(temp_path, version)
+                await asyncio.to_thread(validate_release_archive, temp_path, version)
             except ReleaseValidationError as error:
                 raise HTTPException(status_code=400, detail=str(error)) from error
             try:
@@ -735,7 +855,9 @@ def create_fastapi_app(
         _: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
     ) -> JSONResponse:
         try:
-            job = store.create_job(device_id, body.action, body.payload)
+            job = store.create_job(
+                device_id, body.action, body.payload, override=body.override
+            )
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
@@ -794,10 +916,11 @@ def create_fastapi_app(
     @app.post("/api/jobs/{job_id}/retry", status_code=201)
     async def retry_job(
         job_id: str,
+        body: JobOverrideRequest,
         _: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
     ) -> JSONResponse:
         try:
-            job = store.retry_job(job_id)
+            job = store.retry_job(job_id, override=body.override)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
@@ -1022,11 +1145,14 @@ def create_fastapi_app(
                         raise HTTPException(
                             status_code=400, detail="Database checksum does not match."
                         )
-                    run_count = _validate_mirror(temp_path)
+                    run_count = await asyncio.to_thread(_validate_mirror, temp_path)
                     existing_blob = store.mirror_blob_path(device_id, actual_sha)
                     existing_blob_valid = None
                     if existing_blob is not None:
-                        existing_blob_valid = _file_matches(existing_blob, actual_sha, size)
+                        existing_blob_valid = await asyncio.to_thread(
+                            _file_matches, existing_blob, actual_sha, size
+                        )
+                    _device(request)
                     store.record_mirror(
                         device_id,
                         temp_path,
@@ -1047,4 +1173,8 @@ def create_fastapi_app(
         name="assets",
     )
     app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
+    app.add_middleware(
+        MultipartBodyLimitMiddleware,
+        route_lookup=lambda method, path: _route_path(app, method, path),
+    )
     return app
