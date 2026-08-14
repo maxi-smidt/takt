@@ -10,8 +10,8 @@
     "build:fleet": "vite build --config vite.fleet.config.js",
     "check": "eslint src",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:fleet": "vitest run src/fleet/*.test.ts"
+    "test": "vitest run --exclude 'src/fleet/maintenanceActions.test.js'",
+    "test:fleet": "vitest run src/fleet/*.test.ts src/fleet/services/*.test.ts --exclude 'src/fleet/maintenanceActions.test.js' && node --test src/fleet/maintenanceActions.test.js"
   },
   "dependencies": {
     "lucide-react": "^1.29.0",

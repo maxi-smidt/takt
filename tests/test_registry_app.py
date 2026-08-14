@@ -366,5 +366,268 @@ class RegistryApplicationTests(unittest.TestCase):
         return output.getvalue()
 
 
+class FleetMaintenanceApiTests(unittest.TestCase):
+    DEVICE_ID = "12345678-1234-1234-1234-123456789abc"
+    TOKEN = "a" * 64
+    PASSWORD = "correct-horse-battery"
+    CAPABILITIES = [
+        "leased-jobs",
+        "service-control-v1",
+        "power-control-v1",
+        "diagnostics-v1",
+        "health-checks-v1",
+    ]
+
+    def test_maintenance_api_enforces_authorization_capability_and_redaction(self) -> None:
+        asyncio.run(self._exercise())
+
+    async def _exercise(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_directory = Path(temporary_directory) / "registry"
+            data_directory.mkdir()
+            store = RegistryStore(data_directory)
+            runner = web.AppRunner(
+                create_registry_app(store, AdminAuth(self.PASSWORD, data_directory))
+            )
+            await runner.setup()
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            sockets = site._server.sockets  # type: ignore[union-attr]
+            base_url = f"http://127.0.0.1:{sockets[0].getsockname()[1]}"
+            try:
+                async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
+                    csrf = await self._login(client, base_url)
+                    admin = {"X-CSRF-Token": csrf}
+                    agent = await self._enroll(client, base_url, admin)
+
+                    await self._assert_capability_gating(client, base_url, admin, agent)
+                    await self._assert_override_rules(client, base_url, admin)
+                    job_id = await self._assert_health_report(client, base_url, admin, agent, store)
+                    await self._assert_diagnostics(client, base_url, admin, agent, store)
+                    await self._assert_unauthenticated_access_is_refused(base_url, job_id)
+            finally:
+                await runner.cleanup()
+                store.close()
+
+    async def _enroll(
+        self, client: ClientSession, base_url: str, admin: dict[str, str]
+    ) -> dict[str, str]:
+        async with client.post(
+            f"{base_url}/api/enrollment-codes", json={"label": "Lane 1"}, headers=admin
+        ) as response:
+            code = (await response.json())["code"]
+        async with client.post(
+            f"{base_url}/agent/enroll",
+            json={
+                "enrollment_code": code,
+                "device_id": self.DEVICE_ID,
+                "name": "Lane 1",
+                "hostname": "takt-01",
+                "device_token": self.TOKEN,
+            },
+        ) as response:
+            self.assertEqual(response.status, 201)
+        return {"X-Device-ID": self.DEVICE_ID, "Authorization": f"Bearer {self.TOKEN}"}
+
+    async def _heartbeat(
+        self, client: ClientSession, base_url: str, agent: dict[str, str], capabilities: list[str]
+    ) -> None:
+        async with client.post(
+            f"{base_url}/agent/heartbeat",
+            json={
+                "health": {"ok": True, "state": "ready"},
+                "protocol_version": 1,
+                "capabilities": capabilities,
+                "agent_session_id": "session-a",
+                "poll_seconds": 10,
+            },
+            headers=agent,
+        ) as response:
+            self.assertEqual(response.status, 200)
+
+    async def _assert_capability_gating(
+        self,
+        client: ClientSession,
+        base_url: str,
+        admin: dict[str, str],
+        agent: dict[str, str],
+    ) -> None:
+        await self._heartbeat(client, base_url, agent, ["leased-jobs"])
+        for action in ("reboot_device", "stop_takt", "collect_diagnostics"):
+            async with client.post(
+                f"{base_url}/api/devices/{self.DEVICE_ID}/jobs",
+                json={"action": action},
+                headers=admin,
+            ) as response:
+                self.assertEqual(response.status, 400, f"{action} must be refused")
+        # A stale agent keeps the baseline actions it has always supported.
+        async with client.post(
+            f"{base_url}/api/devices/{self.DEVICE_ID}/jobs",
+            json={"action": "mirror_now"},
+            headers=admin,
+        ) as response:
+            self.assertEqual(response.status, 201)
+        await self._heartbeat(client, base_url, agent, self.CAPABILITIES)
+
+    async def _assert_override_rules(
+        self, client: ClientSession, base_url: str, admin: dict[str, str]
+    ) -> None:
+        async with client.post(
+            f"{base_url}/api/devices/{self.DEVICE_ID}/jobs",
+            json={"action": "run_health_checks", "override": True},
+            headers=admin,
+        ) as response:
+            self.assertEqual(response.status, 400, "a safe action cannot be overridden")
+        async with client.post(
+            f"{base_url}/api/devices/{self.DEVICE_ID}/jobs",
+            json={"action": "run_health_checks", "override": "yes"},
+            headers=admin,
+        ) as response:
+            self.assertEqual(response.status, 400, "override must be a boolean")
+
+    async def _assert_health_report(
+        self,
+        client: ClientSession,
+        base_url: str,
+        admin: dict[str, str],
+        agent: dict[str, str],
+        store: RegistryStore,
+    ) -> str:
+        async with client.post(
+            f"{base_url}/api/devices/{self.DEVICE_ID}/jobs",
+            json={"action": "run_health_checks"},
+            headers=admin,
+        ) as response:
+            self.assertEqual(response.status, 201)
+            job = (await response.json())["job"]
+        claimed = self._claim(store, job["id"])
+        async with client.post(
+            f"{base_url}/agent/jobs/{job['id']}",
+            json={
+                "status": "succeeded",
+                "progress": 100,
+                "message": "done",
+                "lease_id": claimed["lease_id"],
+                "stage": "succeeded",
+                "result": {
+                    "checks": [
+                        {"id": "disk_space", "label": "Disk", "status": "warn", "detail": "low"},
+                        {"id": "bogus", "label": "Bogus", "status": "not-a-status", "detail": ""},
+                    ]
+                },
+            },
+            headers=agent,
+        ) as response:
+            self.assertEqual(response.status, 200)
+        async with client.get(f"{base_url}/api/devices") as response:
+            device = next(
+                item
+                for item in (await response.json())["devices"]
+                if item["id"] == self.DEVICE_ID
+            )
+        summary = device["health_checks"]["summary"]
+        self.assertIs(summary["healthy"], True)
+        self.assertEqual(summary["warn"], 1)
+        self.assertEqual(
+            [check["id"] for check in device["health_checks"]["checks"]],
+            ["disk_space"],
+            "checks with an unknown status are dropped",
+        )
+        return job["id"]
+
+    async def _assert_diagnostics(
+        self,
+        client: ClientSession,
+        base_url: str,
+        admin: dict[str, str],
+        agent: dict[str, str],
+        store: RegistryStore,
+    ) -> None:
+        async with client.post(
+            f"{base_url}/api/devices/{self.DEVICE_ID}/jobs",
+            json={"action": "collect_diagnostics"},
+            headers=admin,
+        ) as response:
+            self.assertEqual(response.status, 201)
+            job = (await response.json())["job"]
+        claimed = self._claim(store, job["id"])
+        blob = b"diagnostics-bundle-bytes"
+        digest = hashlib.sha256(blob).hexdigest()
+        upload_url = f"{base_url}/agent/jobs/{job['id']}/artifact"
+
+        async with client.put(
+            upload_url,
+            data=blob,
+            headers={**agent, "X-Job-Lease": "wrong-lease", "X-TAKT-SHA256": digest},
+        ) as response:
+            self.assertEqual(response.status, 404, "a wrong lease must not upload")
+        async with client.put(
+            upload_url,
+            data=blob,
+            headers={**agent, "X-Job-Lease": claimed["lease_id"], "X-TAKT-SHA256": "0" * 64},
+        ) as response:
+            self.assertEqual(response.status, 400, "a bad checksum must be refused")
+        async with client.put(
+            upload_url,
+            data=blob,
+            headers={**agent, "X-Job-Lease": claimed["lease_id"], "X-TAKT-SHA256": digest},
+        ) as response:
+            self.assertEqual(response.status, 200)
+            bundle_id = (await response.json())["diagnostics_id"]
+
+        async with client.get(
+            f"{base_url}/api/devices/{self.DEVICE_ID}/diagnostics"
+        ) as response:
+            listed = (await response.json())["diagnostics"]
+            self.assertEqual(len(listed), 1)
+            self.assertNotIn("relative_path", listed[0])
+        async with client.get(
+            f"{base_url}/api/devices/{self.DEVICE_ID}/diagnostics/{bundle_id}"
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(await response.read(), blob)
+
+    async def _assert_unauthenticated_access_is_refused(self, base_url: str, job_id: str) -> None:
+        async with ClientSession() as anonymous:
+            for url in (
+                f"{base_url}/api/devices/{self.DEVICE_ID}/diagnostics",
+                f"{base_url}/api/devices/{self.DEVICE_ID}/diagnostics/anything",
+            ):
+                async with anonymous.get(url) as response:
+                    self.assertEqual(response.status, 401, f"{url} must require an admin session")
+            async with anonymous.post(
+                f"{base_url}/api/devices/{self.DEVICE_ID}/jobs",
+                json={"action": "reboot_device"},
+            ) as response:
+                self.assertEqual(response.status, 401)
+            async with anonymous.put(
+                f"{base_url}/agent/jobs/{job_id}/artifact", data=b"x"
+            ) as response:
+                self.assertEqual(response.status, 401)
+
+    def _claim(self, store: RegistryStore, job_id: str) -> dict:
+        claimed = store.claim_next_job(self.DEVICE_ID, "session-a")
+        while claimed is not None and claimed["id"] != job_id:
+            store.update_job(
+                claimed["id"],
+                self.DEVICE_ID,
+                "succeeded",
+                100,
+                "cleared",
+                claimed["lease_id"],
+            )
+            claimed = store.claim_next_job(self.DEVICE_ID, "session-a")
+        assert claimed is not None, f"job {job_id} was never claimable"
+        return claimed
+
+    async def _login(self, client: ClientSession, base_url: str) -> str:
+        async with client.post(
+            f"{base_url}/api/session", json={"password": self.PASSWORD}
+        ) as response:
+            self.assertEqual(response.status, 200)
+        async with client.get(f"{base_url}/api/session") as response:
+            return str((await response.json())["csrf_token"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,13 +5,15 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
-from takt.registry.storage import SCHEMA_VERSION, RegistryStore
+from takt.fleet_actions import DISRUPTIVE_ACTIONS
+from takt.registry.storage import SCHEMA_VERSION, RegistryStore, utc_iso, utc_now
 
 
 class RegistryStorageTests(unittest.TestCase):
-    def test_never_seen_device_can_receive_first_safe_job(self) -> None:
+    def test_never_seen_device_cannot_receive_a_job(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = RegistryStore(Path(temporary_directory))
             try:
@@ -23,8 +25,8 @@ class RegistryStorageTests(unittest.TestCase):
                     hostname="takt-01",
                     token="a" * 64,
                 )
-                job = store.create_job("12345678-1234-1234-1234-123456789abc", "restart_takt")
-                self.assertEqual(job["status"], "queued")
+                with self.assertRaisesRegex(ValueError, "online"):
+                    store.create_job("12345678-1234-1234-1234-123456789abc", "restart_takt")
             finally:
                 store.close()
 
@@ -335,6 +337,249 @@ class RegistryStorageTests(unittest.TestCase):
                 self.assertEqual(retry["retry_of"], first["id"])
                 self.assertEqual(retry["stage"], "queued")
                 self.assertGreaterEqual(len(store.list_job_events(first["id"])), 3)
+            finally:
+                store.close()
+
+
+class FleetMaintenanceStorageTests(unittest.TestCase):
+    DEVICE_ID = "12345678-1234-1234-1234-123456789abc"
+
+    def _store(self, root: Path, *, capabilities: list[str] | None = None) -> RegistryStore:
+        store = RegistryStore(root)
+        code = store.create_enrollment_code()
+        store.enroll_device(
+            code=code,
+            device_id=self.DEVICE_ID,
+            name="Lane 1",
+            hostname="takt-01",
+            token="a" * 64,
+        )
+        if capabilities is not None:
+            store.update_heartbeat(
+                self.DEVICE_ID,
+                {
+                    "protocol_version": 1,
+                    "poll_seconds": 10,
+                    "capabilities": capabilities,
+                    "health": {"ok": True, "state": "ready"},
+                },
+            )
+        return store
+
+    def test_v8_database_rebuilds_the_disruptive_action_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            connection = sqlite3.connect(root / "registry.db")
+            connection.execute(
+                "CREATE TABLE jobs (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, "
+                "action TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}', "
+                "status TEXT NOT NULL, progress INTEGER NOT NULL DEFAULT 0, "
+                "message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, "
+                "updated_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT, "
+                "attempt INTEGER NOT NULL DEFAULT 0, lease_id TEXT, "
+                "lease_expires_at TEXT, lease_owner_session TEXT)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX idx_jobs_one_active_disruptive_operation ON jobs(device_id) "
+                "WHERE action IN ('install_release', 'restart_takt') "
+                "AND status IN ('queued', 'claimed', 'running')"
+            )
+            connection.execute("PRAGMA user_version = 8")
+            connection.commit()
+            connection.close()
+            store = RegistryStore(root)
+            try:
+                self.assertEqual(
+                    int(store.connection.execute("PRAGMA user_version").fetchone()[0]),
+                    SCHEMA_VERSION,
+                )
+                self.assertTrue(list((root / "backups").glob("*pre-migration-v8.sqlite3")))
+                index_sql = str(
+                    store.connection.execute(
+                        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                        "AND name = 'idx_jobs_one_active_disruptive_operation'"
+                    ).fetchone()[0]
+                )
+                for action in DISRUPTIVE_ACTIONS:
+                    self.assertIn(f"'{action}'", index_sql)
+                columns = {row[1] for row in store.connection.execute("PRAGMA table_info(devices)")}
+                self.assertIn("health_checks_json", columns)
+                self.assertIsNotNone(
+                    store.connection.execute(
+                        "SELECT name FROM sqlite_master WHERE name = 'diagnostics'"
+                    ).fetchone()
+                )
+            finally:
+                store.close()
+
+    def test_capability_gate_blocks_only_unsupported_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])
+            try:
+                # A stale agent keeps every baseline action it has always had...
+                self.assertEqual(
+                    store.create_job(self.DEVICE_ID, "mirror_now")["status"], "queued"
+                )
+                # ...but is refused the actions it cannot perform.
+                for action in ("reboot_device", "stop_takt", "collect_diagnostics"):
+                    with self.subTest(action=action), self.assertRaises(ValueError) as caught:
+                        store.create_job(self.DEVICE_ID, action)
+                    self.assertIn("does not support", str(caught.exception))
+            finally:
+                store.close()
+
+    def test_override_is_recorded_only_for_overridable_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(
+                Path(temporary_directory),
+                capabilities=["leased-jobs", "power-control-v1", "health-checks-v1"],
+            )
+            try:
+                job = store.create_job(self.DEVICE_ID, "reboot_device", override=True)
+                self.assertTrue(job["payload"]["override"])
+                untrusted = store.create_job(self.DEVICE_ID, "mirror_now", {"override": True})
+                self.assertNotIn("override", untrusted["payload"])
+                audited = store.connection.execute(
+                    "SELECT COUNT(*) FROM audit_events WHERE event = 'job_created'"
+                ).fetchone()[0]
+                self.assertGreaterEqual(audited, 1, "job creation should be audited")
+                with self.assertRaises(ValueError):
+                    store.create_job(self.DEVICE_ID, "run_health_checks", override=True)
+            finally:
+                store.close()
+
+    def test_retry_requires_fresh_override_consent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(
+                Path(temporary_directory), capabilities=["leased-jobs", "power-control-v1"]
+            )
+            try:
+                original = store.create_job(self.DEVICE_ID, "reboot_device", override=True)
+                claimed = store.claim_next_job(self.DEVICE_ID, "session-a")
+                assert claimed is not None
+                store.update_job(
+                    original["id"], self.DEVICE_ID, "failed", 100, "helper refused",
+                    claimed["lease_id"], stage="failed",
+                )
+                retry = store.retry_job(original["id"])
+                self.assertNotIn("override", retry["payload"])
+                claimed_retry = store.claim_next_job(self.DEVICE_ID, "session-b")
+                assert claimed_retry is not None
+                store.update_job(
+                    retry["id"], self.DEVICE_ID, "failed", 100, "helper refused",
+                    claimed_retry["lease_id"], stage="failed",
+                )
+                explicit = store.retry_job(retry["id"], override=True)
+                self.assertTrue(explicit["payload"]["override"])
+            finally:
+                store.close()
+
+
+    def test_conflicting_disruptive_jobs_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(
+                Path(temporary_directory),
+                capabilities=["leased-jobs", "power-control-v1", "service-control-v1"],
+            )
+            try:
+                store.create_job(self.DEVICE_ID, "reboot_device")
+                with self.assertRaisesRegex(ValueError, "already queued"):
+                    store.create_job(self.DEVICE_ID, "stop_takt")
+                # A non-disruptive action is still allowed alongside it.
+                store.update_heartbeat(
+                    self.DEVICE_ID,
+                    {"protocol_version": 1, "poll_seconds": 10, "capabilities": ["leased-jobs"]},
+                )
+                self.assertEqual(
+                    store.create_job(self.DEVICE_ID, "mirror_now")["status"], "queued"
+                )
+            finally:
+                store.close()
+
+    def test_expired_power_lease_fails_instead_of_rebooting_again(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(
+                Path(temporary_directory), capabilities=["leased-jobs", "power-control-v1"]
+            )
+            try:
+                job = store.create_job(self.DEVICE_ID, "reboot_device")
+                claimed = store.claim_next_job(self.DEVICE_ID, "session-a")
+                assert claimed is not None
+                self.assertEqual(claimed["id"], job["id"])
+                # Simulate the agent dying mid-reboot without renewing its lease.
+                store.connection.execute(
+                    "UPDATE jobs SET lease_expires_at = ? WHERE id = ?",
+                    (utc_iso(utc_now() - timedelta(seconds=1)), job["id"]),
+                )
+                store.connection.commit()
+                following = store.claim_next_job(self.DEVICE_ID, "session-b")
+                self.assertIsNone(following, "a reboot must never be requeued and re-fired")
+                final = store.get_job(job["id"])
+                assert final is not None
+                self.assertEqual(final["status"], "failed")
+                self.assertIn("did not confirm", final["message"])
+            finally:
+                store.close()
+
+    def test_expired_non_power_lease_is_still_requeued(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])
+            try:
+                job = store.create_job(self.DEVICE_ID, "mirror_now")
+                store.claim_next_job(self.DEVICE_ID, "session-a")
+                store.connection.execute(
+                    "UPDATE jobs SET lease_expires_at = ? WHERE id = ?",
+                    (utc_iso(utc_now() - timedelta(seconds=1)), job["id"]),
+                )
+                store.connection.commit()
+                reclaimed = store.claim_next_job(self.DEVICE_ID, "session-b")
+                assert reclaimed is not None
+                self.assertEqual(reclaimed["id"], job["id"])
+            finally:
+                store.close()
+
+    def test_diagnostics_bundles_are_stored_listed_and_pruned(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = self._store(root, capabilities=["leased-jobs", "diagnostics-v1"])
+            try:
+                stored_paths = []
+                for index in range(7):
+                    job = store.create_job(self.DEVICE_ID, "collect_diagnostics")
+                    source = root / f"bundle-{index}.tar.gz"
+                    source.write_bytes(f"bundle-{index}".encode())
+                    bundle = store.record_diagnostics(
+                        self.DEVICE_ID,
+                        job["id"],
+                        source,
+                        hashlib.sha256(f"bundle-{index}".encode()).hexdigest(),
+                        source.stat().st_size if source.exists() else 9,
+                    )
+                    stored_paths.append(root / bundle["relative_path"])
+                    claimed = store.claim_next_job(self.DEVICE_ID, "session-a")
+                    assert claimed is not None
+                    store.update_job(
+                        job["id"], self.DEVICE_ID, "succeeded", 100, "done", claimed["lease_id"]
+                    )
+                listed = store.list_diagnostics(self.DEVICE_ID)
+                self.assertEqual(len(listed), 5, "only the newest five bundles are retained")
+                self.assertFalse(
+                    stored_paths[0].exists(), "pruned bundle blobs must be deleted from disk"
+                )
+                self.assertTrue(stored_paths[-1].exists())
+                self.assertNotIn("relative_path", listed[0], "listings must not leak paths")
+            finally:
+                store.close()
+
+    def test_health_report_is_stored_on_the_device(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["health-checks-v1"])
+            try:
+                report = {"schema": 1, "summary": {"healthy": False, "fail": 1}, "checks": []}
+                store.record_health_checks(self.DEVICE_ID, report)
+                device = store.get_device(self.DEVICE_ID)
+                assert device is not None
+                self.assertEqual(device["health_checks"]["summary"]["fail"], 1)
             finally:
                 store.close()
 

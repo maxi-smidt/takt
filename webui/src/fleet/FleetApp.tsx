@@ -1,6 +1,5 @@
 // @ts-nocheck
-// The feature view is intentionally kept behaviorally identical during the staged module migration.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Archive,
@@ -28,9 +27,16 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { openDeploymentEvents, request } from "./services/fleetService";
-import { wifiNetworkError } from "./wifiValidation";
-import { deploymentTargetError, hostnameChangeError } from "./deploymentValidation";
-import { preferredReleaseId } from "./releaseSelection";
+import { wifiNetworkError } from "./wifiValidation.js";
+import { deploymentTargetError, hostnameChangeError } from "./deploymentValidation.js";
+import { preferredReleaseId } from "./releaseSelection.js";
+import {
+  ACTION_GROUPS,
+  MAINTENANCE_ACTIONS,
+  actionAvailability,
+  healthTone,
+  requiresOverride,
+} from "./maintenanceActions.js";
 
 function timeAgo(value) {
   if (!value) return "never";
@@ -153,11 +159,7 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   const [busy, setBusy] = useState(false);
 
   const [streamAfter, setStreamAfter] = useState(0);
-  const update = (key, value) => setFields((current) => ({
-    ...current,
-    [key]: value,
-    ...(key === "hostname" ? { confirm_hostname_change: false } : {}),
-  }));
+  const update = (key, value) => setFields((current) => ({ ...current, [key]: value, ...(key === "hostname" ? { confirm_hostname_change: false } : {}) }));
   const validate = () => {
     if (!/^[A-Za-z0-9ÄÖÜäöüß._ -]{1,80}$/.test(fields.device_name.trim())) return "Device name is invalid.";
     const hostnameError = hostnameChangeError(fields.hostname, fields.confirm_hostname_change);
@@ -269,12 +271,8 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
             ))}
             {fields.hostname && (
               <label className="insecure-opt-in">
-                <input
-                  type="checkbox"
-                  checked={fields.confirm_hostname_change}
-                  onChange={(event) => update("confirm_hostname_change", event.target.checked)}
-                />
-                <span><strong>CONFIRM HOSTNAME CHANGE</strong> Preview: the Pi will move from the current SSH address to <code>{fields.hostname}.local</code>; mDNS, DHCP, SSH host keys, and reconnect behavior can change.</span>
+                <input type="checkbox" checked={fields.confirm_hostname_change} onChange={(event) => update("confirm_hostname_change", event.target.checked)} />
+                <span><strong>CONFIRM HOSTNAME CHANGE</strong> Preview: the Pi will move to <code>{fields.hostname}.local</code>; mDNS, DHCP, SSH host keys, and reconnect behavior can change.</span>
               </label>
             )}
             <label className="field-label">RASPBERRY PI RELEASE
@@ -420,7 +418,128 @@ function WifiModal({ device, csrf, onClose, onCreated }) {
   );
 }
 
-function DeviceCard({ device, releases, job, onJob, onCancel, onRetry, onRevoke, onWifi }) {
+function ConfirmModal({ device, action, onClose, onConfirm }) {
+  const definition = MAINTENANCE_ACTIONS[action];
+  const needsOverride = requiresOverride(action, device);
+  const [override, setOverride] = useState(false);
+  const effectiveOverride = needsOverride && override;
+  const timerState = device.status?.health?.state || "unknown";
+  const blocked = needsOverride && !effectiveOverride;
+  return (
+    <Modal title={`${definition.label} · ${device.name}`} eyebrow="CONFIRM MAINTENANCE" onClose={onClose}>
+      <div className="confirm-body">
+        <p>You are about to {definition.confirm} on <strong>{device.name}</strong>.</p>
+        {definition.aftermath && <p className="confirm-aftermath">{definition.aftermath}</p>}
+        {needsOverride ? (
+          <div className="confirm-warning" role="alert">
+            <TriangleAlert size={16} />
+            <div>
+              <strong>THIS PI IS NOT IDLE</strong>
+              <span>
+                The timer is <strong>{timerState}</strong>. Continuing will interrupt a running or
+                unsaved run and that measurement will be lost.
+              </span>
+              <label className="confirm-override">
+                <input
+                  type="checkbox"
+                  checked={effectiveOverride}
+                  onChange={(event) => setOverride(event.target.checked)}
+                />
+                Interrupt the run anyway
+              </label>
+            </div>
+          </div>
+        ) : (
+          <p className="confirm-safe">
+            The Pi reports timer state <strong>{timerState}</strong>. The agent still re-checks this
+            immediately before acting and waits if a run has started in the meantime.
+          </p>
+        )}
+      </div>
+      <footer className="modal-actions">
+        <button className="secondary-button" onClick={onClose}>CANCEL</button>
+        <button
+          className={definition.destructive ? "danger-action" : ""}
+          disabled={blocked}
+          onClick={() => onConfirm(effectiveOverride)}
+        >
+          {definition.label}
+        </button>
+      </footer>
+    </Modal>
+  );
+}
+
+function HealthChecks({ healthChecks }) {
+  if (!healthChecks?.checks?.length) return null;
+  const { summary, checks, collected_at: collectedAt } = healthChecks;
+  return (
+    <details className="health-panel">
+      <summary>
+        <span className={`health-dot tone-${healthTone(healthChecks)}`} />
+        HEALTH {summary.fail} FAILED · {summary.warn} WARNING · {summary.ok} OK
+        <small>{timeAgo(collectedAt)}</small>
+      </summary>
+      <ul>
+        {checks.map((check) => (
+          <li key={check.id} className={`tone-${check.status}`}>
+            <span>{check.label || check.id}</span>
+            <strong>{check.status.toUpperCase()}</strong>
+            <small>{check.detail}</small>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function MaintenancePanel({ device, diagnostics, onAction }) {
+  return (
+    <div className="maintenance-panel">
+      {ACTION_GROUPS.map((group) => (
+        <div className="maintenance-group" key={group.id}>
+          <span className="maintenance-label">{group.label}</span>
+          <div className="maintenance-buttons">
+            {Object.entries(MAINTENANCE_ACTIONS)
+              .filter(([, definition]) => definition.group === group.id)
+              .map(([action, definition]) => {
+                const { enabled, reason } = actionAvailability(action, device);
+                return (
+                  <button
+                    key={action}
+                    className={definition.destructive ? "danger-action" : ""}
+                    disabled={!enabled}
+                    title={reason}
+                    onClick={() => onAction(device, action)}
+                  >
+                    {definition.label}
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+      ))}
+      {diagnostics?.length > 0 && (
+        <div className="maintenance-group">
+          <span className="maintenance-label">BUNDLES</span>
+          <div className="maintenance-bundles">
+            {diagnostics.map((bundle) => (
+              <a
+                key={bundle.id}
+                href={`/api/devices/${device.id}/diagnostics/${bundle.id}`}
+                title={`${bytes(bundle.size)} · redacted diagnostics`}
+              >
+                <Download size={13} /> {timeAgo(bundle.created_at)}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeviceCard({ device, releases, job, diagnostics, onJob, onCancel, onRetry, onRevoke, onWifi, onMaintenance }) {
   const [releaseId, setReleaseId] = useState(preferredReleaseId(releases));
   const effectiveReleaseId = releaseId || preferredReleaseId(releases);
   const status = device.status || {};
@@ -511,9 +630,10 @@ function DeviceCard({ device, releases, job, onJob, onCancel, onRetry, onRevoke,
           onClick={() => onJob(device, "install_release", { release_id: effectiveReleaseId })}
         ><CloudDownload size={16} /> INSTALL</button>
       </div>
+      <HealthChecks healthChecks={device.health_checks} />
+      <MaintenancePanel device={device} diagnostics={diagnostics} onAction={onMaintenance} />
       <footer>
         <button disabled={!device.online || updateRecovery || device.revoked_at} onClick={() => onJob(device, "mirror_now")}><Database size={14} /> MIRROR NOW</button>
-        <button disabled={!device.online || protocolLegacy || updateRecovery || device.revoked_at} onClick={() => onJob(device, "restart_takt")}><RotateCcw size={14} /> RESTART</button>
         <button
           disabled={!device.online || !wifiCapable || updateRecovery || device.revoked_at}
           title={!wifiCapable ? "Rerun the Pi installer once to enable Fleet Wi-Fi" : ""}
@@ -554,7 +674,10 @@ function Dashboard({ session, refreshSession }) {
   const [bundledRelease, setBundledRelease] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [modal, setModal] = useState(null);
+  const diagnosticsSignature = useRef(null);
   const [wifiDevice, setWifiDevice] = useState(null);
+  const [confirmation, setConfirmation] = useState(null);
+  const [diagnostics, setDiagnostics] = useState({});
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     try {
@@ -565,6 +688,24 @@ function Dashboard({ session, refreshSession }) {
       setReleases(releaseData.releases);
       setBundledRelease(releaseData.bundled_release || null);
       setJobs(jobData.jobs);
+      const signature = [
+        deviceData.devices.map((device) => device.id).join(","),
+        jobData.jobs
+          .filter((job) => job.action === "collect_diagnostics")
+          .map((job) => `${job.id}:${job.status}`)
+          .join(","),
+      ].join("|");
+      if (signature !== diagnosticsSignature.current) {
+        diagnosticsSignature.current = signature;
+        const bundles = await Promise.all(
+          deviceData.devices.map((device) =>
+            request(`/api/devices/${device.id}/diagnostics`)
+              .then((data) => [device.id, data.diagnostics])
+              .catch(() => [device.id, []]),
+          ),
+        );
+        setDiagnostics(Object.fromEntries(bundles));
+      }
       setError("");
     } catch (failure) {
       setError(failure.message);
@@ -575,23 +716,32 @@ function Dashboard({ session, refreshSession }) {
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
   }, [load]);
-  const createJob = async (device, action, payload = {}) => {
-    const labels = {
-      install_release: "install the selected version",
-      mirror_now: "mirror its database now",
-      restart_takt: "restart TAKT",
-    };
-    if (!window.confirm(`${device.name}: ${labels[action]}?`)) return;
+  const submitJob = async (device, action, payload = {}, override = false) => {
     try {
       await request(
         `/api/devices/${device.id}/jobs`,
-        { method: "POST", body: JSON.stringify({ action, payload }) },
+        { method: "POST", body: JSON.stringify({ action, payload, override }) },
         session.csrf_token,
       );
       await load();
     } catch (failure) {
       setError(failure.message);
     }
+  };
+  const createJob = async (device, action, payload = {}) => {
+    const labels = {
+      install_release: "install the selected version",
+      mirror_now: "mirror its database now",
+    };
+    if (!window.confirm(`${device.name}: ${labels[action]}?`)) return;
+    await submitJob(device, action, payload);
+  };
+  // Maintenance actions always go through the confirmation dialog, which is
+  // also where an override for a busy timer is granted.
+  const confirmMaintenance = async (override) => {
+    const pending = confirmation;
+    setConfirmation(null);
+    if (pending) await submitJob(pending.device, pending.action, {}, override);
   };
   const cancelJob = async (job) => {
     if (!window.confirm(`Cancel ${job.action.replaceAll("_", " ")}?`)) return;
@@ -603,8 +753,9 @@ function Dashboard({ session, refreshSession }) {
     }
   };
   const retryJob = async (job) => {
+    if (!window.confirm(`Retry ${job.action.replaceAll("_", " ")}?`)) return;
     try {
-      await request(`/api/jobs/${job.id}/retry`, { method: "POST", body: JSON.stringify({}) }, session.csrf_token);
+      await request(`/api/jobs/${job.id}/retry`, { method: "POST", body: JSON.stringify({ override: false }) }, session.csrf_token);
       await load();
     } catch (failure) {
       setError(failure.message);
@@ -657,7 +808,7 @@ function Dashboard({ session, refreshSession }) {
         {error && <div className="global-error"><WifiOff size={16} />{error}</div>}
         <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></section>
         <section className="device-grid">
-          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release")} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onRevoke={revokeDevice} onWifi={setWifiDevice} />)}
+          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release")} diagnostics={diagnostics[device.id]} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onRevoke={revokeDevice} onWifi={setWifiDevice} onMaintenance={(target, action) => setConfirmation({ device: target, action })} />)}
           {!devices.length && <div className="empty-card"><Server size={28} /><h3>NO DEVICES ENROLLED</h3><p>Start a guided deployment to connect the first Raspberry Pi.</p><button className="primary-button" onClick={() => setModal("enroll")}>ENROLL FIRST DEVICE</button></div>}
         </section>
         <section className="operations">
@@ -671,6 +822,14 @@ function Dashboard({ session, refreshSession }) {
       {modal === "enroll" && <EnrollmentModal csrf={session.csrf_token} releases={releases} onDone={load} onClose={() => setModal(null)} />}
       {modal === "release" && <ReleaseModal csrf={session.csrf_token} onClose={() => setModal(null)} onUploaded={load} />}
       {wifiDevice && <WifiModal device={wifiDevice} csrf={session.csrf_token} onClose={() => setWifiDevice(null)} onCreated={load} />}
+      {confirmation && (
+        <ConfirmModal
+          device={devices.find((item) => item.id === confirmation.device.id) || confirmation.device}
+          action={confirmation.action}
+          onClose={() => setConfirmation(null)}
+          onConfirm={confirmMaintenance}
+        />
+      )}
     </div>
   );
 }

@@ -356,7 +356,7 @@ class DeploymentManager:
             if deployment["port"] != 22
             else f"{host} {public_key}"
         )
-        known_hosts = asyncssh.import_known_hosts(host_line.encode("utf-8"))
+        known_hosts = asyncssh.import_known_hosts(host_line)
         options: dict[str, Any] = {
             "host": host,
             "port": deployment["port"],

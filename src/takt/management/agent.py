@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
+import io
 import ipaddress
 import json
 import logging
@@ -29,13 +30,25 @@ from urllib.parse import urlsplit
 from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector
 
 from takt import __version__
+from takt.fleet_actions import (
+    DIAGNOSTICS_CAPABILITY,
+    HEALTH_CHECKS_CAPABILITY,
+    LEASED_JOBS_CAPABILITY,
+    POWER_CONTROL_CAPABILITY,
+    SERVICE_CONTROL_CAPABILITY,
+    WIFI_PROFILE_CAPABILITY,
+)
 from takt.logging_config import configure_logging
+from takt.management.redaction import REDACTION_VERSION, redact_mapping, redact_text
 from takt.protocol import PROTOCOL_VERSION
 
 LOGGER = logging.getLogger(__name__)
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{24}$")
 VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 MAX_RELEASE_SIZE = 250 * 1024 * 1024
+MAX_DIAGNOSTICS_BUNDLE_BYTES = 8 * 1024 * 1024
+MAX_DIAGNOSTICS_MEMBER_BYTES = 2 * 1024 * 1024
+MAX_LOG_CHARACTERS = 400_000
 
 
 def _loopback_hostname(hostname: str) -> bool:
@@ -107,8 +120,13 @@ class AgentConfig:
     wifi_helper_path: Path = field(
         default_factory=lambda: Path("/usr/local/libexec/takt-wifi-helper")
     )
+    maintenance_helper_path: Path = field(
+        default_factory=lambda: Path("/usr/local/libexec/takt-maintenance-helper")
+    )
+    log_directory: Path = field(default_factory=lambda: expanded("~/.local/state/takt/logs"))
     health_url: str = "http://127.0.0.1/health"
     service_name: str = "takt.service"
+    agent_service_name: str = "takt-agent.service"
     ca_bundle: Path | None = None
     config_path: Path | None = None
 
@@ -124,6 +142,7 @@ class AgentConfig:
                 "device_name",
                 "health_url",
                 "service_name",
+                "agent_service_name",
             ):
                 if key in raw:
                     setattr(config, key, str(raw[key]))
@@ -142,6 +161,8 @@ class AgentConfig:
                 "release_environment",
                 "maintenance_marker",
                 "wifi_helper_path",
+                "maintenance_helper_path",
+                "log_directory",
                 "ca_bundle",
             ):
                 if key in raw:
@@ -306,6 +327,8 @@ class TaktAgent:
         self._active_job: dict[str, Any] | None = None
         self._recovery_error: str | None = None
         self._wifi_profile_capability = self._probe_wifi_profile_capability()
+        self._helper_verbs = self._probe_maintenance_helper()
+        self._active_health_report: dict[str, Any] | None = None
 
     async def run(self, *, once: bool = False, enroll_only: bool = False) -> None:
         ssl_option: ssl.SSLContext | bool | None = None
@@ -406,10 +429,10 @@ class TaktAgent:
         self._registry_rtt_ms = round((asyncio.get_running_loop().time() - started) * 1000)
         self._heartbeat_sequence += 1
         registry_protocol = int(response_body.get("protocol_version", 0))
-        if registry_protocol != PROTOCOL_VERSION:
+        if registry_protocol < PROTOCOL_VERSION:
             raise RuntimeError(
-                f"Registry protocol {registry_protocol} is incompatible with agent protocol "
-                f"{PROTOCOL_VERSION}."
+                f"Registry protocol {registry_protocol} is older than this agent's minimum "
+                f"supported protocol {PROTOCOL_VERSION}; update the registry."
             )
         if job:
             job_id = str(job.get("id", ""))
@@ -469,14 +492,6 @@ class TaktAgent:
                 "error": self._recovery_error,
                 "phase": phase,
             }
-        capabilities = [
-            "leased-jobs",
-            "maintenance-lock",
-            "resumable-releases",
-            "sqlite-mirror-v2",
-        ]
-        if self._wifi_profile_capable():
-            capabilities.append("wifi-profile-v1")
         return {
             "name": self.config.device_name or socket.gethostname(),
             "hostname": socket.gethostname(),
@@ -490,7 +505,7 @@ class TaktAgent:
             "disk_free_bytes": disk.free,
             "temperature_c": self._temperature(),
             "protocol_version": PROTOCOL_VERSION,
-            "capabilities": capabilities,
+            "capabilities": self._capabilities(),
             "agent_session_id": self._session_id,
             "boot_id": self._boot_id(),
             "heartbeat_sequence": self._heartbeat_sequence,
@@ -530,17 +545,18 @@ class TaktAgent:
             elif action == "mirror_now":
                 await self._upload_mirror(session)
             elif action == "restart_takt":
-                current_health = await self._local_health(session)
-                await self._acquire_maintenance(session, job_id, "Restart TAKT")
-                expected_version = str(
-                    current_health.get("version") or self._read_release_version() or ""
-                )
-                self._write_maintenance_marker(job_id, expected_version or "service-restart")
-                try:
-                    await self._systemctl("restart", self.config.service_name)
-                    await self._wait_for_health(session, expected_version)
-                finally:
-                    self._remove_maintenance_marker()
+                await self._restart_takt(session, job)
+            elif action in {"start_takt", "stop_takt"}:
+                await self._service_action(session, job)
+            elif action in {"reboot_device", "shutdown_device"}:
+                # Reports its own terminal result before the box goes down, so it
+                # must not fall through to the trailing success report.
+                await self._power_action(session, job)
+                return
+            elif action == "collect_diagnostics":
+                await self._collect_diagnostics(session, job)
+            elif action == "run_health_checks":
+                await self._run_health_checks(session, job)
             elif action == "add_wifi_network":
                 await self._add_wifi_network(job)
             else:
@@ -583,6 +599,8 @@ class TaktAgent:
             with contextlib.suppress(asyncio.CancelledError):
                 await renew_task
             self._active_job = None
+        health_report = self._active_health_report
+        self._active_health_report = None
         await self._remember_result(
             session,
             job_id,
@@ -590,9 +608,363 @@ class TaktAgent:
             f"{action} completed",
             stage="succeeded" if action == "install_release" else None,
             lease_id=lease_id,
+            result=health_report,
         )
         if action == "install_release":
             self._clear_update_journal(job_id)
+
+    async def _health_report(self, session: ClientSession) -> dict[str, Any]:
+        checks: list[dict[str, Any]] = []
+
+        def record(identifier: str, label: str, status: str, detail: str) -> None:
+            checks.append(
+                {
+                    "id": identifier,
+                    "label": label,
+                    "status": status,
+                    "detail": redact_text(detail)[:400],
+                }
+            )
+
+        health = await self._local_health(session)
+        record(
+            "takt_service",
+            "TAKT service",
+            "ok" if await self._service_is_active() else "fail",
+            f"{self.config.service_name} active state",
+        )
+        if health.get("ok"):
+            record("app_health", "TAKT application", "ok", f"timer state {health.get('state')}")
+        else:
+            record(
+                "app_health",
+                "TAKT application",
+                "fail",
+                f"health endpoint reported {health.get('state', 'unreachable')}",
+            )
+        disk = shutil.disk_usage(self.config.data_directory)
+        free_mb = disk.free // (1024 * 1024)
+        record(
+            "disk_space",
+            "Disk space",
+            "fail" if free_mb < 500 else "warn" if free_mb < 2048 else "ok",
+            f"{free_mb} MB free",
+        )
+        temperature = self._temperature()
+        if temperature is None:
+            record("temperature", "Temperature", "skipped", "no thermal sensor")
+        else:
+            record(
+                "temperature",
+                "Temperature",
+                "fail" if temperature >= 85 else "warn" if temperature >= 75 else "ok",
+                f"{temperature} C",
+            )
+        record(*self._database_integrity_check())
+        record(*self._clock_check())
+        rtt = self._registry_rtt_ms
+        record(
+            "registry_link",
+            "Registry link",
+            "warn" if self._registry_transport == "insecure-http-opt-in" else "ok",
+            f"{rtt} ms over {self._registry_transport}" if rtt is not None else "not measured yet",
+        )
+        record(
+            "maintenance_helper",
+            "Maintenance helper",
+            "ok" if self._helper_verbs else "warn",
+            f"verbs: {', '.join(sorted(self._helper_verbs)) or 'unavailable'}",
+        )
+        record(
+            "gpio",
+            "GPIO button",
+            "ok" if health.get("hardware_available") else "warn",
+            "reported by the TAKT application",
+        )
+        wifi_dbm = self._wifi_signal_dbm()
+        record(
+            "network",
+            "Wireless link",
+            "ok" if wifi_dbm is not None else "skipped",
+            f"{wifi_dbm} dBm" if wifi_dbm is not None else "no wireless interface",
+        )
+        counts = {"ok": 0, "warn": 0, "fail": 0, "skipped": 0}
+        for check in checks:
+            counts[str(check["status"])] += 1
+        return {
+            "schema": 1,
+            "collected_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            # "healthy", not "ok": the per-status counts below already use "ok".
+            "summary": {"healthy": counts["fail"] == 0, **counts},
+            "checks": checks,
+        }
+
+    def _database_integrity_check(self) -> tuple[str, str, str, str]:
+        identifier, label = "database_integrity", "Run database"
+        if not self.config.database_path.exists():
+            return identifier, label, "skipped", "no database yet"
+        try:
+            # Read-only so a live run is never disturbed by the check itself.
+            connection = sqlite3.connect(f"file:{self.config.database_path}?mode=ro", uri=True)
+            try:
+                result = str(connection.execute("PRAGMA quick_check").fetchone()[0])
+            finally:
+                connection.close()
+        except sqlite3.Error as error:
+            return identifier, label, "fail", str(error)
+        return identifier, label, "ok" if result == "ok" else "fail", result
+
+    def _clock_check(self) -> tuple[str, str, str, str]:
+        identifier, label = "clock", "System clock"
+        try:
+            completed = subprocess.run(
+                ["timedatectl", "show", "--property=NTPSynchronized", "--value"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                encoding="utf-8",
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return identifier, label, "skipped", str(error)
+        if completed.returncode:
+            return identifier, label, "skipped", "timedatectl unavailable"
+        synchronized = completed.stdout.strip() == "yes"
+        return (
+            identifier,
+            label,
+            "ok" if synchronized else "warn",
+            "NTP synchronized" if synchronized else "clock is not NTP synchronized",
+        )
+
+    def _build_diagnostics_bundle(self, health_report: dict[str, Any]) -> Path:
+        """Assemble a redacted diagnostics archive.
+
+        Every member comes from a named source; the bundle is never produced by
+        walking a directory, so a stray secret file cannot be swept in.
+        """
+        secrets = [self.identity.device_token, self.config.enrollment_code]
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix="takt-diagnostics-", suffix=".tar.gz", dir=self.config.data_directory
+        )
+        os.close(file_descriptor)
+        bundle = Path(temporary_name)
+        try:
+            with tarfile.open(bundle, "w:gz") as archive:
+
+                def add_text(name: str, text: str) -> None:
+                    payload = redact_text(text, secrets=secrets).encode("utf-8")
+                    if len(payload) > MAX_DIAGNOSTICS_MEMBER_BYTES:
+                        payload = payload[-MAX_DIAGNOSTICS_MEMBER_BYTES:]
+                    info = tarfile.TarInfo(name)
+                    info.size = len(payload)
+                    info.mode = 0o600
+                    archive.addfile(info, io.BytesIO(payload))
+
+                add_text(
+                    "manifest.json",
+                    json.dumps(
+                        {
+                            "schema": 1,
+                            "redaction_version": REDACTION_VERSION,
+                            "device_id": self.identity.device_id,
+                            "hostname": socket.gethostname(),
+                            "agent_version": __version__,
+                            "app_version": self._read_release_version(),
+                            "helper_verbs": sorted(self._helper_verbs),
+                            "collected_at": health_report.get("collected_at"),
+                        },
+                        indent=2,
+                    ),
+                )
+                add_text("health.json", json.dumps(health_report, indent=2))
+                add_text(
+                    "system/facts.json",
+                    json.dumps(
+                        {
+                            "model": self._model(),
+                            "os": platform.platform(),
+                            "architecture": platform.machine(),
+                            "uptime_seconds": self._uptime_seconds(),
+                            "boot_id": self._boot_id(),
+                            "temperature_c": self._temperature(),
+                            "wifi_signal_dbm": self._wifi_signal_dbm(),
+                            "disk": shutil.disk_usage(self.config.data_directory)._asdict(),
+                        },
+                        indent=2,
+                    ),
+                )
+                for config_path, name in (
+                    (self.config.config_path, "config/agent.toml.json"),
+                ):
+                    if config_path and config_path.is_file():
+                        try:
+                            with config_path.open("rb") as handle:
+                                parsed = tomllib.load(handle)
+                        except (OSError, tomllib.TOMLDecodeError):
+                            continue
+                        add_text(
+                            name,
+                            json.dumps(redact_mapping(parsed, secrets=secrets), indent=2),
+                        )
+                for log_name in ("takt.log", "takt-agent.log"):
+                    log_path = self.config.log_directory / log_name
+                    if log_path.is_file():
+                        with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                            add_text(f"logs/{log_name}", handle.read()[-MAX_LOG_CHARACTERS:])
+                if "journal" in self._helper_verbs:
+                    for unit in (self.config.service_name, self.config.agent_service_name):
+                        try:
+                            result = self._call_helper_sync(
+                                "journal", {"unit": unit, "lines": 1000}
+                            )
+                        except RuntimeError as error:
+                            add_text(f"journal/{unit}.txt", f"unavailable: {error}")
+                            continue
+                        add_text(f"journal/{unit}.txt", str(result.get("text", "")))
+            if bundle.stat().st_size > MAX_DIAGNOSTICS_BUNDLE_BYTES:
+                raise RuntimeError("Diagnostics bundle exceeded the size limit.")
+            return bundle
+        except Exception:
+            bundle.unlink(missing_ok=True)
+            raise
+
+    def _call_helper_sync(self, verb: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        completed = subprocess.run(
+            ["sudo", "-n", str(self.config.maintenance_helper_path)],
+            input=json.dumps({"verb": verb, "arguments": arguments}, separators=(",", ":")),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            encoding="utf-8",
+            check=False,
+            timeout=60,
+        )
+        if completed.returncode:
+            raise RuntimeError(f"Maintenance helper refused '{verb}'.")
+        body = json.loads(completed.stdout)
+        if not body.get("ok"):
+            raise RuntimeError(str(body.get("error") or f"Maintenance helper refused '{verb}'."))
+        return dict(body.get("result") or {})
+
+    async def _require_safe_state(
+        self, session: ClientSession, job: dict[str, Any], reason: str
+    ) -> str | None:
+        """Refuse to disturb a running or unsaved run unless explicitly overridden.
+
+        The local maintenance lock only grants a lease in the `ready` timer state,
+        so this is the authoritative safety gate regardless of what the operator's
+        browser believed when the job was created.
+        """
+        job_id = str(job["id"])
+        if bool((job.get("payload") or {}).get("override")):
+            LOGGER.warning(
+                "maintenance_override id=%s action=%s", job_id, job.get("action")
+            )
+            return None
+        if not await self._service_is_active():
+            # TAKT is not running, so there is no run to interrupt and the local
+            # maintenance endpoint is unreachable by definition.
+            return None
+        return await self._acquire_maintenance(session, job_id, reason)
+
+    async def _restart_takt(self, session: ClientSession, job: dict[str, Any]) -> None:
+        job_id = str(job["id"])
+        current_health = await self._local_health(session)
+        await self._require_safe_state(session, job, "Restart TAKT")
+        expected_version = str(current_health.get("version") or self._read_release_version() or "")
+        self._write_maintenance_marker(job_id, expected_version or "service-restart")
+        try:
+            await self._progress_job(session, job_id, 40, "Restarting TAKT", stage="applying")
+            await self._systemctl("restart", self.config.service_name)
+            await self._progress_job(
+                session, job_id, 70, "Checking TAKT health", stage="verifying"
+            )
+            await self._wait_for_health(session, expected_version)
+        finally:
+            self._remove_maintenance_marker()
+
+    async def _service_action(self, session: ClientSession, job: dict[str, Any]) -> None:
+        job_id = str(job["id"])
+        action = str(job["action"])
+        operation = "start" if action == "start_takt" else "stop"
+        if operation == "stop":
+            await self._require_safe_state(session, job, "Stop TAKT")
+        await self._progress_job(
+            session, job_id, 40, f"Running {operation} on {self.config.service_name}",
+            stage="applying",
+        )
+        # systemd treats starting a running unit (or stopping a stopped one) as a
+        # no-op success, which is exactly the idempotency this job needs.
+        await self._call_helper(
+            "service", {"unit": self.config.service_name, "operation": operation}
+        )
+        await self._progress_job(session, job_id, 75, "Verifying service state", stage="verifying")
+        if operation == "start":
+            await self._wait_for_health(session, "")
+        elif await self._service_is_active():
+            raise RuntimeError(f"{self.config.service_name} is still active after stop.")
+
+    async def _power_action(self, session: ClientSession, job: dict[str, Any]) -> None:
+        job_id = str(job["id"])
+        action = str(job["action"])
+        lease_id = str(job.get("lease_id") or "")
+        mode = "reboot" if action == "reboot_device" else "poweroff"
+        stage = "rebooting" if mode == "reboot" else "powering_off"
+        await self._require_safe_state(session, job, f"Fleet {mode}")
+        message = (
+            "Reboot requested; the device will reconnect shortly."
+            if mode == "reboot"
+            else "Shutdown requested; the device will leave the fleet until it is powered on."
+        )
+        await self._progress_job(session, job_id, 90, message, stage=stage)
+        await self._call_helper("power", {"mode": mode})
+        # Do not report success until the helper accepts the operation; a
+        # refused helper call is handled as a failed job by the outer runner.
+        await self._remember_result(
+            session, job_id, "succeeded", message, lease_id=lease_id, stage="succeeded"
+        )
+
+    async def _run_health_checks(self, session: ClientSession, job: dict[str, Any]) -> None:
+        job_id = str(job["id"])
+        await self._progress_job(session, job_id, 30, "Running health checks", stage="checking")
+        report = await self._health_report(session)
+        self._active_health_report = report
+
+    async def _collect_diagnostics(self, session: ClientSession, job: dict[str, Any]) -> None:
+        job_id = str(job["id"])
+        lease_id = str(job.get("lease_id") or "")
+        await self._progress_job(
+            session, job_id, 20, "Collecting diagnostics", stage="collecting"
+        )
+        report = await self._health_report(session)
+        bundle = await asyncio.to_thread(self._build_diagnostics_bundle, report)
+        try:
+            size = bundle.stat().st_size
+            digest = await asyncio.to_thread(self._sha256, bundle)
+            await self._progress_job(
+                session,
+                job_id,
+                70,
+                f"Uploading diagnostics ({size} bytes)",
+                stage="uploading",
+            )
+            with bundle.open("rb") as handle:
+                async with session.put(
+                    f"{self.config.registry_url}/agent/jobs/{job_id}/artifact",
+                    data=handle,
+                    headers={
+                        **self._headers(),
+                        "X-Job-Lease": lease_id,
+                        "X-TAKT-SHA256": digest,
+                    },
+                ) as response:
+                    if response.status != 200:
+                        raise RuntimeError(
+                            f"Diagnostics upload failed: {await response.text()}"
+                        )
+        finally:
+            bundle.unlink(missing_ok=True)
 
     async def _add_wifi_network(self, job: dict[str, Any]) -> None:
         payload = job.get("payload")
@@ -630,6 +1002,23 @@ class TaktAgent:
         if process.returncode:
             raise RuntimeError("Wi-Fi profile helper failed.")
 
+    def _capabilities(self) -> list[str]:
+        capabilities = [
+            LEASED_JOBS_CAPABILITY,
+            "maintenance-lock",
+            "resumable-releases",
+            "sqlite-mirror-v2",
+            HEALTH_CHECKS_CAPABILITY,
+            DIAGNOSTICS_CAPABILITY,
+        ]
+        if self._wifi_profile_capable():
+            capabilities.append(WIFI_PROFILE_CAPABILITY)
+        if "service" in self._helper_verbs:
+            capabilities.append(SERVICE_CONTROL_CAPABILITY)
+        if "power" in self._helper_verbs:
+            capabilities.append(POWER_CONTROL_CAPABILITY)
+        return sorted(capabilities)
+
     def _wifi_profile_capable(self) -> bool:
         return self._wifi_profile_capability
 
@@ -654,6 +1043,67 @@ class TaktAgent:
             )
         except (OSError, subprocess.SubprocessError):
             return False
+
+    def _probe_maintenance_helper(self) -> frozenset[str]:
+        """Ask the root helper which verbs it offers.
+
+        The capability set is derived from the helper's own answer rather than
+        assumed from the agent version, so a Pi whose installer predates the
+        helper simply reports nothing and the registry disables those actions
+        instead of queuing jobs that would fail at execution time.
+        """
+        if not self.config.maintenance_helper_path.is_file() or not os.access(
+            self.config.maintenance_helper_path, os.X_OK
+        ):
+            return frozenset()
+        try:
+            completed = subprocess.run(
+                ["sudo", "-n", str(self.config.maintenance_helper_path)],
+                input=json.dumps({"verb": "version", "arguments": {}}),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                encoding="utf-8",
+                check=False,
+                timeout=10,
+            )
+            if completed.returncode:
+                return frozenset()
+            body = json.loads(completed.stdout)
+            if not body.get("ok"):
+                return frozenset()
+            verbs = body.get("result", {}).get("verbs", [])
+            return frozenset(str(verb) for verb in verbs)
+        except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
+            return frozenset()
+
+    async def _call_helper(self, verb: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if verb not in self._helper_verbs:
+            raise RuntimeError(f"The maintenance helper does not support '{verb}'.")
+        document = json.dumps(
+            {"verb": verb, "arguments": arguments}, separators=(",", ":")
+        ).encode("utf-8")
+        process = await asyncio.create_subprocess_exec(
+            "sudo",
+            "-n",
+            str(self.config.maintenance_helper_path),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(document), timeout=90)
+        except TimeoutError as error:
+            process.kill()
+            await process.communicate()
+            raise RuntimeError(f"Maintenance helper timed out during '{verb}'.") from error
+        try:
+            body = json.loads(output)
+        except (ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"Maintenance helper returned an invalid response for '{verb}'.") \
+                from error
+        if not body.get("ok"):
+            raise RuntimeError(str(body.get("error") or f"Maintenance helper refused '{verb}'."))
+        return dict(body.get("result") or {})
 
     @staticmethod
     def _validate_wifi_network(ssid: str, password: str, priority: object) -> None:
@@ -730,8 +1180,8 @@ class TaktAgent:
                 self._prepare_release, artifact, version, job_id
             )
             self._assert_job_control()
-            maintenance_lease = await self._acquire_maintenance(
-                session, job_id, f"Install TAKT release {version}"
+            maintenance_lease = await self._require_safe_state(
+                session, job, f"Install TAKT release {version}"
             )
             try:
                 previous_target = (
@@ -1164,6 +1614,7 @@ class TaktAgent:
         *,
         lease_id: str = "",
         stage: str | None = None,
+        result: dict[str, Any] | None = None,
     ) -> None:
         if not lease_id and self._active_job and self._active_job["id"] == job_id:
             lease_id = str(self._active_job["lease_id"])
@@ -1173,6 +1624,7 @@ class TaktAgent:
             "message": message[:2000],
             "lease_id": lease_id,
             "stage": stage,
+            "result": result,
         }
         while len(self.state.pending_results) > 100:
             self.state.pending_results.pop(next(iter(self.state.pending_results)))
@@ -1200,6 +1652,7 @@ class TaktAgent:
                     str(result["message"]),
                     lease_id=str(result.get("lease_id") or ""),
                     stage=str(result.get("stage")) if result.get("stage") else None,
+                    result=result.get("result"),
                 )
             except StaleJobResult as error:
                 LOGGER.warning("stale_job_result_dropped id=%s error=%s", job_id, error)
@@ -1242,6 +1695,7 @@ class TaktAgent:
         stage: str | None = None,
         bytes_downloaded: int | None = None,
         bytes_total: int | None = None,
+        result: dict[str, Any] | None = None,
     ) -> None:
         if not lease_id and self._active_job and self._active_job["id"] == job_id:
             lease_id = str(self._active_job["lease_id"])
@@ -1255,6 +1709,7 @@ class TaktAgent:
                 "stage": stage,
                 "bytes_downloaded": bytes_downloaded,
                 "bytes_total": bytes_total,
+                "result": result,
             },
             headers=self._headers(),
             timeout=ClientTimeout(total=25, connect=10, sock_read=15),
