@@ -218,7 +218,13 @@ class RegistryStore:
         self.backup_directory.mkdir(parents=True, exist_ok=True)
         self.diagnostics_directory.mkdir(parents=True, exist_ok=True)
         database_existed = self.database_path.exists() and self.database_path.stat().st_size > 0
-        self.connection = sqlite3.connect(self.database_path, timeout=10)
+        # The ASGI server creates the store before Uvicorn starts its event-loop
+        # thread.  Keep the existing single-store transaction model for now, but
+        # permit that hand-off; repository/unit-of-work extraction will replace
+        # this shared connection in the next migration slice.
+        self.connection = sqlite3.connect(
+            self.database_path, timeout=10, check_same_thread=False
+        )
         self.database_path.chmod(0o600)
         self.connection.row_factory = sqlite3.Row
         self._job_secret_cipher: JobSecretCipher | None = None
