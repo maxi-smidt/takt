@@ -205,7 +205,7 @@ ON diagnostics(device_id, created_at DESC);
 
 
 class RegistryStore:
-    def __init__(self, data_directory: Path) -> None:
+    def __init__(self, data_directory: Path, *, allow_thread_handoff: bool = False) -> None:
         self.data_directory = data_directory
         self.database_path = data_directory / "registry.db"
         self.job_secret_key_path = data_directory / "job-secrets.key"
@@ -218,7 +218,11 @@ class RegistryStore:
         self.backup_directory.mkdir(parents=True, exist_ok=True)
         self.diagnostics_directory.mkdir(parents=True, exist_ok=True)
         database_existed = self.database_path.exists() and self.database_path.stat().st_size > 0
-        self.connection = sqlite3.connect(self.database_path, timeout=10)
+        self.connection = sqlite3.connect(
+            self.database_path,
+            timeout=10,
+            check_same_thread=not allow_thread_handoff,
+        )
         self.database_path.chmod(0o600)
         self.connection.row_factory = sqlite3.Row
         self._job_secret_cipher: JobSecretCipher | None = None

@@ -8,9 +8,15 @@ import secrets
 import time
 from pathlib import Path
 
-from aiohttp import web
-
 COOKIE_NAME = "takt_registry_session"
+
+
+class SessionError(ValueError):
+    """The supplied administrator session is missing or invalid."""
+
+
+class CsrfError(PermissionError):
+    """The supplied administrator session has an invalid CSRF token."""
 
 
 class AdminAuth:
@@ -40,8 +46,13 @@ class AdminAuth:
         signature = self._encode(hmac.new(self._key, payload, hashlib.sha256).digest())
         return f"{payload.decode()}.{signature.decode()}"
 
-    def session(self, request: web.Request, *, csrf: bool = False) -> dict[str, object]:
-        token = request.cookies.get(COOKIE_NAME, "")
+    def verify_session(
+        self,
+        token: str,
+        *,
+        csrf_token: str | None = None,
+        require_csrf: bool = False,
+    ) -> dict[str, object]:
         try:
             encoded_payload, encoded_signature = token.split(".", 1)
             payload = encoded_payload.encode("ascii")
@@ -51,16 +62,16 @@ class AdminAuth:
                 raise ValueError
             data = json.loads(self._decode(encoded_payload))
             if int(data["exp"]) < int(time.time()):
-                raise ValueError
-            if csrf and not hmac.compare_digest(
-                str(data["csrf"]), request.headers.get("X-CSRF-Token", "")
+                raise SessionError
+            if require_csrf and not hmac.compare_digest(
+                str(data["csrf"]), csrf_token or ""
             ):
-                raise web.HTTPForbidden(text="CSRF validation failed.")
+                raise CsrfError("CSRF validation failed.")
             return data
-        except web.HTTPException:
+        except CsrfError:
             raise
         except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-            raise web.HTTPUnauthorized(text="Administrator login required.") from None
+            raise SessionError("Administrator login required.") from None
 
     @staticmethod
     def _encode(value: bytes) -> bytes:

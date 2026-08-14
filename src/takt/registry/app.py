@@ -20,7 +20,7 @@ from aiohttp import web
 
 from takt.fleet_actions import ALLOWED_ACTIONS
 from takt.protocol import PROTOCOL_VERSION
-from takt.registry.auth import COOKIE_NAME, AdminAuth
+from takt.registry.auth import COOKIE_NAME, AdminAuth, CsrfError, SessionError
 from takt.registry.bundled_release import ReleaseValidationError, validate_release_archive
 from takt.registry.deployment import (
     DeploymentCredentials,
@@ -165,8 +165,8 @@ async def health(request: web.Request) -> web.Response:
 
 async def session_status(request: web.Request) -> web.Response:
     try:
-        session = request.app[AUTH_KEY].session(request)
-    except web.HTTPUnauthorized:
+        session = request.app[AUTH_KEY].verify_session(request.cookies.get(COOKIE_NAME, ""))
+    except SessionError:
         return web.json_response({"authenticated": False})
     return web.json_response({"authenticated": True, "csrf_token": session["csrf"]})
 
@@ -211,7 +211,7 @@ async def login(request: web.Request) -> web.Response:
 
 
 async def logout(request: web.Request) -> web.Response:
-    request.app[AUTH_KEY].session(request, csrf=True)
+    _admin(request, csrf=True)
     response = web.json_response({"ok": True})
     response.del_cookie(COOKIE_NAME)
     return response
@@ -961,7 +961,16 @@ async def _json(request: web.Request, *, max_bytes: int = JSON_LIMIT) -> dict[st
 
 
 def _admin(request: web.Request, *, csrf: bool = False) -> dict[str, object]:
-    return request.app[AUTH_KEY].session(request, csrf=csrf)
+    try:
+        return request.app[AUTH_KEY].verify_session(
+            request.cookies.get(COOKIE_NAME, ""),
+            csrf_token=request.headers.get("X-CSRF-Token") if csrf else None,
+            require_csrf=csrf,
+        )
+    except CsrfError as error:
+        raise web.HTTPForbidden(text=str(error)) from error
+    except SessionError as error:
+        raise web.HTTPUnauthorized(text=str(error)) from error
 
 
 def _device(request: web.Request) -> str:

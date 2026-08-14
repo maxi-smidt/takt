@@ -3,15 +3,14 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import ssl
 import tempfile
 from pathlib import Path
 
-from aiohttp import web
+import uvicorn
 
-from takt.registry.app import create_registry_app
 from takt.registry.auth import AdminAuth
 from takt.registry.bundled_release import import_bundled_release
+from takt.registry.fastapi_app import create_fastapi_app
 from takt.registry.storage import RegistryStore
 
 LOGGER = logging.getLogger(__name__)
@@ -78,20 +77,21 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         store.close()
         raise
-    app = create_registry_app(store, auth, secure_cookies=args.secure_cookies)
-
-    async def close_store(_application: web.Application) -> None:
-        store.close()
-
-    app.on_cleanup.append(close_store)
-    ssl_context = None
     if bool(args.tls_certificate) != bool(args.tls_key):
         raise SystemExit("Both --tls-certificate and --tls-key are required together.")
-    if args.tls_certificate:
-        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ssl_context.load_cert_chain(args.tls_certificate, args.tls_key)
-    web.run_app(app, host=args.host, port=args.port, ssl_context=ssl_context)
-    lock_handle.close()
+    app = create_fastapi_app(store, auth, secure_cookies=args.secure_cookies)
+    try:
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            ssl_certfile=args.tls_certificate,
+            ssl_keyfile=args.tls_key,
+            workers=1,
+        )
+    finally:
+        store.close()
+        lock_handle.close()
     return 0
 
 
