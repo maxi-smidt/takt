@@ -157,6 +157,10 @@ fi
 device_name="${device_name:-$current_hostname}"
 [[ "$port" =~ ^[0-9]+$ ]] || fail "TAKT_PORT muss eine Zahl sein."
 ((port >= 1 && port <= 65535)) || fail "TAKT_PORT muss zwischen 1 und 65535 liegen."
+web_assets_dir="$project_dir/src/takt/web/static/assets"
+if [[ ! -f "$project_dir/src/takt/web/static/index.html" || ! -d "$web_assets_dir" ]] || ! compgen -G "$web_assets_dir/*" >/dev/null 2>&1; then
+  fail "Die gebaute Browser-Oberfläche fehlt. Auf einem Laptop ./scripts/build_web_ui.sh oder ./scripts/package_for_raspberry_pi.sh ausführen; auf dem Pi wird kein Node.js installiert."
+fi
 
 say "Systempakete für Raspberry Pi OS Lite installieren"
 sudo env DEBIAN_FRONTEND=noninteractive apt-get update

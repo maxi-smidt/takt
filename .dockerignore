@@ -17,4 +17,5 @@ identifier.sqlite
 **/*.pyc
 **/*.pyo
 webui/node_modules
+src/takt/web/static
 src/takt/registry/static

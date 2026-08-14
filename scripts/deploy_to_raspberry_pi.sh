@@ -85,6 +85,7 @@ rsync -az \
   --exclude '*.pem' \
   --exclude '*.key' \
   --exclude 'webui/node_modules/' \
+  --exclude 'src/takt/registry/static/' \
   "$project_dir/" \
   "$remote:~/$remote_dir/"
 

@@ -43,6 +43,9 @@ for required_file in "${required_files[@]}"; do
   [[ -f "$project_dir/$required_file" ]] \
     || fail "Erforderliche Datei fehlt: $required_file"
 done
+web_assets_dir="$project_dir/src/takt/web/static/assets"
+[[ -d "$web_assets_dir" ]] && compgen -G "$web_assets_dir/*" >/dev/null 2>&1 \
+  || fail "Gebautes Browser-Asset fehlt. ./scripts/build_web_ui.sh muss erfolgreich laufen."
 
 archive_dir="$(dirname "$archive")"
 mkdir -p "$archive_dir"
@@ -67,6 +70,7 @@ say "Sauberes Raspberry-Pi-Paket erstellen"
     --exclude="$project_name/.idea" \
     --exclude="$project_name/.registry-preview" \
     --exclude="$project_name/registry-data" \
+    --exclude="$project_name/src/takt/registry/static" \
     --exclude="$project_name/artifacts" \
     --exclude="$project_name/identifier.sqlite" \
     --exclude="$project_name/webui/node_modules" \
