@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,6 +95,43 @@ class WebApplicationTests(unittest.TestCase):
                         await websocket.send_str("ping")
                         self.assertEqual((await websocket.receive()).data, "pong")
 
+                    async with client.get(f"{base_url}/api/database/export") as response:
+                        self.assertEqual(response.status, 400)
+
+                    async with client.get(
+                        f"{base_url}/api/database/export?format=csv",
+                        headers={"Sec-Fetch-Site": "cross-site"},
+                    ) as response:
+                        self.assertEqual(response.status, 403)
+
+                    async with client.get(f"{base_url}/api/database/export?format=db") as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.content_type, "application/vnd.sqlite3")
+                        self.assertRegex(
+                            response.headers["Content-Disposition"],
+                            r'attachment; filename="takt-\d{4}-\d{2}-\d{2}\.db"',
+                        )
+                        exported_db = await response.read()
+                    exported_path = Path(temporary_directory) / "exported.db"
+                    exported_path.write_bytes(exported_db)
+                    with sqlite3.connect(exported_path) as connection:
+                        self.assertEqual(
+                            connection.execute("PRAGMA integrity_check").fetchone()[0],
+                            "ok",
+                        )
+                        self.assertEqual(
+                            connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0],
+                            0,
+                        )
+                    async with client.get(f"{base_url}/api/database/export?format=csv") as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.content_type, "text/csv")
+                        self.assertRegex(
+                            response.headers["Content-Disposition"],
+                            r'attachment; filename="takt-runs-\d{4}-\d{2}-\d{2}\.csv"',
+                        )
+                        csv_rows = list(csv.DictReader(io.StringIO(await response.text())))
+                        self.assertEqual(csv_rows, [])
                     async with client.post(
                         f"{base_url}/api/audio/settings",
                         json={
@@ -182,6 +222,11 @@ class WebApplicationTests(unittest.TestCase):
                         action = await response.json()
                         self.assertEqual(action["state"]["state"], "running")
 
+                    for export_format in ("db", "csv"):
+                        async with client.get(
+                            f"{base_url}/api/database/export?format={export_format}"
+                        ) as response:
+                            self.assertEqual(response.status, 409)
                     async with client.post(
                         f"{base_url}/internal/maintenance/acquire",
                         json={

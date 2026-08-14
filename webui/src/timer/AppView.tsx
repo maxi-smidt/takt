@@ -8,6 +8,7 @@ import {
   Check,
   ChevronRight,
   CirclePower,
+  Download,
   Clock3,
   Expand,
   Gauge,
@@ -869,6 +870,8 @@ function SettingsModal({
   onSelectRun,
   onPrepare,
   onAudioRequest,
+  onExport,
+  exportBusy,
   feedback,
 }) {
   const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
@@ -921,7 +924,31 @@ function SettingsModal({
               HERUNTERFAHREN
             </button>
           </div>
+          <div className="system-tile export-tile">
+            <Download size={18} />
+            <div>
+              <span>DATENEXPORT</span>
+              <strong>DB oder CSV herunterladen</strong>
+            </div>
+            <div className="export-actions">
+              <button
+                type="button"
+                disabled={Boolean(exportBusy)}
+                onClick={() => onExport("db")}
+              >
+                <Download size={14} />{exportBusy === "db" ? "LÄDT …" : "DATENBANK (.DB)"}
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(exportBusy)}
+                onClick={() => onExport("csv")}
+              >
+                <Download size={14} />{exportBusy === "csv" ? "LÄDT …" : "LÄUFE (.CSV)"}
+              </button>
+            </div>
+          </div>
         </div>
+
         <AudioSettingsPanel audio={system.audio} onRequest={onAudioRequest} />
         <div className="data-section-header">
           <div>
@@ -1032,6 +1059,7 @@ function App() {
     setChartDays,
     sendAction,
     sendAudioRequest,
+    downloadExport,
     prepareConfirmation,
     confirmPrepared,
   } = useTaktServer();
@@ -1040,6 +1068,7 @@ function App() {
   const [confirmation, setConfirmation] = useState(null);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [exportBusy, setExportBusy] = useState("");
   const [toast, setToast] = useState(null);
   const [now, setNow] = useState(new Date());
   const lastSignalRevision = useRef(state.signal_revision);
@@ -1087,6 +1116,19 @@ function App() {
     } catch (error) {
       setToast(error.message);
       setTimeout(() => setToast(null), 3000);
+    }
+  };
+
+  const handleExport = async (format) => {
+    setExportBusy(format);
+    setFeedback("Export wird vorbereitet …");
+    try {
+      const filename = await downloadExport(format);
+      setFeedback(`${filename} wurde zum Herunterladen bereitgestellt.`);
+    } catch (error) {
+      setFeedback(error.message);
+    } finally {
+      setExportBusy("");
     }
   };
 
@@ -1194,6 +1236,8 @@ function App() {
         onSelectRun={setSelectedRunId}
         onPrepare={handlePrepare}
         onAudioRequest={sendAudioRequest}
+        onExport={handleExport}
+        exportBusy={exportBusy}
         feedback={feedback}
       />
       <ConfirmationModal

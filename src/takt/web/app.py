@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import csv
 import ipaddress
 import os
+import sqlite3
+from datetime import date
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
@@ -19,6 +24,7 @@ from takt.web.runtime import (
 
 STATIC_ROOT = Path(__file__).with_name("static")
 RUNTIME_KEY = web.AppKey("runtime", WebRuntime)
+EXPORT_CHUNK_SIZE = 64 * 1024
 
 
 def create_web_app(runtime: WebRuntime) -> web.Application:
@@ -29,6 +35,7 @@ def create_web_app(runtime: WebRuntime) -> web.Application:
     app.router.add_get("/health", health)
     app.router.add_get("/api/bootstrap", bootstrap)
     app.router.add_get("/api/history", history)
+    app.router.add_get("/api/database/export", database_export, allow_head=False)
     app.router.add_get("/api/events", events)
     app.router.add_post("/api/action", action)
     app.router.add_get("/internal/maintenance", maintenance_status)
@@ -111,6 +118,70 @@ async def history(request: web.Request) -> web.Response:
     )
     return web.json_response(runtime.history_payload(chart_days))
 
+
+async def database_export(request: web.Request) -> web.StreamResponse:
+    _require_same_origin(request)
+    runtime = request.app[RUNTIME_KEY]
+
+    export_format = request.query.get("format")
+    if export_format not in {"db", "csv"}:
+        raise web.HTTPBadRequest(text="Exportformat muss db oder csv sein.")
+    if runtime.data_export_blocked:
+        raise web.HTTPConflict(
+            text="Datenexport ist während einer laufenden Zeitmessung nicht möglich."
+        )
+    if runtime.maintenance_status()["held"]:
+        raise web.HTTPConflict(text="Datenexport ist während der Wartung nicht möglich.")
+
+    suffix = ".db" if export_format == "db" else ".csv"
+    prefix = "takt-" if export_format == "db" else "takt-runs-"
+    filename = f"{prefix}{date.today().isoformat()}{suffix}"
+    content_type = (
+        "application/vnd.sqlite3"
+        if export_format == "db"
+        else "text/csv; charset=utf-8"
+    )
+    with TemporaryDirectory(prefix="takt-export-") as directory:
+        artifact = Path(directory) / filename
+        try:
+            if export_format == "db":
+                await asyncio.to_thread(runtime.repository.backup_to, artifact)
+            else:
+                await asyncio.to_thread(runtime.repository.export_runs_csv, artifact)
+        except (OSError, csv.Error, sqlite3.Error) as error:
+            raise web.HTTPInternalServerError(
+                text="Datenexport konnte nicht erstellt werden."
+            ) from error
+        return await _stream_export(request, artifact, filename, content_type)
+
+
+async def _stream_export(
+    request: web.Request,
+    artifact: Path,
+    filename: str,
+    content_type: str,
+) -> web.StreamResponse:
+    response = web.StreamResponse(
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f"attachment; filename=\"{filename}\"",
+            "Content-Type": content_type,
+        }
+    )
+    response.content_length = (await asyncio.to_thread(artifact.stat)).st_size
+    await response.prepare(request)
+    try:
+        stream = await asyncio.to_thread(artifact.open, "rb")
+        try:
+            while chunk := await asyncio.to_thread(stream.read, EXPORT_CHUNK_SIZE):
+                await response.write(chunk)
+            await response.write_eof()
+        finally:
+            await asyncio.to_thread(stream.close)
+    except ConnectionResetError:
+        # The temporary directory is still cleaned by database_export().
+        return response
+    return response
 
 async def events(request: web.Request) -> web.WebSocketResponse:
     _require_same_origin(request)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -20,13 +21,20 @@ class RunRepositoryTests(unittest.TestCase):
         self.repository.close()
         self.temporary_directory.cleanup()
 
-    def save_run(self, start: datetime, actual_ms: int, added_ms: int = 0):
+    def save_run(
+        self,
+        start: datetime,
+        actual_ms: int,
+        added_ms: int = 0,
+        note: str | None = None,
+    ):
         return self.repository.create_and_save(
             started_at=start,
             stopped_at=start + timedelta(milliseconds=actual_ms),
             saved_at=start + timedelta(milliseconds=actual_ms + 100),
             actual_time=Duration(actual_ms),
             added_time=Duration(added_ms),
+            note=note,
         )
 
     def test_numbers_runs_sequentially_per_day(self) -> None:
@@ -63,6 +71,37 @@ class RunRepositoryTests(unittest.TestCase):
         self.assertTrue(self.repository.delete_run(run.id))
         self.assertIsNone(self.repository.get_run(run.id))
         self.assertFalse(self.repository.delete_run(run.id))
+
+    def test_csv_export_preserves_order_and_escaped_values(self) -> None:
+        first = self.save_run(self.base, 80_000, note="first, \"run\"")
+        self.save_run(
+            self.base + timedelta(minutes=5),
+            81_000,
+            note="second\nrun",
+        )
+        self.save_run(
+            self.base + timedelta(minutes=10),
+            82_000,
+            note="=HYPERLINK(https://example.test) ä",
+        )
+
+        target = Path(self.temporary_directory.name) / "runs.csv"
+        self.repository.export_runs_csv(target)
+
+        self.assertTrue(target.read_bytes().startswith(b"\xef\xbb\xbf"))
+        with target.open(newline="", encoding="utf-8-sig") as stream:
+            rows = list(csv.DictReader(stream))
+        self.assertEqual([int(row["id"]) for row in rows], [first.id, 2, 3])
+        self.assertEqual(rows[0]["note"], "first, \"run\"")
+        self.assertEqual(rows[1]["note"], "second\nrun")
+        self.assertEqual(
+            rows[2]["note"],
+            chr(39) + "=HYPERLINK(https://example.test) ä",
+        )
+        self.assertEqual(
+            list(rows[0]),
+            list(SQLiteRunRepository.CSV_EXPORT_COLUMNS),
+        )
 
     def test_database_rejects_inconsistent_total(self) -> None:
         with self.assertRaises(IntegrityError):
