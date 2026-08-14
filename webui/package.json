@@ -9,7 +9,9 @@
     "build": "vite build",
     "build:fleet": "vite build --config vite.fleet.config.js",
     "check": "eslint src",
-    "test:fleet": "node --test src/fleet/wifiValidation.test.js src/fleet/deploymentValidation.test.js src/fleet/releaseSelection.test.js src/fleet/maintenanceActions.test.js"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --exclude 'src/fleet/maintenanceActions.test.js'",
+    "test:fleet": "vitest run src/fleet/*.test.ts src/fleet/services/*.test.ts --exclude 'src/fleet/maintenanceActions.test.js' && node --test src/fleet/maintenanceActions.test.js"
   },
   "dependencies": {
     "lucide-react": "^1.29.0",
@@ -19,11 +21,19 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/parser": "^8.67.0",
     "@vitejs/plugin-react": "^6.0.5",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.9.0",
-    "vite": "^8.2.1"
+    "jsdom": "^26.0.0",
+    "typescript": "^5.8.0",
+    "vite": "^8.2.1",
+    "vitest": "^3.0.0"
   }
 }

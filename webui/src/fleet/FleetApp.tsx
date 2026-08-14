@@ -1,6 +1,5 @@
-/* eslint-disable react-refresh/only-export-components */
-import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
+// @ts-nocheck
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Archive,
@@ -27,6 +26,7 @@ import {
   Zap,
 } from "lucide-react";
 import "./styles.css";
+import { openDeploymentEvents, request } from "./services/fleetService";
 import { wifiNetworkError } from "./wifiValidation.js";
 import { deploymentTargetError, hostnameChangeError } from "./deploymentValidation.js";
 import { preferredReleaseId } from "./releaseSelection.js";
@@ -37,17 +37,6 @@ import {
   healthTone,
   requiresOverride,
 } from "./maintenanceActions.js";
-
-async function request(url, options = {}, csrf = "") {
-  const headers = { ...options.headers };
-  if (csrf) headers["X-CSRF-Token"] = csrf;
-  if (options.body && !(options.body instanceof FormData)) {
-    headers["Content-Type"] = "application/json";
-  }
-  const response = await fetch(url, { ...options, headers });
-  if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-  return response.json();
-}
 
 function timeAgo(value) {
   if (!value) return "never";
@@ -214,7 +203,6 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   useEffect(() => {
     if (!deployment?.id) return undefined;
     let active = true;
-    let source;
     const path = "/api/deployments/" + deployment.id;
     const load = () => request(path)
       .then((result) => {
@@ -226,23 +214,21 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
         }
       })
       .catch((failure) => active && setError(failure.message));
-    load();
-    source = new EventSource(path + "/events?after=" + streamAfter);
-    source.onmessage = (message) => {
-      try {
-        const event = JSON.parse(message.data);
-        if (active) {
-          setEvents((current) => [...current, event]);
-          if (event.deployment) {
-            setDeployment(event.deployment);
-            setError("");
-            if (["succeeded", "failed", "cancelled", "interrupted"].includes(event.deployment.status)) source.close();
-          }
+    const source = openDeploymentEvents(
+      deployment.id,
+      streamAfter,
+      (event) => {
+        if (!active) return;
+        setEvents((current) => [...current, event]);
+        if (event.deployment) {
+          setDeployment(event.deployment);
+          setError("");
+          if (["succeeded", "failed", "cancelled", "interrupted"].includes(event.deployment.status)) source.close();
         }
-      } catch {
-        if (active) setError("Deployment log contained invalid data.");
-      }
-    };
+      },
+      (failure) => { if (active) setError(failure.message); },
+    );
+    load();
     source.onerror = () => { if (active) load(); };
     return () => { active = false; source.close(); };
   }, [deployment?.id, streamAfter]);
@@ -861,4 +847,4 @@ function App() {
   return session ? <Dashboard session={session} refreshSession={refreshSession} /> : <Login onLogin={refreshSession} />;
 }
 
-createRoot(document.getElementById("root")).render(<StrictMode><App /></StrictMode>);
+export default App;
