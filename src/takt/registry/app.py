@@ -29,6 +29,7 @@ from takt.registry.deployment import (
     validate_registry_url,
 )
 from takt.registry.storage import RegistryStore, utc_iso
+from takt.static_assets import require_static_assets
 
 STATIC_ROOT = Path(__file__).with_name("static")
 STORE_KEY = web.AppKey("registry_store", RegistryStore)
@@ -93,6 +94,7 @@ async def security_headers(request: web.Request, handler: Any) -> web.StreamResp
 def create_registry_app(
     store: RegistryStore, auth: AdminAuth, *, secure_cookies: bool = False
 ) -> web.Application:
+    require_static_assets(STATIC_ROOT, "fleet.html", "scripts/build_registry_ui.sh")
     app = web.Application(client_max_size=256 * 1024 * 1024, middlewares=[security_headers])
     app[STORE_KEY] = store
     app[AUTH_KEY] = auth

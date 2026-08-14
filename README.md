@@ -34,7 +34,14 @@ Ein Desktop, Chromium, Bildschirm, Autologin oder lokal gestartete Oberfläche
 sind nicht erforderlich. `uname -m` muss `aarch64` ausgeben. Das Projekt muss
 auf dem Pi beispielsweise unter `/home/msmidt/takt` liegen.
 
-Im Projektverzeichnis genügt:
+Das Installationsskript baut die Browser-Oberfläche nicht selbst. Ein Pi ohne
+Node.js benötigt deshalb entweder ein vom Laptop übertragenes Projekt, das
+vorher gebaut wurde, oder das Transportpaket aus dem folgenden Abschnitt.
+Ein frisch geklonter Quellcode-Checkout muss vor der Installation auf einem
+Node-fähigen Rechner mit `./scripts/build_web_ui.sh` gebaut werden; auf dem Pi
+wird Node.js nicht installiert.
+
+Im gebauten Projektverzeichnis genügt:
 
 ```bash
 ./scripts/install_raspberry_pi.sh
@@ -639,8 +646,10 @@ selbst. Auf dem Pi übernimmt das Installationsskript den Netzwerkzugriff.
 
 Der React-Quellcode liegt unter `webui/`. Die fertig gebauten, vollständig
 offline nutzbaren Dateien werden unter `src/takt/web/static/` abgelegt und
-zusammen mit TAKT auf den Pi übertragen. Der Pi benötigt deshalb weder Node.js
-noch eine Internetverbindung.
+zusammen mit TAKT auf den Pi übertragen. Diese `static`-Verzeichnisse sind
+Build-Ausgaben und werden nicht in Git versioniert. Deployment, Transportpaket,
+CI und Registry-Docker-Image bauen sie jeweils an ihrer eigenen Build-Grenze;
+der Pi benötigt deshalb weder Node.js noch eine Internetverbindung.
 
 Nach Änderungen an der Browser-Oberfläche genügt:
 

@@ -22,9 +22,6 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e '.[registry]' 'pytest>=8,<9' 'ruff>=0.9,<1'
-      - run: ruff check src tests scripts/takt_wifi_helper.py
-      - run: pytest
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -32,8 +29,11 @@ jobs:
           cache-dependency-path: webui/package-lock.json
       - run: npm ci
         working-directory: webui
-      - run: npm run check && npm run test:fleet && npm run build:fleet
+      - run: npm run check && npm run test:fleet && npm run build && npm run build:fleet
         working-directory: webui
+      - run: python -m pip install -e '.[registry]' 'pytest>=8,<9' 'ruff>=0.9,<1'
+      - run: ruff check src tests scripts/takt_wifi_helper.py
+      - run: pytest
 
   package-pi:
     needs: quality

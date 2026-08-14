@@ -10,6 +10,8 @@ build/
 .DS_Store
 .idea/
 webui/node_modules/
+src/takt/web/static/
+src/takt/registry/static/
 .env
 .registry-preview/
 registry-data/

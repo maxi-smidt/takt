@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from aiohttp import WSMsgType, web
 
 from takt import __version__
+from takt.static_assets import require_static_assets
 from takt.web.runtime import (
     MaintenanceLeaseMismatch,
     MaintenanceUnavailable,
@@ -21,6 +22,7 @@ RUNTIME_KEY = web.AppKey("runtime", WebRuntime)
 
 
 def create_web_app(runtime: WebRuntime) -> web.Application:
+    require_static_assets(STATIC_ROOT, "index.html", "scripts/build_web_ui.sh")
     app = web.Application(client_max_size=128 * 1024, middlewares=[same_origin_requests])
     app[RUNTIME_KEY] = runtime
     app.on_response_prepare.append(_set_security_headers)
