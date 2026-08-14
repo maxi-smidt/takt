@@ -423,7 +423,7 @@ async def deployment_retry(request: web.Request) -> web.Response:
 async def deployment_cancel(request: web.Request) -> web.Response:
     _admin(request, csrf=True)
     try:
-        item = request.app[DEPLOYMENTS_KEY].cancel(request.match_info["deployment_id"])
+        item = await request.app[DEPLOYMENTS_KEY].cancel(request.match_info["deployment_id"])
     except LookupError as error:
         raise web.HTTPNotFound(text=str(error)) from error
     return web.json_response({"deployment": item})

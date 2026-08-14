@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -393,8 +394,9 @@ class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
 
         async def connect(_deployment, _credentials):
             raise OSError("mDNS not ready")
-
-        async def rollback_hostname(connection, deployment_id, hostname, from_hostname):
+        async def rollback_hostname(
+            connection, deployment_id, hostname, from_hostname, _credentials
+        ):
             rollback.append((connection, deployment_id, hostname, from_hostname))
 
         manager._connect = connect
@@ -413,6 +415,119 @@ class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
                 "raspberrypi",
             )
         self.assertEqual(rollback, [(old_connection, "deployment", "raspberrypi", "takt-01")])
+
+    async def test_install_uses_password_or_nopasswd_sudo_mode(self) -> None:
+        manager = object.__new__(DeploymentManager)
+        manager._event = lambda *args, **kwargs: None
+        calls = []
+
+        async def command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return "", "", 0
+
+        manager._command = command
+        for credentials, flag, expected_input in (
+            (DeploymentCredentials(sudo_password="secret"), "--sudo-password-stdin", "secret"),
+            (DeploymentCredentials(), "--sudo-password-stdin", None),
+        ):
+            with self.subTest(password=expected_input is not None):
+                calls.clear()
+                await manager._install(object(), "deployment", {}, credentials)
+                install_command = calls[0][0][3]
+                self.assertEqual(expected_input, calls[0][1]["input_text"])
+                self.assertEqual(expected_input is not None, flag in install_command)
+                if expected_input:
+                    self.assertNotIn(expected_input, install_command)
+
+    async def test_hostname_rollback_uses_credentials_for_each_sudo_command(self) -> None:
+        class Store:
+            def record_hostname_change(self, *args, **kwargs) -> None:
+                pass
+
+        manager = object.__new__(DeploymentManager)
+        manager.store = Store()
+        manager._event = lambda *args, **kwargs: None
+        calls = []
+
+        async def command(*args, **kwargs):
+            calls.append((args, kwargs))
+            return "", "", 0
+
+        manager._command = command
+        await manager._rollback_hostname(
+            object(),
+            "deployment",
+            "raspberrypi",
+            "takt-01",
+            DeploymentCredentials(sudo_password="secret"),
+        )
+        password_command = calls[-1][0][3]
+        self.assertEqual("secret", calls[-1][1]["input_text"])
+        self.assertEqual(2, password_command.count("sudo -S -p \"\""))
+        self.assertNotIn("secret", password_command)
+
+        await manager._rollback_hostname(
+            object(),
+            "deployment",
+            "raspberrypi",
+            "takt-01",
+            DeploymentCredentials(),
+        )
+        nopasswd_command = calls[-1][0][3]
+        self.assertIsNone(calls[-1][1]["input_text"])
+        self.assertEqual(2, nopasswd_command.count("sudo -n "))
+        self.assertNotIn("sudo -S", nopasswd_command)
+
+    async def test_cancel_waits_for_cleanup_before_retry(self) -> None:
+        class Store:
+            def __init__(self) -> None:
+                self.status = "running"
+                self.events = []
+
+            def get_deployment(self, _deployment_id):
+                return {"status": self.status, "target": "pi.local", "port": 22}
+
+            def record_deployment_event(self, _deployment_id, _stage, _message, **kwargs):
+                self.status = kwargs.get("status", self.status)
+                self.events.append(self.status)
+                return {"status": self.status}
+
+            def ensure_deployment_target_available(self, _target, _port) -> None:
+                pass
+
+            def update_deployment(self, _deployment_id, **kwargs) -> None:
+                self.status = kwargs["status"]
+
+        store = Store()
+        manager = object.__new__(DeploymentManager)
+        manager.store = store
+        manager._tasks = {}
+        manager._credentials = {}
+        manager._locks = {}
+        cleanup_finished = asyncio.Event()
+
+        async def active_task() -> None:
+            try:
+                await asyncio.Future()
+            finally:
+                cleanup_finished.set()
+
+        task = asyncio.create_task(active_task())
+        manager._tasks["deployment"] = task
+        await asyncio.sleep(0)
+
+        cancelled = await manager.cancel("deployment")
+        self.assertTrue(cleanup_finished.is_set())
+        self.assertEqual("cancelled", cancelled["status"])
+        self.assertNotIn("deployment", manager._tasks)
+
+        starts = []
+        manager.start_discovery = lambda deployment_id: starts.append(deployment_id)
+        retried = manager.retry("deployment")
+        self.assertEqual("pending", retried["status"])
+        self.assertEqual(["deployment"], starts)
+        with self.assertRaisesRegex(ValueError, "finished deployment"):
+            manager.retry("deployment")
 
     async def test_signal_terminated_command_returns_failure_status(self) -> None:
         class Stream:
@@ -451,6 +566,15 @@ class DeploymentManagerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DeploymentValidationTests(unittest.TestCase):
+    def test_installer_has_explicit_noninteractive_sudo_modes(self) -> None:
+        installer = (Path(__file__).parents[1] / "scripts" / "install_raspberry_pi.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("--sudo-password-stdin", installer)
+        self.assertIn('sudo() { printf "%s\\n" "$sudo_password"', installer)
+        self.assertIn('sudo() { command sudo -n "$@"; }', installer)
+
     def test_secrets_are_redacted_from_event_text(self) -> None:
         message = redact_message(
             "ssh password and TAKT-secret-code",

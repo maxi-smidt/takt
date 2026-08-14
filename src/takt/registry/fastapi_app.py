@@ -758,7 +758,7 @@ def create_fastapi_app(
         _: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
     ) -> dict[str, Any]:
         try:
-            item = app.state.deployments.cancel(deployment_id)
+            item = await app.state.deployments.cancel(deployment_id)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         return {"deployment": item}

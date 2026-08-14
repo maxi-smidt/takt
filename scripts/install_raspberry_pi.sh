@@ -26,6 +26,7 @@ fi
 
 bootstrap_config=""
 non_interactive=false
+sudo_password_stdin=false
 while (($#)); do
   case "$1" in
     --bootstrap-config)
@@ -37,8 +38,12 @@ while (($#)); do
       non_interactive=true
       shift
       ;;
+    --sudo-password-stdin)
+      sudo_password_stdin=true
+      shift
+      ;;
     --help)
-      printf "%s\n" "Usage: install_raspberry_pi.sh [--bootstrap-config PATH] [--non-interactive]"
+      printf "%s\n" "Usage: install_raspberry_pi.sh [--bootstrap-config PATH] [--non-interactive] [--sudo-password-stdin]"
       exit 0
       ;;
     *)
@@ -47,6 +52,10 @@ while (($#)); do
       ;;
   esac
 done
+if [[ "$sudo_password_stdin" == true && "$non_interactive" != true ]]; then
+  printf "\nFEHLER: --sudo-password-stdin benötigt --non-interactive.\n" >&2
+  exit 2
+fi
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
   # Support an admin managing another account via `sudo -u <user> ./install...`.
@@ -116,7 +125,13 @@ PY
 fi
 
 if [[ "$non_interactive" == true ]]; then
-  sudo() { command sudo -n "$@"; }
+  if [[ "$sudo_password_stdin" == true ]]; then
+    IFS= read -r sudo_password || fail "Sudo-Passwort fehlt."
+    sudo() { printf "%s\n" "$sudo_password" | command sudo -S -p "" "$@"; }
+  else
+    sudo() { command sudo -n "$@"; }
+  fi
+  sudo -v
 fi
 
 hostname_changed=false
@@ -561,7 +576,12 @@ fi
 
 # Non-destructive check: confirm the passwordless sudo rule for the shutdown
 # button actually applies, without ever powering the device off here.
-if ! sudo -n -l 2>/dev/null | grep -q "shutdown -h now"; then
+if [[ "$non_interactive" == true && "$sudo_password_stdin" == true ]]; then
+  sudo_list_args=(-l)
+else
+  sudo_list_args=(-n -l)
+fi
+if ! sudo "${sudo_list_args[@]}" 2>/dev/null | grep -q "shutdown -h now"; then
   printf '\nWARNUNG: Die sudo-Berechtigung für "shutdown -h now" konnte für ' >&2
   printf 'Benutzer %s nicht bestätigt werden. Der Button "Herunterfahren" in der ' "$install_user" >&2
   printf 'Weboberfläche könnte fehlschlagen.\n' >&2
