@@ -66,6 +66,7 @@ export type ChartPeriod = (typeof VALID_PERIODS)[number];
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const LIVENESS_TIMEOUT_MS = 45_000;
+const CONNECT_TIMEOUT_MS = 15_000;
 const BOOTSTRAP_TIMEOUT_MS = 10_000;
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
@@ -127,6 +128,7 @@ export function useTaktServer(): TaktServerState {
   const retryAttemptRef = useRef(0);
   const heartbeatRef = useRef<number | null>(null);
   const livenessRef = useRef<number | null>(null);
+  const connectTimeoutRef = useRef<number | null>(null);
   const bootstrapAbortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const refreshHistory = useCallback(
@@ -171,6 +173,10 @@ export function useTaktServer(): TaktServerState {
       window.clearTimeout(livenessRef.current);
       livenessRef.current = null;
     }
+    if (connectTimeoutRef.current !== null) {
+      window.clearTimeout(connectTimeoutRef.current);
+      connectTimeoutRef.current = null;
+    }
     if (bootstrapAbortRef.current !== null) {
       bootstrapAbortRef.current.abort();
       bootstrapAbortRef.current = null;
@@ -214,7 +220,10 @@ export function useTaktServer(): TaktServerState {
   const touchSocket = useCallback(
     (socket: WebSocket) => {
       if (!mountedRef.current || socketRef.current !== socket) return;
-      if (livenessRef.current !== null) window.clearTimeout(livenessRef.current);
+      if (livenessRef.current !== null) {
+        window.clearTimeout(livenessRef.current);
+        livenessRef.current = null;
+      }
       if (document.visibilityState !== "visible") return;
       livenessRef.current = window.setTimeout(() => {
         livenessRef.current = null;
@@ -226,6 +235,56 @@ export function useTaktServer(): TaktServerState {
       }, LIVENESS_TIMEOUT_MS);
     },
     [handleSocketFailure],
+  );
+
+  const loadBootstrap = useCallback(async () => {
+    if (isFileMode()) return;
+    try {
+      const data: BootstrapPayload = await requestJson(
+        `/api/bootstrap?days=${chartDaysRef.current}`,
+        { signal: withTimeout(undefined, BOOTSTRAP_TIMEOUT_MS) },
+        parseBootstrap,
+      );
+      if (
+        !mountedRef.current ||
+        socketRef.current?.readyState === WebSocket.OPEN
+      )
+        return;
+      historyRevision.current = data.state.history_revision;
+      setState(data.state);
+      setHistory(data.history);
+      setSystem(data.system);
+    } catch {
+      // A live WebSocket or a later retry can still provide the current state.
+    }
+  }, []);
+
+  const applyPendingEvents = useCallback(
+    (pending: PendingEvents) => {
+      const queuedState = pending.state;
+      const queuedSystem = pending.system;
+      const queuedHistoryChanged = pending.historyChanged;
+      pending.state = null;
+      pending.system = null;
+      pending.historyChanged = false;
+      if (queuedState) {
+        const historyChanged =
+          queuedState.history_revision !== historyRevision.current;
+        historyRevision.current = queuedState.history_revision;
+        setState(queuedState);
+        if (historyChanged || queuedHistoryChanged) {
+          void refreshHistory().catch(() => {
+            // The next bootstrap will refresh the complete data set.
+          });
+        }
+      } else if (queuedHistoryChanged) {
+        void refreshHistory().catch(() => {
+          // The next bootstrap will refresh the complete data set.
+        });
+      }
+      if (queuedSystem) setSystem(queuedSystem);
+    },
+    [refreshHistory],
   );
 
   const resyncSocket = useCallback(
@@ -250,39 +309,25 @@ export function useTaktServer(): TaktServerState {
         setHistory(data.history);
         setSystem(data.system);
 
-        const queuedState = pending.state;
-        const queuedSystem = pending.system;
-        const queuedHistoryChanged = pending.historyChanged;
-        pending.state = null;
-        pending.system = null;
-        pending.historyChanged = false;
-        if (queuedState) {
-          const historyChanged =
-            queuedState.history_revision !== historyRevision.current;
-          historyRevision.current = queuedState.history_revision;
-          setState(queuedState);
-          if (historyChanged || queuedHistoryChanged) {
-            void refreshHistory().catch(() => {
-              // The next bootstrap will refresh the complete data set.
-            });
-          }
-        } else if (queuedHistoryChanged) {
-          void refreshHistory().catch(() => {
-            // The next bootstrap will refresh the complete data set.
-          });
-        }
-        if (queuedSystem) setSystem(queuedSystem);
+        applyPendingEvents(pending);
         retryAttemptRef.current = 0;
         setConnection("online");
       } catch {
-        if (mountedRef.current && socketRef.current === socket)
-          handleSocketFailure(socket);
+        if (
+          mountedRef.current &&
+          socketRef.current === socket &&
+          socket.readyState === WebSocket.OPEN
+        ) {
+          applyPendingEvents(pending);
+          retryAttemptRef.current = 0;
+          setConnection("online");
+        }
       } finally {
         if (bootstrapAbortRef.current === controller)
           bootstrapAbortRef.current = null;
       }
     },
-    [handleSocketFailure, refreshHistory],
+    [applyPendingEvents],
   );
 
   const connectSocket = useCallback(() => {
@@ -300,6 +345,15 @@ export function useTaktServer(): TaktServerState {
     }
     socketRef.current = socket;
     setConnection("connecting");
+    connectTimeoutRef.current = window.setTimeout(() => {
+      connectTimeoutRef.current = null;
+      if (
+        mountedRef.current &&
+        socketRef.current === socket &&
+        socket.readyState === WebSocket.CONNECTING
+      )
+        handleSocketFailure(socket);
+    }, CONNECT_TIMEOUT_MS);
     const pending: PendingEvents = {
       state: null,
       system: null,
@@ -308,6 +362,10 @@ export function useTaktServer(): TaktServerState {
     let syncing = true;
     socket.addEventListener("open", () => {
       if (!mountedRef.current || socketRef.current !== socket) return;
+      if (connectTimeoutRef.current !== null) {
+        window.clearTimeout(connectTimeoutRef.current);
+        connectTimeoutRef.current = null;
+      }
       touchSocket(socket);
       heartbeatRef.current = window.setInterval(() => {
         if (
@@ -354,13 +412,17 @@ export function useTaktServer(): TaktServerState {
 
   const recoverNow = useCallback(() => {
     if (isFileMode() || !mountedRef.current) return;
-    clearRetry();
     const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      touchSocket(socket);
+      return;
+    }
+    clearRetry();
     socketRef.current = null;
     stopSocket(socket);
     setConnection("connecting");
     connectSocket();
-  }, [clearRetry, connectSocket, stopSocket]);
+  }, [clearRetry, connectSocket, stopSocket, touchSocket]);
 
   useEffect(() => {
     connectRef.current = connectSocket;
@@ -378,7 +440,10 @@ export function useTaktServer(): TaktServerState {
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("online", onOnline);
-    queueMicrotask(() => recoverRef.current?.());
+    queueMicrotask(() => {
+      void loadBootstrap();
+      recoverRef.current?.();
+    });
     return () => {
       mountedRef.current = false;
       clearRetry();
@@ -390,7 +455,7 @@ export function useTaktServer(): TaktServerState {
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("online", onOnline);
     };
-  }, [clearRetry, stopSocket]);
+  }, [clearRetry, loadBootstrap, stopSocket]);
   const sendAction = useCallback(async (action: string) => {
     const result = await requestJson(
       "/api/action",

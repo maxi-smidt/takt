@@ -7,6 +7,7 @@ import { useTaktServer, type TaktServerState } from "./useTaktServer";
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const LIVENESS_TIMEOUT_MS = 45_000;
+const CONNECT_TIMEOUT_MS = 15_000;
 
 function statePayload(revision: number, label = "BEREIT") {
   return {
@@ -167,6 +168,23 @@ describe("useTaktServer connection recovery", () => {
     vi.useRealTimers();
   });
 
+  async function mountWithoutOpening() {
+    root = createRoot(document.createElement("div"));
+    await act(async () => {
+      root?.render(
+        createElement(Probe, {
+          onState: (state) => {
+            latest = state;
+          },
+        }),
+      );
+      await flush();
+    });
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) throw new Error("Expected the initial WebSocket instance.");
+    return socket;
+  }
+
   async function mount() {
     root = createRoot(document.createElement("div"));
     await act(async () => {
@@ -181,6 +199,26 @@ describe("useTaktServer connection recovery", () => {
     });
     return openLatestSocket();
   }
+
+  it("loads bootstrap data and retries a handshake that never opens", async () => {
+    const socket = await mountWithoutOpening();
+    expect(latest.system.model).toBe("Browser");
+    expect(latest.connection).toBe("connecting");
+
+    await act(async () => {
+      vi.advanceTimersByTime(CONNECT_TIMEOUT_MS);
+      await flush();
+    });
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(latest.connection).toBe("offline");
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      await flush();
+    });
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
 
   it("detects a silent open socket and sends application-level heartbeats", async () => {
     const socket = await mount();
@@ -207,44 +245,63 @@ describe("useTaktServer connection recovery", () => {
     expect(latest.connection).toBe("offline");
   });
 
-  it("replaces the socket and bootstraps after lifecycle wakeups", async () => {
+  it("keeps live sockets during lifecycle wakeups and recovers dead sockets", async () => {
     const socket = await mount();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     Object.defineProperty(document, "visibilityState", { value: "hidden" });
     await act(async () => {
       document.dispatchEvent(new Event("visibilitychange"));
       await flush();
     });
     expect(FakeWebSocket.instances).toHaveLength(1);
-
     Object.defineProperty(document, "visibilityState", { value: "visible" });
     await act(async () => {
       document.dispatchEvent(new Event("visibilitychange"));
       await flush();
     });
-    const visibleSocket = await openLatestSocket();
-    expect(visibleSocket).not.toBe(socket);
+    expect(FakeWebSocket.instances).toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-
     const pageShow = new Event("pageshow");
     Object.defineProperty(pageShow, "persisted", { value: true });
     await act(async () => {
       window.dispatchEvent(pageShow);
       await flush();
     });
-    const pageSocket = await openLatestSocket();
-    expect(pageSocket).not.toBe(visibleSocket);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      socket.close();
+      await flush();
+    });
+    expect(latest.connection).toBe("offline");
     await act(async () => {
       window.dispatchEvent(new Event("online"));
       await flush();
     });
-    await openLatestSocket();
-    expect(FakeWebSocket.instances).toHaveLength(4);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const recoveredSocket = await openLatestSocket();
+    expect(recoveredSocket).not.toBe(socket);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(latest.connection).toBe("online");
+  });
+
+  it("keeps live events when bootstrap resync fails", async () => {
+    fetchMock.mockImplementationOnce(async () =>
+      new Response(JSON.stringify(bootstrapPayload(1)), { status: 200 }),
+    );
+    fetchMock.mockImplementationOnce(async () =>
+      new Response("unavailable", { status: 503 }),
+    );
+    const socket = await mount();
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+    expect(latest.connection).toBe("online");
+    await act(async () => {
+      socket.message(
+        JSON.stringify({ type: "state", data: statePayload(2, "LIVE") }),
+      );
+      await flush();
+    });
+    expect(latest.state.state_label).toBe("LIVE");
   });
 
   it("applies the newest event received while bootstrap is pending", async () => {
