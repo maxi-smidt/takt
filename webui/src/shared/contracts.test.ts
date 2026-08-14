@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { parsePiEvent, parseState } from "./contracts";
+import { parseDeploymentEvent, parsePiEvent, parseState } from "./contracts";
 
 const state = {
   state: "ready",
@@ -30,4 +30,16 @@ it("rejects malformed websocket payloads", () => {
   expect(() => parsePiEvent({ type: "unknown", data: {} })).toThrow(
     /Unsupported event type/,
   );
+});
+
+it("accepts deployment events without a current deployment", () => {
+  expect(
+    parseDeploymentEvent({
+      id: 1,
+      level: "info",
+      stage: "discovery",
+      message: "Waiting for a device.",
+      deployment: null,
+    }),
+  ).not.toHaveProperty("deployment");
 });

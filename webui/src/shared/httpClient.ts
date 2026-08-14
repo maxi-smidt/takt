@@ -49,6 +49,9 @@ function bodyAndHeaders(options: RequestOptions): {
     headers.set("Content-Type", "application/json");
     return { body: JSON.stringify(body), headers };
   }
+  if (typeof body === "string") {
+    headers.set("Content-Type", "application/json");
+  }
   return { body: body ?? undefined, headers };
 }
 

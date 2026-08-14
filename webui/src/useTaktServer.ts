@@ -140,23 +140,32 @@ export function useTaktServer(): TaktServerState {
     });
     socket.addEventListener("message", async (event: MessageEvent<string>) => {
       if (event.data === "pong" || !mountedRef.current) return;
+      let message: PiEvent;
       try {
-        const message: PiEvent = parsePiEvent(
-          JSON.parse(event.data) as unknown,
-        );
-        if (message.type === "state") {
-          const changed =
-            historyRevision.current >= 0 &&
-            historyRevision.current !== message.data.history_revision;
-          historyRevision.current = message.data.history_revision;
-          setState(message.data);
-          if (changed) await refreshHistory();
-        } else if (message.type === "history_changed") {
-          await refreshHistory();
-        } else if (message.type === "system") setSystem(message.data);
+        message = parsePiEvent(JSON.parse(event.data) as unknown);
       } catch {
-        socket.close();
+        return;
       }
+      if (message.type === "state") {
+        const changed =
+          historyRevision.current >= 0 &&
+          historyRevision.current !== message.data.history_revision;
+        historyRevision.current = message.data.history_revision;
+        setState(message.data);
+        if (changed) {
+          try {
+            await refreshHistory();
+          } catch {
+            // The reconnect loop will refresh the complete data set.
+          }
+        }
+      } else if (message.type === "history_changed") {
+        try {
+          await refreshHistory();
+        } catch {
+          // The reconnect loop will refresh the complete data set.
+        }
+      } else if (message.type === "system") setSystem(message.data);
     });
     socket.addEventListener("close", () => {
       if (!mountedRef.current) return;

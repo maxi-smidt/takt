@@ -19,6 +19,19 @@ describe("requestJson", () => {
     expect(init?.body).toBe(JSON.stringify({ action: "primary" }));
     fetchMock.mockRestore();
 
+    const stringBodyFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    await requestJson("/api/session", {
+      method: "POST",
+      body: JSON.stringify({ password: "secret" }),
+    });
+    const [, stringBodyInit] = stringBodyFetch.mock.calls[0]!;
+    expect((stringBodyInit?.headers as Headers).get("Content-Type")).toBe(
+      "application/json",
+    );
+    stringBodyFetch.mockRestore();
+
     const multipart = new FormData();
     multipart.append("artifact", new Blob(["release"]), "release.tar.gz");
     const multipartFetch = vi

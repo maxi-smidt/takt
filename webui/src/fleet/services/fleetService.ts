@@ -14,11 +14,15 @@ function objectPayload(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function parseRegistryResponse(url: string, value: unknown): unknown {
-  if (url.endsWith("/api/session")) return parseSession(value);
-  if (url.endsWith("/api/devices")) return { devices: parseDevices(value) };
-  if (url.endsWith("/api/releases")) return parseReleases(value);
-  if (url.endsWith("/api/jobs")) return { jobs: parseJobs(value) };
+function parseRegistryResponse(url: string, method: string, value: unknown): unknown {
+  if (method === "GET" && url.endsWith("/api/session"))
+    return parseSession(value);
+  if (method === "GET" && url.endsWith("/api/devices"))
+    return { devices: parseDevices(value) };
+  if (method === "GET" && url.endsWith("/api/releases"))
+    return parseReleases(value);
+  if (method === "GET" && url.endsWith("/api/jobs"))
+    return { jobs: parseJobs(value) };
   if (url.includes("/api/deployments")) return parseDeploymentResponse(value);
   return objectPayload(value);
 }
@@ -28,8 +32,9 @@ export async function request(
   options: RequestOptions = {},
   csrf = "",
 ): Promise<unknown> {
+  const method = (options.method ?? "GET").toUpperCase();
   return requestJson(url, { ...options, csrf: csrf || options.csrf }, (value) =>
-    parseRegistryResponse(url, value),
+    parseRegistryResponse(url, method, value),
   );
 }
 

@@ -557,7 +557,7 @@ export function parseDeploymentEvent(value: unknown): DeploymentEvent {
     level: text(item.level, "event.level"),
     stage: text(item.stage, "event.stage"),
     message: text(item.message, "event.message"),
-    ...(item.deployment === undefined
+    ...(item.deployment === undefined || item.deployment === null
       ? {}
       : { deployment: parseDeployment(item.deployment) }),
   };
