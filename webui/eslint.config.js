@@ -9,6 +9,16 @@ export default [
   { ignores: ["dist", "../src/takt/web/static", "../src/takt/registry/static"] },
   {
     files: ["**/*.{ts,tsx}"],
+    rules: {
+      ...js.configs.recommended.rules,
+    },
+  },
+  ...tseslint.configs["flat/recommended"].map((config) => ({
+    ...config,
+    files: ["**/*.{ts,tsx}"],
+  })),
+  {
+    files: ["**/*.{ts,tsx}"],
     languageOptions: {
       parser: tsParser,
       parserOptions: { ecmaVersion: "latest", sourceType: "module", ecmaFeatures: { jsx: true } },
@@ -16,8 +26,6 @@ export default [
     },
     plugins: { "@typescript-eslint": tseslint, "react-hooks": reactHooks, "react-refresh": reactRefresh },
     rules: {
-      ...js.configs.recommended.rules,
-      ...tseslint.configs.recommended.rules,
       ...reactHooks.configs.flat["recommended-latest"].rules,
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/ban-ts-comment": "off",

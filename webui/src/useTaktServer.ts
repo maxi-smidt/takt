@@ -143,7 +143,8 @@ export function useTaktServer(): TaktServerState {
       let message: PiEvent;
       try {
         message = parsePiEvent(JSON.parse(event.data) as unknown);
-      } catch {
+      } catch (error) {
+        console.warn("Ignoring invalid Pi WebSocket event.", error);
         return;
       }
       if (message.type === "state") {

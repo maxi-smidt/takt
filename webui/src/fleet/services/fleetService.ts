@@ -23,6 +23,8 @@ function parseRegistryResponse(url: string, method: string, value: unknown): unk
     return parseReleases(value);
   if (method === "GET" && url.endsWith("/api/jobs"))
     return { jobs: parseJobs(value) };
+  if (method === "GET" && url.endsWith("/api/deployments"))
+    return objectPayload(value);
   if (url.includes("/api/deployments")) return parseDeploymentResponse(value);
   return objectPayload(value);
 }

@@ -29,4 +29,14 @@ describe("fleet request response routing", () => {
       request("/api/releases", { method: "POST", body: new FormData() }),
     ).resolves.toEqual({ release: { id: "new-release" } });
   });
+
+  it("does not parse the deployment collection as one deployment", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response('{"deployments":[]}', { status: 200 }),
+    );
+
+    await expect(request("/api/deployments")).resolves.toEqual({
+      deployments: [],
+    });
+  });
 });

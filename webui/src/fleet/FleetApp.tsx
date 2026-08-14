@@ -201,7 +201,6 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   useEffect(() => {
     if (!deployment?.id) return undefined;
     let active = true;
-    let source;
     const path = "/api/deployments/" + deployment.id;
     const load = () => request(path)
       .then((result) => {
@@ -213,8 +212,7 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
         }
       })
       .catch((failure) => active && setError(failure.message));
-    load();
-    source = openDeploymentEvents(
+    const source = openDeploymentEvents(
       deployment.id,
       streamAfter,
       (event) => {
@@ -228,6 +226,7 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
       },
       (failure) => { if (active) setError(failure.message); },
     );
+    load();
     source.onerror = () => { if (active) load(); };
     return () => { active = false; source.close(); };
   }, [deployment?.id, streamAfter]);
