@@ -80,6 +80,10 @@ interface PendingEvents {
   historyChanged: boolean;
 }
 
+type ExclusiveRequest = "action" | "audio" | "confirmation" | "export";
+
+type PendingRequests = Record<ExclusiveRequest, boolean>;
+
 function isFileMode(): boolean {
   return window.location.protocol === "file:";
 }
@@ -105,6 +109,7 @@ export interface TaktServerState {
     token: string,
     operation: string,
   ) => Promise<ConfirmationResponse>;
+  pending: PendingRequests;
 }
 
 export function useTaktServer(): TaktServerState {
@@ -136,12 +141,15 @@ export function useTaktServer(): TaktServerState {
   const refreshHistory = useCallback(
     async (period: ChartPeriod = chartDaysRef.current) => {
       if (isFileMode()) return;
+      const requestId = ++historyRequestRef.current;
       const nextHistory = await requestJson(
         `/api/history?days=${period}`,
         {},
         parseHistory,
       );
-      if (mountedRef.current) setHistory(nextHistory);
+      if (mountedRef.current && requestId === historyRequestRef.current) {
+        setHistory(nextHistory);
+      }
     },
     [],
   );
@@ -151,6 +159,33 @@ export function useTaktServer(): TaktServerState {
       retryRef.current = null;
     }
   }, []);
+  const historyRequestRef = useRef(0);
+  const requestsRef = useRef(new Map<ExclusiveRequest, Promise<unknown>>());
+  const [pending, setPending] = useState<PendingRequests>({
+    action: false,
+    audio: false,
+    confirmation: false,
+    export: false,
+  });
+  const runExclusive = useCallback(
+    <T,>(key: ExclusiveRequest, task: () => Promise<T>): Promise<T> => {
+      const existing = requestsRef.current.get(key) as Promise<T> | undefined;
+      if (existing) return existing;
+
+      setPending((current) => ({ ...current, [key]: true }));
+      const request = task();
+      requestsRef.current.set(key, request);
+      const clear = () => {
+        if (requestsRef.current.get(key) === request) {
+          requestsRef.current.delete(key);
+          setPending((current) => ({ ...current, [key]: false }));
+        }
+      };
+      void request.then(clear, clear);
+      return request;
+    },
+    [],
+  );
 
   const scheduleRetry = useCallback(() => {
     if (!mountedRef.current || retryRef.current !== null) return;
@@ -458,68 +493,80 @@ export function useTaktServer(): TaktServerState {
       window.removeEventListener("online", onOnline);
     };
   }, [clearRetry, loadBootstrap, stopSocket]);
-  const sendAction = useCallback(async (action: string) => {
-    const result = await requestJson(
-      "/api/action",
-      { method: "POST", body: { action } },
-      parseAction,
-    );
-    setState(result.state);
-    return result;
-  }, []);
+  const sendAction = useCallback(
+    (action: string) =>
+      runExclusive("action", async () => {
+        const result = await requestJson(
+          "/api/action",
+          { method: "POST", body: { action } },
+          parseAction,
+        );
+        setState(result.state);
+        return result;
+      }),
+    [runExclusive],
+  );
   const sendAudioRequest = useCallback(
-    async (operation: string, payload: Record<string, unknown> = {}) => {
-      const result = await requestJson(
-        `/api/audio/${operation}`,
-        { method: "POST", body: payload },
-        parseSystemResponse,
-      );
-      setSystem(result.system);
-      return result;
-    },
-    [],
+    (operation: string, payload: Record<string, unknown> = {}) =>
+      runExclusive("audio", async () => {
+        const result = await requestJson(
+          `/api/audio/${operation}`,
+          { method: "POST", body: payload },
+          parseSystemResponse,
+        );
+        setSystem(result.system);
+        return result;
+      }),
+    [runExclusive],
   );
   const prepareConfirmation = useCallback(
-    async (operation: string, runId: number | null = null, deltaMs = 0) =>
-      requestJson(
-        "/api/confirmations",
-        {
-          method: "POST",
-          body: { operation, run_id: runId, delta_ms: deltaMs },
-        },
-        parseConfirmation,
+    (operation: string, runId: number | null = null, deltaMs = 0) =>
+      runExclusive("confirmation", () =>
+        requestJson(
+          "/api/confirmations",
+          {
+            method: "POST",
+            body: { operation, run_id: runId, delta_ms: deltaMs },
+          },
+          parseConfirmation,
+        ),
       ),
-    [],
+    [runExclusive],
   );
   const confirmPrepared = useCallback(
-    async (token: string, operation: string) => {
-      const result = await requestJson(
-        `/api/confirmations/${token}`,
-        { method: "POST", body: {} },
-        parseConfirmationResponse,
-      );
-      if (operation !== "shutdown") await refreshHistory();
-      return result;
-    },
-    [refreshHistory],
+    (token: string, operation: string) =>
+      runExclusive("confirmation", async () => {
+        const result = await requestJson(
+          `/api/confirmations/${token}`,
+          { method: "POST", body: {} },
+          parseConfirmationResponse,
+        );
+        if (operation !== "shutdown") await refreshHistory();
+        return result;
+      }),
+    [refreshHistory, runExclusive],
   );
-  const downloadExport = useCallback(async (format: DataExportFormat) => {
-    if (isFileMode()) throw new Error("Der Datenexport ist im Vorschaumodus nicht verfügbar.");
-    const fallbackFilename = format === "db" ? "takt.db" : "takt-runs.csv";
-    const result = await requestBlob(
-      `/api/database/export?format=${format}`,
-      fallbackFilename,
-    );
-    const objectUrl = URL.createObjectURL(result.blob);
-    const link = document.createElement("a");
-    link.href = objectUrl;
-    link.download = result.filename;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 500);
-    return result.filename;
-  }, []);
+  const downloadExport = useCallback(
+    (format: DataExportFormat) =>
+      runExclusive("export", async () => {
+        if (isFileMode()) throw new Error("Der Datenexport ist im Vorschaumodus nicht verfügbar.");
+        const fallbackFilename = format === "db" ? "takt.db" : "takt-runs.csv";
+        const result = await requestBlob(
+          `/api/database/export?format=${format}`,
+          fallbackFilename,
+        );
+        const objectUrl = URL.createObjectURL(result.blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = result.filename;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 500);
+        return result.filename;
+      }),
+    [runExclusive],
+  );
 
   const setChartDays = useCallback(
     async (period: string) => {
@@ -548,5 +595,6 @@ export function useTaktServer(): TaktServerState {
     prepareConfirmation,
     downloadExport,
     confirmPrepared,
+    pending,
   };
 }
