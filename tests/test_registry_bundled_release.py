@@ -7,9 +7,10 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from takt import __version__
-from takt.registry.bundled_release import import_bundled_release
+from takt.registry.bundled_release import _stage_and_call, import_bundled_release
 from takt.registry.storage import RegistryStore
 
 
@@ -55,6 +56,95 @@ def _write_bundle(
 
 
 class BundledReleaseImportTests(unittest.TestCase):
+    def test_staging_tempfile_failure_is_degraded_without_leaking_a_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = root / "archive.tar.gz"
+            archive_path.write_bytes(b"archive")
+            data_directory = root / "data"
+            data_directory.mkdir()
+            callback = Mock()
+
+            with patch(
+                "takt.registry.bundled_release.tempfile.NamedTemporaryFile",
+                side_effect=OSError("temporary file unavailable"),
+            ):
+                status = _stage_and_call(
+                    archive_path,
+                    data_directory,
+                    callback,
+                    version=__version__,
+                    sha256="sha256",
+                )
+
+            self.assertEqual(
+                status,
+                {
+                    "status": "error",
+                    "reason": "import_failed",
+                    "detail": "temporary file unavailable",
+                },
+            )
+            callback.assert_not_called()
+            self.assertEqual(list(data_directory.iterdir()), [])
+
+    def test_staging_copy_failure_is_degraded_and_partial_file_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = root / "archive.tar.gz"
+            archive_path.write_bytes(b"archive")
+            data_directory = root / "data"
+            data_directory.mkdir()
+            callback = Mock()
+
+            def fail_copy(_source: Path, target: Path) -> None:
+                target.write_bytes(b"partial archive")
+                raise OSError("copy failed")
+
+            with patch(
+                "takt.registry.bundled_release.shutil.copyfile",
+                side_effect=fail_copy,
+            ):
+                status = _stage_and_call(
+                    archive_path,
+                    data_directory,
+                    callback,
+                    version=__version__,
+                    sha256="sha256",
+                )
+
+            self.assertEqual(
+                status,
+                {"status": "error", "reason": "import_failed", "detail": "copy failed"},
+            )
+            callback.assert_not_called()
+            self.assertEqual(list(data_directory.iterdir()), [])
+
+    def test_callback_failure_cleans_up_the_staged_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = root / "archive.tar.gz"
+            archive_path.write_bytes(b"archive")
+            data_directory = root / "data"
+            data_directory.mkdir()
+
+            def fail_call(_staged: Path) -> None:
+                raise RuntimeError("callback failed")
+
+            status = _stage_and_call(
+                archive_path,
+                data_directory,
+                fail_call,
+                version=__version__,
+                sha256="sha256",
+            )
+
+            self.assertEqual(
+                status,
+                {"status": "error", "reason": "import_failed", "detail": "callback failed"},
+            )
+            self.assertEqual(list(data_directory.iterdir()), [])
+
     def test_absent_bundle_is_a_noop(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = RegistryStore(Path(temporary_directory) / "data")
