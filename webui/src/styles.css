@@ -29,6 +29,7 @@
   --green: #45c667;
   --amber: #f2ad26;
   --red: #f05b62;
+  --touch-target: 44px;
   background: var(--bg);
   color: var(--text);
 }
@@ -71,7 +72,7 @@ tr {
   height: 100vh;
   height: 100dvh;
   margin: 0 auto;
-  padding: 0 14px 8px;
+  padding: 0 max(14px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
   display: grid;
   grid-template-rows: 62px minmax(0, 1fr) 36px;
   color: var(--text);
@@ -1716,5 +1717,185 @@ kbd {
 
   .state-running .stopwatch > span {
     font-size: clamp(68px, 21vw, 140px);
+  }
+}
+/* Touch targets, focus feedback, and safe-area handling for coarse pointers. */
+button,
+select,
+input {
+  touch-action: manipulation;
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+button:active:not(:disabled),
+[role="button"]:active {
+  filter: brightness(1.18);
+}
+
+.table-viewport,
+.settings-table-shell,
+.settings-modal {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y pinch-zoom;
+}
+
+.settings-modal {
+  max-height: min(720px, calc(100dvh - 40px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+}
+
+.run-select-button {
+  min-width: var(--touch-target);
+  min-height: 34px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.run-select-button:focus-visible {
+  outline-offset: -2px;
+}
+
+.settings-table tbody tr {
+  cursor: pointer;
+}
+
+.toast-message {
+  bottom: max(42px, calc(18px + env(safe-area-inset-bottom)));
+}
+
+@media (any-pointer: coarse) {
+  .icon-button,
+  .period-switch button,
+  .adjustment-buttons button,
+  .action-button,
+  .mock-trigger,
+  .system-tile button,
+  .run-select-button,
+  .delete-control,
+  .audio-mode-switch button,
+  .bluetooth-device-row button,
+  .audio-settings-footer button,
+  .confirmation-actions button {
+    min-height: var(--touch-target);
+  }
+
+  .icon-button {
+    width: var(--touch-target);
+  }
+
+  .period-switch {
+    gap: 6px;
+  }
+
+  .period-switch button {
+    min-width: var(--touch-target);
+    padding-inline: 8px;
+  }
+
+  .adjustment-buttons,
+  .primary-actions,
+  .confirmation-actions {
+    gap: 8px;
+  }
+
+  .adjustment-buttons button,
+  .action-button,
+  .system-tile button,
+  .delete-control,
+  .audio-mode-switch button,
+  .bluetooth-device-row button,
+  .audio-settings-footer button,
+  .confirmation-actions button {
+    padding-inline: 12px;
+  }
+
+  .audio-delay input,
+  .bluetooth-device-row select {
+    height: var(--touch-target);
+  }
+
+  .runs-table th,
+  .runs-table td,
+  .settings-table th,
+  .settings-table td {
+    height: var(--touch-target);
+    padding-block: 0;
+  }
+
+  .settings-modal {
+    width: min(1050px, 100%);
+    padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  }
+
+  .modal-backdrop {
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  }
+
+  .system-tile {
+    min-height: var(--touch-target);
+  }
+
+  .audio-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .bluetooth-device-row {
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+  }
+
+  .bluetooth-device-row select {
+    grid-column: 1 / -1;
+  }
+
+  .audio-settings-footer {
+    gap: 8px;
+  }
+}
+
+@media (min-width: 681px) and (max-width: 900px) {
+  .audio-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-system-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bluetooth-device-row {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+
+  .bluetooth-device-row select {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 1051px) and (max-height: 760px) {
+  .control-grid {
+    grid-template-rows: minmax(380px, 1.2fr) minmax(180px, .8fr);
+  }
+
+  .timer-panel {
+    grid-template-rows: 56px minmax(0, 1fr) 44px;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .icon-button:hover:not(:disabled),
+  .action-button:hover:not(:disabled),
+  .settings-table tbody tr:hover {
+    background: var(--surface-raised);
   }
 }

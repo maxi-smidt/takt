@@ -78,6 +78,38 @@ const PERIODS = [
   ["all", "ALLE"],
 ];
 
+const FOCUSABLE_SELECTOR = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
+
+function useDialogFocus(open, dialogRef) {
+  const previousFocus = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    previousFocus.current = document.activeElement;
+    const dialog = dialogRef.current;
+    const focusables = () => [...(dialog?.querySelectorAll(FOCUSABLE_SELECTOR) || [])];
+    queueMicrotask(() => focusables()[0]?.focus());
+    const onKeyDown = (event) => {
+      if (event.key !== "Tab" || !dialog) return;
+      const items = focusables();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      previousFocus.current?.focus?.();
+    };
+  }, [dialogRef, open]);
+}
+
 function Brand() {
   return (
     <div className="brand" aria-label="TAKT Feuerwehr-Zeitnahme">
@@ -97,7 +129,7 @@ function ConnectionStatus({ status }) {
   };
   const [Icon, label] = content[status] || content.offline;
   return (
-    <div className={`connection connection-${status}`}>
+    <div className={`connection connection-${status}`} role="status" aria-live="polite">
       <Icon size={13} strokeWidth={2.4} />
       <span>{label}</span>
     </div>
@@ -163,7 +195,7 @@ function ActionButton({ icon: Icon, children, className = "", ...props }) {
   );
 }
 
-function ReadyTimer({ state, onPrimary }) {
+function ReadyTimer({ state, onPrimary, pending }) {
   const sequence = state.start_sequence;
   const maintenance = state.maintenance?.held;
   if (sequence?.active) {
@@ -178,13 +210,13 @@ function ReadyTimer({ state, onPrimary }) {
     );
   }
   return (
-    <button className="timer-hit-area" type="button" onClick={onPrimary} disabled={maintenance}>
+    <button className="timer-hit-area" type="button" onClick={onPrimary} disabled={maintenance || pending} aria-busy={pending || undefined}>
       <StopwatchValue value={state.actual} hero />
     </button>
   );
 }
 
-function ResultTimer({ state, onAction }) {
+function ResultTimer({ state, onAction, pending }) {
   const isStopped = state.state === "stopped";
   const isDiscard = state.state === "discard_confirmation";
   const isSaved = state.state === "saved_confirmation";
@@ -218,21 +250,21 @@ function ResultTimer({ state, onAction }) {
               <button
                 type="button"
                 onClick={() => onAction("subtract_10")}
-                disabled={state.added_ms <= 0}
+                disabled={pending || state.added_ms <= 0}
               >
                 <Minus size={13} />10
               </button>
               <button
                 type="button"
                 onClick={() => onAction("subtract_5")}
-                disabled={state.added_ms <= 0}
+                disabled={pending || state.added_ms <= 0}
               >
                 <Minus size={13} />5
               </button>
-              <button type="button" onClick={() => onAction("add_5")}>
+              <button type="button" onClick={() => onAction("add_5")} disabled={pending}>
                 <Plus size={13} />5
               </button>
-              <button type="button" onClick={() => onAction("add_10")}>
+              <button type="button" onClick={() => onAction("add_10")} disabled={pending}>
                 <Plus size={13} />10
               </button>
             </div>
@@ -242,12 +274,14 @@ function ResultTimer({ state, onAction }) {
               icon={Save}
               className="action-save"
               onClick={() => onAction("save")}
+              disabled={pending}
             >
               SPEICHERN <kbd>ENTER</kbd>
             </ActionButton>
             <ActionButton
               icon={RotateCcw}
               className="action-danger"
+              disabled={pending}
               onClick={() => onAction("request_discard")}
             >
               VERWERFEN <kbd>R</kbd>
@@ -257,13 +291,14 @@ function ResultTimer({ state, onAction }) {
       )}
       {isDiscard && (
         <div className="primary-actions">
-          <ActionButton icon={X} onClick={() => onAction("cancel_discard")}>
+          <ActionButton icon={X} onClick={() => onAction("cancel_discard")} disabled={pending}>
             ABBRECHEN <kbd>ESC</kbd>
           </ActionButton>
           <ActionButton
             icon={RotateCcw}
             className="action-danger"
             onClick={() => onAction("confirm_discard")}
+            disabled={pending}
           >
             VERWERFEN <kbd>ENTER</kbd>
           </ActionButton>
@@ -273,7 +308,7 @@ function ResultTimer({ state, onAction }) {
   );
 }
 
-function TimerPanel({ state, screenAwake, onAction }) {
+function TimerPanel({ state, screenAwake, onAction, pending }) {
   const startSequence = state.start_sequence;
   const meta = startSequence?.active
     ? {
@@ -322,9 +357,9 @@ function TimerPanel({ state, screenAwake, onAction }) {
           </div>
         )}
         {basic ? (
-          <ReadyTimer state={state} onPrimary={() => onAction("primary")} />
+          <ReadyTimer state={state} pending={pending} onPrimary={() => onAction("primary")} />
         ) : (
-          <ResultTimer state={state} onAction={onAction} />
+          <ResultTimer state={state} pending={pending} onAction={onAction} />
         )}
       </div>
       <div className="timer-panel-foot">
@@ -477,6 +512,7 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
           key={value}
           type="button"
           data-short={value === "all" ? "ALLE" : value}
+          aria-pressed={chartDays === value}
           className={chartDays === value ? "is-active" : ""}
           onClick={() => onPeriodChange(value)}
         >
@@ -575,7 +611,7 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
   );
 }
 
-function Footer({ state, system, screenAwake, onMockPress }) {
+function Footer({ state, system, screenAwake, onMockPress, pending }) {
   return (
     <footer className="statusbar">
       <div className={`hardware-readout ${state.hardware.available ? "is-online" : ""}`}>
@@ -606,7 +642,7 @@ function Footer({ state, system, screenAwake, onMockPress }) {
         <span>{location.protocol === "file:" ? "LOKALE VORSCHAU" : location.host}</span>
       </div>
       {system.mock_button && (
-        <button className="mock-trigger" type="button" onClick={onMockPress}>
+        <button className="mock-trigger" type="button" onClick={onMockPress} disabled={pending}>
           MOCK-TASTER
           <ChevronRight size={14} />
         </button>
@@ -731,6 +767,7 @@ function AudioSettingsPanel({ audio, onRequest }) {
               key={value}
               type="button"
               className={draft.output === value ? "is-active" : ""}
+              aria-pressed={draft.output === value}
               onClick={() => setDraft((current) => ({ ...current, output: value }))}
             >
               <Icon size={16} />{label}
@@ -872,14 +909,18 @@ function SettingsModal({
   onAudioRequest,
   onExport,
   exportBusy,
+  pending,
+  blocked = false,
   feedback,
 }) {
+  const dialogRef = useRef(null);
   const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
   useEffect(() => {
     const update = () => setFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener("fullscreenchange", update);
     return () => document.removeEventListener("fullscreenchange", update);
   }, []);
+  useDialogFocus(open && !blocked, dialogRef);
   if (!open) return null;
 
   const toggleFullscreen = async () => {
@@ -887,13 +928,14 @@ function SettingsModal({
     else await document.documentElement.requestFullscreen();
   };
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className="modal-backdrop" role="presentation" aria-hidden={blocked || undefined} inert={blocked || undefined} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section
+        ref={dialogRef}
         className="settings-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
-        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
       >
         <header className="modal-header">
           <div>
@@ -918,7 +960,7 @@ function SettingsModal({
             <button
               type="button"
               className="shutdown-control"
-              disabled={!system.shutdown_available}
+              disabled={!system.shutdown_available || pending.confirmation}
               onClick={() => onPrepare("shutdown")}
             >
               HERUNTERFAHREN
@@ -933,14 +975,14 @@ function SettingsModal({
             <div className="export-actions">
               <button
                 type="button"
-                disabled={Boolean(exportBusy)}
+                disabled={Boolean(exportBusy) || pending.export}
                 onClick={() => onExport("db")}
               >
                 <Download size={14} />{exportBusy === "db" ? "LÄDT …" : "DATENBANK (.DB)"}
               </button>
               <button
                 type="button"
-                disabled={Boolean(exportBusy)}
+                disabled={Boolean(exportBusy) || pending.export}
                 onClick={() => onExport("csv")}
               >
                 <Download size={14} />{exportBusy === "csv" ? "LÄDT …" : "LÄUFE (.CSV)"}
@@ -971,7 +1013,20 @@ function SettingsModal({
                   className={selectedRunId === run.id ? "is-selected" : ""}
                   onClick={() => onSelectRun(run.id)}
                 >
-                  <td>{run.number}</td><td>{run.date}</td><td>{run.time}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="run-select-button"
+                      aria-pressed={selectedRunId === run.id}
+                      aria-label={`Lauf ${run.number} auswählen`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSelectRun(run.id);
+                      }}
+                    >
+                      {run.number}
+                    </button>
+                  </td><td>{run.date}</td><td>{run.time}</td>
                   <td>{run.actual}</td><td className="penalty-cell">{run.added}</td>
                   <td className="total-cell">{run.total}</td>
                 </tr>
@@ -988,7 +1043,7 @@ function SettingsModal({
                 <button
                   key={delta}
                   type="button"
-                  disabled={!selectedRunId}
+                  disabled={!selectedRunId || pending.confirmation}
                   onClick={() => onPrepare("adjust", selectedRunId, delta)}
                 >
                   {delta > 0 ? <Plus size={12} /> : <Minus size={12} />}
@@ -1000,33 +1055,42 @@ function SettingsModal({
           <button
             className="delete-control"
             type="button"
-            disabled={!selectedRunId}
+            disabled={!selectedRunId || pending.confirmation}
             onClick={() => onPrepare("delete", selectedRunId)}
           >
             <Trash2 size={15} />LAUF LÖSCHEN
           </button>
         </div>
-        <div className="settings-feedback">{feedback}</div>
+        <div className="settings-feedback" role="status" aria-live="polite">{feedback}</div>
       </section>
     </div>
   );
 }
 
 function ConfirmationModal({ confirmation, busy, onCancel, onConfirm }) {
+  const dialogRef = useRef(null);
+  useDialogFocus(Boolean(confirmation), dialogRef);
   if (!confirmation) return null;
   const destructive = (
     confirmation.confirm_label?.includes("LÖSCHEN")
     || confirmation.confirm_label?.includes("HERUNTERFAHREN")
   );
   return (
-    <div className="modal-backdrop confirmation-layer">
-      <section className="confirmation-modal" role="alertdialog" aria-modal="true">
+    <div className="modal-backdrop confirmation-layer" role="presentation">
+      <section
+        ref={dialogRef}
+        className="confirmation-modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirmation-title"
+        aria-describedby="confirmation-message"
+      >
         <div className={`confirmation-icon ${destructive ? "is-danger" : ""}`}>
           {destructive ? <RotateCcw size={23} /> : <ShieldCheck size={23} />}
         </div>
         <span>BESTÄTIGUNG ERFORDERLICH</span>
-        <h2>{confirmation.title}</h2>
-        <p>{confirmation.message}</p>
+        <h2 id="confirmation-title">{confirmation.title}</h2>
+        <p id="confirmation-message">{confirmation.message}</p>
         {confirmation.lines?.length > 0 && (
           <div className="confirmation-details">
             {confirmation.lines.map((line) => <span key={line}>{line}</span>)}
@@ -1034,7 +1098,7 @@ function ConfirmationModal({ confirmation, busy, onCancel, onConfirm }) {
         )}
         {confirmation.warning && <div className="confirmation-warning">{confirmation.warning}</div>}
         <div className="confirmation-actions">
-          <button type="button" onClick={onCancel} disabled={busy}>ABBRECHEN</button>
+          <button type="button" onClick={onCancel}>ABBRECHEN</button>
           <button
             type="button"
             className={destructive ? "is-danger" : "is-confirm"}
@@ -1062,6 +1126,7 @@ function App() {
     downloadExport,
     prepareConfirmation,
     confirmPrepared,
+    pending,
   } = useTaktServer();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState(null);
@@ -1213,10 +1278,10 @@ function App() {
         connection={connection}
         dateText={dateText}
         onOpenSettings={() => setSettingsOpen(true)}
-        settingsDisabled={state.state === "running" || state.start_sequence?.active}
+        settingsDisabled={state.state === "running" || state.start_sequence?.active || pending.action}
       />
       <main className="control-grid">
-        <TimerPanel state={state} screenAwake={screenAwake} onAction={handleAction} />
+        <TimerPanel state={state} screenAwake={screenAwake} onAction={handleAction} pending={pending.action} />
         <TodayPanel history={history} />
         <BestPanel history={history} />
         <ChartPanel history={history} chartDays={chartDays} onPeriodChange={setChartDays} />
@@ -1226,6 +1291,7 @@ function App() {
         system={system}
         screenAwake={screenAwake}
         onMockPress={() => handleAction("mock_primary")}
+        pending={pending.action}
       />
       <SettingsModal
         open={settingsOpen}
@@ -1238,15 +1304,17 @@ function App() {
         onAudioRequest={sendAudioRequest}
         onExport={handleExport}
         exportBusy={exportBusy}
+        pending={pending}
+        blocked={Boolean(confirmation)}
         feedback={feedback}
       />
       <ConfirmationModal
         confirmation={confirmation}
-        busy={confirmationBusy}
+        busy={confirmationBusy || pending.confirmation}
         onCancel={() => setConfirmation(null)}
         onConfirm={handleConfirm}
       />
-      {toast && <div className="toast-message">{toast}</div>}
+      {toast && <div className="toast-message" role="status" aria-live="polite">{toast}</div>}
     </div>
   );
 }

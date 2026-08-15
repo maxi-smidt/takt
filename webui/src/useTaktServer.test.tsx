@@ -8,6 +8,7 @@ import { useTaktServer, type TaktServerState } from "./useTaktServer";
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const LIVENESS_TIMEOUT_MS = 45_000;
 const CONNECT_TIMEOUT_MS = 15_000;
+const MUTATION_TIMEOUT_MS = 15_000;
 
 function statePayload(revision: number, label = "BEREIT") {
   return {
@@ -335,5 +336,159 @@ describe("useTaktServer connection recovery", () => {
     });
     expect(latest.state.state_label).toBe("NEU");
     expect(latest.connection).toBe("online");
+  });
+});
+describe("useTaktServer mutation safety", () => {
+  let root: Root | null = null;
+  let latest: TaktServerState;
+  let fetchMock: MockInstance<typeof fetch>;
+
+  beforeEach(() => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: FakeWebSocket,
+    });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify(bootstrapPayload(1)), { status: 200 }),
+    );
+  });
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount();
+        await flush();
+      });
+      root = null;
+    }
+    fetchMock.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("deduplicates identical actions but sends distinct actions", async () => {
+    const actionResolvers = new Map<string, (response: Response) => void>();
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === "/api/action") {
+        const action = JSON.parse(String(init?.body)).action as string;
+        return new Promise<Response>((resolve) => {
+          actionResolvers.set(action, resolve);
+        });
+      }
+      return new Response(JSON.stringify(bootstrapPayload(1)), { status: 200 });
+    });
+    root = createRoot(document.createElement("div"));
+    await act(async () => {
+      root?.render(createElement(Probe, { onState: (state) => { latest = state; } }));
+      await flush();
+    });
+    await openLatestSocket();
+
+    let first: Promise<unknown>;
+    let duplicate: Promise<unknown>;
+    let second: Promise<unknown>;
+    await act(async () => {
+      first = latest.sendAction("primary");
+      duplicate = latest.sendAction("primary");
+      second = latest.sendAction("save");
+      await flush();
+    });
+    expect(duplicate!).toBe(first!);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/action")).toHaveLength(2);
+    expect(latest.pending.action).toBe(true);
+    actionResolvers.get("primary")?.(new Response(JSON.stringify({ ok: true, state: statePayload(2, "LÄUFT") })));
+    await act(async () => {
+      await first!;
+      await flush();
+    });
+    expect(latest.pending.action).toBe(true);
+    actionResolvers.get("save")?.(new Response(JSON.stringify({ ok: true, state: statePayload(3, "GESPEICHERT") })));
+    await act(async () => {
+      await second!;
+      await flush();
+    });
+    expect(latest.pending.action).toBe(false);
+  });
+
+  it("clears pending state when a mutation request times out", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === "/api/action") {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("Aborted")), { once: true });
+        });
+      }
+      return new Response(JSON.stringify(bootstrapPayload(1)), { status: 200 });
+    });
+    root = createRoot(document.createElement("div"));
+    await act(async () => {
+      root?.render(createElement(Probe, { onState: (state) => { latest = state; } }));
+      await flush();
+    });
+    await openLatestSocket();
+
+    let request: Promise<unknown>;
+    await act(async () => {
+      request = latest.sendAction("primary");
+      await flush();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(MUTATION_TIMEOUT_MS);
+      await flush();
+      await expect(request!).rejects.toThrow("Aborted");
+      await flush();
+    });
+    expect(latest.pending.action).toBe(false);
+  });
+
+  it("ignores an older history response after a newer period selection", async () => {
+    const resolvers = new Map<string, (response: Response) => void>();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/history?days=")) {
+        const period = url.split("=").at(-1) || "30";
+        return new Promise<Response>((resolve) => {
+          resolvers.set(period, resolve);
+        });
+      }
+      return new Response(JSON.stringify(bootstrapPayload(1)), { status: 200 });
+    });
+    root = createRoot(document.createElement("div"));
+    await act(async () => {
+      root?.render(createElement(Probe, { onState: (state) => { latest = state; } }));
+      await flush();
+    });
+    await openLatestSocket();
+
+    let first: Promise<void>;
+    let second: Promise<void>;
+    await act(async () => {
+      first = latest.setChartDays("7");
+      second = latest.setChartDays("90");
+      await flush();
+    });
+    await act(async () => {
+      resolvers.get("90")?.(new Response(JSON.stringify({
+        today: [], today_count: 0, best: [], chart: [], all: [], chart_days: 90,
+      })));
+      await flush();
+    });
+    await act(async () => {
+      resolvers.get("7")?.(new Response(JSON.stringify({
+        today: [], today_count: 0, best: [], chart: [], all: [], chart_days: 7,
+      })));
+      await flush();
+    });
+    await act(async () => {
+      await Promise.all([first, second]);
+      await flush();
+    });
+    expect(latest.history.chart_days).toBe(90);
   });
 });
