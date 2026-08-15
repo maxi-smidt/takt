@@ -10,6 +10,8 @@ from takt.domain.duration import Duration
 from takt.domain.run import Run
 from takt.persistence.database import connect_database
 
+REMOTE_RECEIPT_RETENTION = timedelta(days=90)
+
 
 class SQLiteRunRepository:
     """Transactional local run repository."""
@@ -228,6 +230,11 @@ class SQLiteRunRepository:
                 if receipt["operation"] != operation:
                     raise ValueError("The command_id was already used for another operation.")
                 return json.loads(receipt["result_json"])
+            cutoff = (datetime.now().astimezone() - REMOTE_RECEIPT_RETENTION).isoformat()
+            self.connection.execute(
+                "DELETE FROM remote_command_receipts WHERE created_at < ?",
+                (cutoff,),
+            )
             row = self.connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
             if row is None or row["updated_at"] != expected_updated_at:
                 raise ValueError("Run changed or no longer exists on the authoritative device.")

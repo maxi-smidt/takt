@@ -246,9 +246,10 @@ class AccountStore:
         user = self.get_user(user_id)
         if user is None:
             raise LookupError("User does not exist.")
-        if disabled is True and user["is_admin"] and self._enabled_admin_count() <= 1:
+        enabled_admins = self._enabled_admin_count(exclude_user_id=user_id)
+        if disabled is True and user["is_admin"] and enabled_admins == 0:
             raise ValueError("The last enabled administrator cannot be disabled.")
-        if is_admin is False and user["is_admin"] and self._enabled_admin_count() <= 1:
+        if is_admin is False and user["is_admin"] and enabled_admins == 0:
             raise ValueError("The last enabled administrator cannot lose administrator access.")
         changes: dict[str, Any] = {}
         if disabled is not None:
@@ -476,10 +477,17 @@ class AccountStore:
             "updated_at": row["updated_at"],
         }
 
-    def _enabled_admin_count(self) -> int:
-        row = self.connection.execute(
-            "SELECT COUNT(*) FROM users WHERE is_admin = 1 AND disabled_at IS NULL"
-        ).fetchone()
+    def _enabled_admin_count(self, *, exclude_user_id: str | None = None) -> int:
+        if exclude_user_id is None:
+            row = self.connection.execute(
+                "SELECT COUNT(*) FROM users WHERE is_admin = 1 AND disabled_at IS NULL"
+            ).fetchone()
+        else:
+            row = self.connection.execute(
+                "SELECT COUNT(*) FROM users "
+                "WHERE is_admin = 1 AND disabled_at IS NULL AND id != ?",
+                (exclude_user_id,),
+            ).fetchone()
         return int(row[0])
 
     def _audit(

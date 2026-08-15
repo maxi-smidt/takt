@@ -118,6 +118,11 @@ def _verify_session(request: Request, *, csrf: bool) -> dict[str, object]:
         session = accounts.verify_session(token)
         if session is None:
             raise HTTPException(status_code=401, detail="Login required.")
+        if bool(session.get("must_change_password")) and request.url.path not in {
+            "/api/session",
+            "/api/session/password",
+        }:
+            raise HTTPException(status_code=403, detail="Password change required.")
         if csrf and not secrets.compare_digest(
             str(session["csrf"]), request.headers.get("X-CSRF-Token", "")
         ):
@@ -203,6 +208,7 @@ _JSON_BODY_PATHS = {
     ("POST", "/api/enrollment-codes"),
     ("POST", "/api/session/password"),
     ("POST", "/api/admin/users"),
+    ("PATCH", "/api/admin/users/{user_id}"),
     ("POST", "/api/admin/users/{user_id}/reset-password"),
     ("PUT", "/api/admin/users/{user_id}/devices/{device_id}"),
     ("POST", "/api/portal/devices/{device_id}/runs/{run_id}/commands"),
@@ -408,6 +414,8 @@ def _validate_mirror(path: Path) -> int:
                 "id",
                 "run_number",
                 "started_at",
+                "stopped_at",
+                "saved_at",
                 "actual_time_ms",
                 "total_time_ms",
                 "session_date",
@@ -501,6 +509,8 @@ def _mirror_connection(
             "id",
             "run_number",
             "started_at",
+            "stopped_at",
+            "saved_at",
             "actual_time_ms",
             "added_time_ms",
             "total_time_ms",
@@ -897,7 +907,7 @@ def create_fastapi_app(
         request: Request, device_id: str, session: dict[str, object] = _USER_DEPENDENCY
     ) -> dict[str, Any]:
         _portal_access(store, session, device_id)
-        connection, device = await asyncio.to_thread(_mirror_connection, store, device_id)
+        connection, device = _mirror_connection(store, device_id)
         try:
             limit = min(max(int(request.query_params.get("limit", "50")), 1), 100)
             date_from = request.query_params.get("from")
@@ -910,6 +920,8 @@ def create_fastapi_app(
             if date_to:
                 clauses.append("session_date <= ?")
                 params.append(date_to)
+            summary_where = " AND ".join(clauses)
+            summary_params = tuple(params)
             cursor = request.query_params.get("cursor")
             if cursor:
                 started_at, run_id = _decode_portal_cursor(cursor)
@@ -923,8 +935,8 @@ def create_fastapi_app(
             summary = connection.execute(
                 f"SELECT COUNT(*) AS count, MIN(total_time_ms) AS best_total_ms, "
                 f"AVG(total_time_ms) AS average_total_ms, SUM(added_time_ms) AS added_time_ms "
-                f"FROM runs WHERE {where}",
-                params,
+                f"FROM runs WHERE {summary_where}",
+                summary_params,
             ).fetchone()
             page = rows[:limit]
             next_cursor = (
@@ -962,7 +974,7 @@ def create_fastapi_app(
         device_id: str, run_id: int, session: dict[str, object] = _USER_DEPENDENCY
     ) -> dict[str, Any]:
         _portal_access(store, session, device_id)
-        connection, device = await asyncio.to_thread(_mirror_connection, store, device_id)
+        connection, device = _mirror_connection(store, device_id)
         try:
             row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
             if row is None:
@@ -997,7 +1009,7 @@ def create_fastapi_app(
             not isinstance(desired, int) or isinstance(desired, bool) or desired < 0
         ):
             raise HTTPException(status_code=400, detail="A valid added time is required.")
-        connection, device = await asyncio.to_thread(_mirror_connection, store, device_id)
+        connection, device = _mirror_connection(store, device_id)
         try:
             if expected_sha256 != device.get("mirror_sha256"):
                 raise HTTPException(status_code=409, detail="The mirror changed; reload the run.")

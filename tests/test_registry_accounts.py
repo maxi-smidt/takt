@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -62,6 +63,11 @@ class AccountStoreTests(unittest.TestCase):
                 admin = accounts.bootstrap_admin("admin", "correct-horse-battery")
                 with self.assertRaises(ValueError):
                     accounts.set_user_state(admin["id"], disabled=True)
+                second_admin = accounts.create_user(
+                    "second-admin", "second-correct-password", is_admin=True
+                )
+                accounts.set_user_state(second_admin["id"], disabled=True)
+                accounts.set_user_state(second_admin["id"], is_admin=False)
                 user = accounts.create_user("runner", "another-correct-password")
                 token, _ = accounts.create_session(user["id"])
                 accounts.set_user_state(user["id"], disabled=True)
@@ -93,7 +99,97 @@ class AccountStoreTests(unittest.TestCase):
                     )
                     self.assertEqual(created.status_code, 201)
                     self.assertTrue(created.json()["temporary_password"])
+                    malformed_patch = client.patch(
+                        f"/api/admin/users/{created.json()['user']['id']}",
+                        content="{}",
+                        headers={
+                            "Content-Type": "text/plain",
+                            "X-CSRF-Token": csrf,
+                        },
+                    )
+                    self.assertEqual(malformed_patch.status_code, 415)
+                    temporary_password = created.json()["temporary_password"]
                     self.assertEqual(client.get("/api/admin/users").status_code, 200)
+                    self.assertEqual(
+                        client.delete(
+                            "/api/session", headers={"X-CSRF-Token": csrf}
+                        ).status_code,
+                        200,
+                    )
+                    runner_login = client.post(
+                        "/api/session",
+                        json={"username": "runner", "password": temporary_password},
+                    )
+                    self.assertEqual(runner_login.status_code, 200)
+                    runner_session = client.get("/api/session").json()
+                    self.assertTrue(runner_session["user"]["must_change_password"])
+                    self.assertEqual(client.get("/api/portal/devices").status_code, 403)
+                    password_change = client.post(
+                        "/api/session/password",
+                        json={
+                            "current_password": temporary_password,
+                            "new_password": "runner-new-password",
+                        },
+                        headers={"X-CSRF-Token": runner_session["csrf_token"]},
+                    )
+                    self.assertEqual(password_change.status_code, 200)
+                    self.assertFalse(client.get("/api/session").json()["user"]["must_change_password"])
+            finally:
+                store.close()
+
+
+    def test_portal_summary_ignores_keyset_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = RegistryStore(root, allow_thread_handoff=True)
+            store.accounts.bootstrap_admin("admin", "correct-horse-battery")
+            device_id = "12345678-1234-1234-1234-123456789abc"
+            code = store.create_enrollment_code()
+            store.enroll_device(
+                code=code,
+                device_id=device_id,
+                name="Lane 1",
+                hostname="takt-01",
+                token="a" * 64,
+            )
+            mirror_repository = SQLiteRunRepository(root / "mirror.db")
+            try:
+                for offset in (0, 1):
+                    start = datetime(2026, 8, 5 + offset, 9, 0, tzinfo=UTC)
+                    mirror_repository.create_and_save(
+                        started_at=start,
+                        stopped_at=start + timedelta(seconds=80),
+                        saved_at=start + timedelta(seconds=81),
+                        actual_time=Duration(80_000 + offset),
+                        added_time=Duration(0),
+                    )
+            finally:
+                mirror_repository.close()
+            mirror_path = root / "mirror.db"
+            digest = hashlib.sha256(mirror_path.read_bytes()).hexdigest()
+            store.record_mirror(
+                device_id, mirror_path, digest, mirror_path.stat().st_size, run_count=2
+            )
+            try:
+                with TestClient(
+                    create_fastapi_app(store, AdminAuth("correct-horse-battery", root))
+                ) as client:
+                    self.assertEqual(
+                        client.post(
+                            "/api/session",
+                            json={"username": "admin", "password": "correct-horse-battery"},
+                        ).status_code,
+                        200,
+                    )
+                    first = client.get(
+                        f"/api/portal/devices/{device_id}/runs?limit=1"
+                    ).json()
+                    self.assertEqual(first["summary"]["count"], 2)
+                    second = client.get(
+                        f"/api/portal/devices/{device_id}/runs?limit=1"
+                        f"&cursor={first['next_cursor']}"
+                    ).json()
+                    self.assertEqual(second["summary"]["count"], 2)
             finally:
                 store.close()
 
