@@ -41,6 +41,7 @@ def create_web_app(runtime: WebRuntime) -> web.Application:
     app.router.add_get("/internal/maintenance", maintenance_status)
     app.router.add_post("/internal/maintenance/acquire", maintenance_acquire)
     app.router.add_post("/internal/maintenance/release", maintenance_release)
+    app.router.add_post("/internal/run-curation", run_curation)
     app.router.add_post("/api/audio/settings", audio_settings)
     app.router.add_post("/api/audio/scan", audio_scan)
     app.router.add_post("/api/audio/connect", audio_connect)
@@ -212,6 +213,39 @@ async def action(request: web.Request) -> web.Response:
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error)) from error
     return web.json_response({"ok": changed, "state": runtime.state_payload()})
+
+
+async def run_curation(request: web.Request) -> web.Response:
+    _require_loopback(request)
+    body = await json_body(request)
+    command_id = body.get("command_id")
+    operation = body.get("operation")
+    run_id = body.get("run_id")
+    expected_updated_at = body.get("expected_updated_at")
+    desired_added_time_ms = body.get("desired_added_time_ms")
+    if not isinstance(command_id, str) or not command_id or len(command_id) > 128:
+        raise web.HTTPBadRequest(text="A valid command_id is required.")
+    if operation not in {"adjust_added_time", "delete"}:
+        raise web.HTTPBadRequest(text="Unsupported run curation operation.")
+    if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+        raise web.HTTPBadRequest(text="A valid run_id is required.")
+    if not isinstance(expected_updated_at, str) or not expected_updated_at:
+        raise web.HTTPBadRequest(text="expected_updated_at is required.")
+    if desired_added_time_ms is not None and (
+        not isinstance(desired_added_time_ms, int) or isinstance(desired_added_time_ms, bool)
+    ):
+        raise web.HTTPBadRequest(text="desired_added_time_ms must be an integer.")
+    try:
+        result = request.app[RUNTIME_KEY].apply_remote_curation(
+            command_id=command_id,
+            operation=operation,
+            run_id=run_id,
+            expected_updated_at=expected_updated_at,
+            desired_added_time_ms=desired_added_time_ms,
+        )
+    except ValueError as error:
+        raise web.HTTPConflict(text=str(error)) from error
+    return web.json_response({"ok": True, "result": result})
 
 
 async def maintenance_status(request: web.Request) -> web.Response:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import uvicorn
 
+from takt.registry.accounts import PASSWORD_MIN_LENGTH
 from takt.registry.auth import AdminAuth
 from takt.registry.bundled_release import import_bundled_release
 from takt.registry.fastapi_app import create_fastapi_app
@@ -26,6 +27,7 @@ def _parser() -> argparse.ArgumentParser:
         help="registry database, release, and mirror storage",
     )
     parser.add_argument("--admin-password", default=os.environ.get("TAKT_REGISTRY_ADMIN_PASSWORD"))
+    parser.add_argument("--admin-username", default=os.environ.get("TAKT_REGISTRY_ADMIN_USERNAME"))
     parser.add_argument(
         "--admin-password-file",
         default=os.environ.get("TAKT_REGISTRY_ADMIN_PASSWORD_FILE"),
@@ -66,12 +68,21 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     lock_handle = _acquire_instance_lock(data_directory)
-    store = RegistryStore(data_directory)
+    store = RegistryStore(data_directory, allow_thread_handoff=True)
     bundled_release_directory = os.environ.get("TAKT_BUNDLED_RELEASE_DIR")
     store.bundled_release_status = import_bundled_release(
         store, Path(bundled_release_directory) if bundled_release_directory else None
     )
     LOGGER.info("Bundled release import: %s", store.bundled_release_status)
+    if args.admin_username and len(password) < PASSWORD_MIN_LENGTH:
+        store.close()
+        lock_handle.close()
+        raise SystemExit(
+            "TAKT_REGISTRY_ADMIN_USERNAME requires an admin password with at least "
+            f"{PASSWORD_MIN_LENGTH} characters."
+        )
+    if not store.accounts.has_users() and args.admin_username:
+        store.accounts.bootstrap_admin(args.admin_username, password)
     try:
         auth = AdminAuth(password, data_directory)
     except Exception:

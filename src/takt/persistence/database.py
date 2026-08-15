@@ -31,6 +31,13 @@ ON runs(session_date);
 
 CREATE INDEX IF NOT EXISTS idx_runs_total_time
 ON runs(total_time_ms, actual_time_ms, saved_at);
+CREATE TABLE IF NOT EXISTS remote_command_receipts (
+    command_id TEXT PRIMARY KEY,
+    operation TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 """
 
 

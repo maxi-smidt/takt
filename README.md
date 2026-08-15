@@ -872,3 +872,7 @@ Für den Fleet Manager sind als eigene Arbeitsschritte vorgesehen:
 - Rotation der Gerätezugangsdaten und erneutes Anmelden ohne SSH,
 - vollständige WLAN-Verwaltung (auflisten, ändern, entfernen, Priorität),
 - Wiederherstellung eines bekannten guten Release- oder Datenbankstands.
+
+### Multi-user Registry portal
+
+The Registry supports persistent local usernames, per-device `read`/`write` access, and a separate regular-user run portal. Set `TAKT_REGISTRY_ADMIN_USERNAME` alongside the existing admin password only for the first startup of a new or migrated Registry; once the first administrator exists, the username bootstrap variable is ignored. Regular-user writes adjust saved-run added time or delete a saved run through the authoritative Pi agent and never edit a Registry mirror.

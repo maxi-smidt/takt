@@ -440,6 +440,27 @@ class WebRuntime:
         await self.audio_service.test_sound()
         return self.system_payload()
 
+    def apply_remote_curation(
+        self,
+        *,
+        command_id: str,
+        operation: str,
+        run_id: int,
+        expected_updated_at: str,
+        desired_added_time_ms: int | None = None,
+    ) -> dict[str, object]:
+        result = self.repository.apply_remote_curation(
+            command_id=command_id,
+            operation=operation,
+            run_id=run_id,
+            expected_updated_at=expected_updated_at,
+            desired_added_time_ms=desired_added_time_ms,
+        )
+        self.history_revision += 1
+        self._schedule_history_broadcast()
+        self._schedule_state_broadcast()
+        return result
+
     def prepare_confirmation(
         self,
         operation: str,

@@ -9,6 +9,7 @@ application, which lets the migration proceed one vertical slice at a time.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import json
@@ -110,10 +111,26 @@ def _auth(request: Request) -> AdminAuth:
     return request.app.state.auth
 
 
-def _verify_admin(request: Request, *, csrf: bool) -> dict[str, object]:
+def _verify_session(request: Request, *, csrf: bool) -> dict[str, object]:
+    token = request.cookies.get(COOKIE_NAME, "")
+    accounts = getattr(request.app.state, "accounts", None)
+    if accounts is not None and accounts.has_users():
+        session = accounts.verify_session(token)
+        if session is None:
+            raise HTTPException(status_code=401, detail="Login required.")
+        if bool(session.get("must_change_password")) and request.url.path not in {
+            "/api/session",
+            "/api/session/password",
+        }:
+            raise HTTPException(status_code=403, detail="Password change required.")
+        if csrf and not secrets.compare_digest(
+            str(session["csrf"]), request.headers.get("X-CSRF-Token", "")
+        ):
+            raise HTTPException(status_code=403, detail="CSRF validation failed.")
+        return session
     try:
         return _auth(request).verify_session(
-            request.cookies.get(COOKIE_NAME, ""),
+            token,
             csrf_token=request.headers.get("X-CSRF-Token") if csrf else None,
             require_csrf=csrf,
         )
@@ -121,6 +138,17 @@ def _verify_admin(request: Request, *, csrf: bool) -> dict[str, object]:
         raise HTTPException(status_code=403, detail=str(error)) from error
     except SessionError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
+
+
+def _verify_admin(request: Request, *, csrf: bool) -> dict[str, object]:
+    session = _verify_session(request, csrf=csrf)
+    if "is_admin" in session and not bool(session["is_admin"]):
+        raise HTTPException(status_code=403, detail="Administrator access required.")
+    return session
+
+
+def _verify_user(request: Request) -> dict[str, object]:
+    return _verify_session(request, csrf=False)
 
 
 def _admin(request: Request) -> dict[str, object]:
@@ -133,6 +161,14 @@ def _admin_csrf(request: Request) -> dict[str, object]:
 
 _ADMIN_DEPENDENCY = Depends(_admin)
 _ADMIN_CSRF_DEPENDENCY = Depends(_admin_csrf)
+_USER_DEPENDENCY = Depends(_verify_user)
+
+
+def _user_csrf(request: Request) -> dict[str, object]:
+    return _verify_session(request, csrf=True)
+
+
+_USER_CSRF_DEPENDENCY = Depends(_user_csrf)
 
 
 def _device(request: Request) -> str:
@@ -170,6 +206,12 @@ def _set_security_headers(request: Request, response: Any) -> None:
 _JSON_BODY_PATHS = {
     ("POST", "/api/session"),
     ("POST", "/api/enrollment-codes"),
+    ("POST", "/api/session/password"),
+    ("POST", "/api/admin/users"),
+    ("PATCH", "/api/admin/users/{user_id}"),
+    ("POST", "/api/admin/users/{user_id}/reset-password"),
+    ("PUT", "/api/admin/users/{user_id}/devices/{device_id}"),
+    ("POST", "/api/portal/devices/{device_id}/runs/{run_id}/commands"),
     ("POST", "/api/deployments"),
     ("POST", "/api/devices/{device_id}/jobs"),
     ("POST", "/api/devices/{device_id}/wifi-networks"),
@@ -372,6 +414,8 @@ def _validate_mirror(path: Path) -> int:
                 "id",
                 "run_number",
                 "started_at",
+                "stopped_at",
+                "saved_at",
                 "actual_time_ms",
                 "total_time_ms",
                 "session_date",
@@ -436,6 +480,82 @@ async def _stream_upload(
             temporary_path.unlink(missing_ok=True)
 
 
+def _portal_access(
+    store: RegistryStore, session: dict[str, object], device_id: str, *, write: bool = False
+) -> str:
+    if bool(session.get("is_admin")):
+        return "write"
+    level = store.accounts.access_level(str(session.get("user_id") or ""), device_id)
+    if level is None or (write and level != "write"):
+        raise HTTPException(status_code=404, detail="Device does not exist.")
+    return level
+
+
+def _mirror_connection(
+    store: RegistryStore, device_id: str
+) -> tuple[sqlite3.Connection, dict[str, Any]]:
+    device = store.get_device(device_id)
+    path = store.mirror_path(device_id)
+    if device is None or not path.is_file() or not device.get("mirror_sha256"):
+        raise HTTPException(status_code=503, detail="No mirrored database is available.")
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("PRAGMA trusted_schema = OFF")
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
+        required = {
+            "id",
+            "run_number",
+            "started_at",
+            "stopped_at",
+            "saved_at",
+            "actual_time_ms",
+            "added_time_ms",
+            "total_time_ms",
+            "session_date",
+            "updated_at",
+        }
+        if not required.issubset(columns):
+            raise ValueError("incompatible runs table")
+    except (OSError, sqlite3.Error, ValueError) as error:
+        with contextlib.suppress(Exception):
+            connection.close()
+        raise HTTPException(status_code=503, detail="Mirrored database is unavailable.") from error
+    assert connection is not None
+    return connection, device
+
+
+def _portal_run(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "run_number": int(row["run_number"]),
+        "session_date": row["session_date"],
+        "started_at": row["started_at"],
+        "stopped_at": row["stopped_at"],
+        "saved_at": row["saved_at"],
+        "actual_time_ms": int(row["actual_time_ms"]),
+        "added_time_ms": int(row["added_time_ms"]),
+        "total_time_ms": int(row["total_time_ms"]),
+        "note": row["note"] if "note" in row.keys() else None,
+        "updated_at": row["updated_at"],
+    }
+
+
+def _encode_portal_cursor(started_at: str, run_id: int) -> str:
+    return base64.urlsafe_b64encode(f"{started_at}\0{run_id}".encode()).decode().rstrip("=")
+
+
+def _decode_portal_cursor(value: str) -> tuple[str, int]:
+    try:
+        raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)).decode()
+        started_at, run_id = raw.split("\0", 1)
+        return started_at, int(run_id)
+    except (ValueError, UnicodeError) as error:
+        raise HTTPException(status_code=400, detail="Run cursor is invalid.") from error
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     store: RegistryStore = app.state.store
@@ -473,6 +593,7 @@ def create_fastapi_app(
         lifespan=_lifespan,
     )
     app.state.store = store
+    app.state.accounts = store.accounts
     app.state.auth = auth
     app.state.deployments = DeploymentManager(store)
     app.state.secure_cookies = secure_cookies
@@ -570,6 +691,21 @@ def create_fastapi_app(
 
     @app.get("/api/session", response_model=SessionStatusResponse)
     async def session_status(request: Request) -> dict[str, object]:
+        accounts = app.state.accounts
+        if accounts.has_users():
+            session = accounts.verify_session(request.cookies.get(COOKIE_NAME, ""))
+            if session is None:
+                return {"authenticated": False}
+            return {
+                "authenticated": True,
+                "csrf_token": session["csrf"],
+                "user": {
+                    "id": session["user_id"],
+                    "username": session["username"],
+                    "is_admin": session["is_admin"],
+                    "must_change_password": session["must_change_password"],
+                },
+            }
         try:
             session = auth.verify_session(request.cookies.get(COOKIE_NAME, ""))
         except SessionError:
@@ -592,17 +728,27 @@ def create_fastapi_app(
                 detail="Login service is busy. Try again shortly.",
                 headers={"Retry-After": "1"},
             ) from error
+        accounts = app.state.accounts
         try:
-            token = await asyncio.to_thread(
-                auth.authenticate, body.password.get_secret_value()
-            )
+            if accounts.has_users():
+                user = await asyncio.to_thread(
+                    accounts.authenticate, body.username, body.password.get_secret_value()
+                )
+                if user is None:
+                    limiter.failed(address)
+                    raise HTTPException(status_code=401, detail="Incorrect username or password.")
+                token, session = await asyncio.to_thread(accounts.create_session, user["id"])
+                response_body = {"ok": True, "user": user}
+            else:
+                token = await asyncio.to_thread(auth.authenticate, body.password.get_secret_value())
+                if token is None:
+                    limiter.failed(address)
+                    raise HTTPException(status_code=401, detail="Incorrect password.")
+                response_body = {"ok": True}
         finally:
             semaphore.release()
-        if token is None:
-            limiter.failed(address)
-            raise HTTPException(status_code=401, detail="Incorrect password.")
         limiter.succeeded(address)
-        response = JSONResponse({"ok": True})
+        response = JSONResponse(response_body)
         response.set_cookie(
             COOKIE_NAME,
             token,
@@ -616,10 +762,295 @@ def create_fastapi_app(
 
     @app.delete("/api/session")
     async def logout(request: Request) -> JSONResponse:
-        _admin(request, csrf=True)
+        session = _verify_session(request, csrf=True)
+        if app.state.accounts.has_users():
+            app.state.accounts.revoke_session(
+                request.cookies.get(COOKIE_NAME, ""), actor_user_id=str(session["user_id"])
+            )
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE_NAME, path="/")
         return response
+
+    @app.get("/api/admin/users")
+    async def admin_users(_: dict[str, object] = _ADMIN_DEPENDENCY) -> dict[str, Any]:
+        return {"users": store.accounts.list_users()}
+
+    @app.post("/api/admin/users", status_code=201)
+    async def admin_create_user(
+        request: Request, body: dict[str, Any], session: dict[str, object] = _ADMIN_CSRF_DEPENDENCY
+    ) -> JSONResponse:
+        username = str(body.get("username") or "").strip()
+        temporary_password = str(body.get("password") or secrets.token_urlsafe(18))
+        try:
+            user = store.accounts.create_user(
+                username,
+                temporary_password,
+                is_admin=bool(body.get("is_admin", False)),
+                must_change_password=True,
+                actor_user_id=str(session.get("user_id") or ""),
+            )
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return JSONResponse(
+            {"user": user, "temporary_password": temporary_password}, status_code=201
+        )
+
+    @app.patch("/api/admin/users/{user_id}")
+    async def admin_update_user(
+        user_id: str, body: dict[str, Any], session: dict[str, object] = _ADMIN_CSRF_DEPENDENCY
+    ) -> dict[str, Any]:
+        try:
+            user = store.accounts.set_user_state(
+                user_id,
+                disabled=body.get("disabled") if "disabled" in body else None,
+                is_admin=body.get("is_admin") if "is_admin" in body else None,
+                actor_user_id=str(session.get("user_id") or ""),
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"user": user}
+
+    @app.post("/api/admin/users/{user_id}/reset-password")
+    async def admin_reset_password(
+        user_id: str, session: dict[str, object] = _ADMIN_CSRF_DEPENDENCY
+    ) -> dict[str, Any]:
+        temporary_password = secrets.token_urlsafe(18)
+        try:
+            user = store.accounts.reset_password(
+                user_id, temporary_password, actor_user_id=str(session.get("user_id") or "")
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {"user": user, "temporary_password": temporary_password}
+
+    @app.put("/api/admin/users/{user_id}/devices/{device_id}")
+    async def admin_grant_device(
+        user_id: str,
+        device_id: str,
+        body: dict[str, Any],
+        session: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
+    ) -> dict[str, Any]:
+        try:
+            access = store.accounts.grant_access(
+                user_id,
+                device_id,
+                str(body.get("access") or ""),
+                actor_user_id=str(session.get("user_id") or ""),
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"access": access}
+
+    @app.delete("/api/admin/users/{user_id}/devices/{device_id}")
+    async def admin_revoke_device(
+        user_id: str, device_id: str, session: dict[str, object] = _ADMIN_CSRF_DEPENDENCY
+    ) -> dict[str, Any]:
+        if not store.accounts.revoke_access(
+            user_id, device_id, actor_user_id=str(session.get("user_id") or "")
+        ):
+            raise HTTPException(status_code=404, detail="Access assignment does not exist.")
+        return {"ok": True}
+
+    @app.post("/api/session/password")
+    async def change_password(
+        request: Request, body: dict[str, Any], session: dict[str, object] = _USER_CSRF_DEPENDENCY
+    ) -> dict[str, Any]:
+        if not store.accounts.has_users():
+            raise HTTPException(status_code=404, detail="Password changes require user accounts.")
+        try:
+            store.accounts.change_password(
+                str(session["user_id"]),
+                str(body.get("current_password") or ""),
+                str(body.get("new_password") or ""),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"ok": True}
+
+    @app.get("/api/portal/devices")
+    async def portal_devices(session: dict[str, object] = _USER_DEPENDENCY) -> dict[str, Any]:
+        visible = []
+        for device in store.list_devices():
+            try:
+                access = _portal_access(store, session, str(device["id"]))
+            except HTTPException:
+                continue
+            status = device.get("status") or {}
+            if not device.get("last_mirror_at"):
+                mirror_state = "missing"
+            elif not device.get("online"):
+                mirror_state = "offline"
+            elif bool(status.get("mirror_pending")):
+                mirror_state = "pending"
+            else:
+                mirror_state = "fresh"
+            visible.append(
+                {
+                    "id": device["id"],
+                    "name": device["name"],
+                    "hostname": device["hostname"],
+                    "online": device["online"],
+                    "access": access,
+                    "run_count": device.get("run_count"),
+                    "last_mirrored_at": device.get("last_mirror_at"),
+                    "mirror_state": mirror_state,
+                }
+            )
+        return {"devices": visible}
+
+    @app.get("/api/portal/devices/{device_id}/runs")
+    async def portal_runs(
+        request: Request, device_id: str, session: dict[str, object] = _USER_DEPENDENCY
+    ) -> dict[str, Any]:
+        _portal_access(store, session, device_id)
+        connection, device = _mirror_connection(store, device_id)
+        try:
+            limit = min(max(int(request.query_params.get("limit", "50")), 1), 100)
+            date_from = request.query_params.get("from")
+            date_to = request.query_params.get("to")
+            clauses = ["1 = 1"]
+            params: list[Any] = []
+            if date_from:
+                clauses.append("session_date >= ?")
+                params.append(date_from)
+            if date_to:
+                clauses.append("session_date <= ?")
+                params.append(date_to)
+            summary_where = " AND ".join(clauses)
+            summary_params = tuple(params)
+            cursor = request.query_params.get("cursor")
+            if cursor:
+                started_at, run_id = _decode_portal_cursor(cursor)
+                clauses.append("(started_at < ? OR (started_at = ? AND id < ?))")
+                params.extend([started_at, started_at, run_id])
+            where = " AND ".join(clauses)
+            rows = connection.execute(
+                f"SELECT * FROM runs WHERE {where} ORDER BY started_at DESC, id DESC LIMIT ?",
+                (*params, limit + 1),
+            ).fetchall()
+            summary = connection.execute(
+                f"SELECT COUNT(*) AS count, MIN(total_time_ms) AS best_total_ms, "
+                f"AVG(total_time_ms) AS average_total_ms, SUM(added_time_ms) AS added_time_ms "
+                f"FROM runs WHERE {summary_where}",
+                summary_params,
+            ).fetchone()
+            page = rows[:limit]
+            next_cursor = (
+                _encode_portal_cursor(str(page[-1]["started_at"]), int(page[-1]["id"]))
+                if len(rows) > limit
+                else None
+            )
+            return {
+                "device": {"id": device["id"], "name": device["name"]},
+                "mirror": {
+                    "sha256": device["mirror_sha256"],
+                    "last_mirrored_at": device["last_mirror_at"],
+                    "state": "offline"
+                    if not device.get("online")
+                    else (
+                        "pending" if (device.get("status") or {}).get("mirror_pending") else "fresh"
+                    ),
+                },
+                "summary": {
+                    "count": int(summary["count"] or 0),
+                    "best_total_ms": summary["best_total_ms"],
+                    "average_total_ms": summary["average_total_ms"],
+                    "added_time_ms": int(summary["added_time_ms"] or 0),
+                },
+                "runs": [_portal_run(row) for row in page],
+                "next_cursor": next_cursor,
+            }
+        except (ValueError, OverflowError) as error:
+            raise HTTPException(status_code=400, detail="Run filters are invalid.") from error
+        finally:
+            connection.close()
+
+    @app.get("/api/portal/devices/{device_id}/runs/{run_id}")
+    async def portal_run_detail(
+        device_id: str, run_id: int, session: dict[str, object] = _USER_DEPENDENCY
+    ) -> dict[str, Any]:
+        _portal_access(store, session, device_id)
+        connection, device = _mirror_connection(store, device_id)
+        try:
+            row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Run does not exist.")
+            return {
+                "device": {"id": device["id"], "name": device["name"]},
+                "run": _portal_run(row),
+                "mirror_sha256": device["mirror_sha256"],
+            }
+        finally:
+            connection.close()
+
+    @app.post("/api/portal/devices/{device_id}/runs/{run_id}/commands", status_code=202)
+    async def portal_command(
+        device_id: str,
+        run_id: int,
+        body: dict[str, Any],
+        session: dict[str, object] = _USER_CSRF_DEPENDENCY,
+    ) -> JSONResponse:
+        _portal_access(store, session, device_id, write=True)
+        if body.get("confirmed") is not True:
+            raise HTTPException(status_code=400, detail="Explicit confirmation is required.")
+        operation = str(body.get("operation") or "")
+        if operation not in {"adjust_added_time", "delete"}:
+            raise HTTPException(status_code=400, detail="Unsupported run curation operation.")
+        expected_updated_at = body.get("expected_updated_at")
+        expected_sha256 = body.get("mirror_sha256")
+        desired = body.get("desired_added_time_ms")
+        if not isinstance(expected_updated_at, str) or not isinstance(expected_sha256, str):
+            raise HTTPException(status_code=400, detail="Mirror and run version are required.")
+        if operation == "adjust_added_time" and (
+            not isinstance(desired, int) or isinstance(desired, bool) or desired < 0
+        ):
+            raise HTTPException(status_code=400, detail="A valid added time is required.")
+        connection, device = _mirror_connection(store, device_id)
+        try:
+            if expected_sha256 != device.get("mirror_sha256"):
+                raise HTTPException(status_code=409, detail="The mirror changed; reload the run.")
+            row = connection.execute(
+                "SELECT updated_at FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row is None or row["updated_at"] != expected_updated_at:
+                raise HTTPException(status_code=409, detail="The run changed; reload the run.")
+            payload = {
+                "operation": operation,
+                "run_id": run_id,
+                "expected_updated_at": expected_updated_at,
+                "desired_added_time_ms": desired,
+                "mirror_sha256": expected_sha256,
+            }
+        finally:
+            connection.close()
+        try:
+            job = store.create_job(
+                device_id,
+                "curate_run",
+                payload,
+                requested_by_user_id=str(session.get("user_id") or "unknown"),
+            )
+        except (LookupError, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return JSONResponse({"job": job}, status_code=202)
+
+    @app.get("/api/portal/commands/{job_id}")
+    async def portal_command_status(
+        job_id: str, session: dict[str, object] = _USER_DEPENDENCY
+    ) -> dict[str, Any]:
+        job = store.get_job(job_id)
+        if job is None or (
+            not session.get("is_admin")
+            and job.get("requested_by_user_id") != session.get("user_id")
+        ):
+            raise HTTPException(status_code=404, detail="Command does not exist.")
+        if not session.get("is_admin"):
+            _portal_access(store, session, str(job.get("device_id") or ""))
+        return {"job": job}
 
     @app.get("/api/devices")
     async def devices(request: Request, _: dict[str, object] = _ADMIN_DEPENDENCY) -> dict[str, Any]:
@@ -667,8 +1098,7 @@ def create_fastapi_app(
             raise HTTPException(status_code=404, detail="Deployment does not exist.")
         try:
             after = int(
-                request.headers.get("Last-Event-ID")
-                or request.query_params.get("after", "0")
+                request.headers.get("Last-Event-ID") or request.query_params.get("after", "0")
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Event cursor is invalid.") from error
@@ -689,8 +1119,7 @@ def create_fastapi_app(
                         ).encode()
                         after = event["id"]
                     if current is None or (
-                        current["status"]
-                        in {"succeeded", "failed", "cancelled", "interrupted"}
+                        current["status"] in {"succeeded", "failed", "cancelled", "interrupted"}
                         and not events
                     ):
                         break
@@ -735,9 +1164,7 @@ def create_fastapi_app(
         except ValueError as error:
             credentials.clear()
             raise HTTPException(status_code=400, detail=str(error)) from error
-        return JSONResponse(
-            {"deployment": store.get_deployment(deployment_id)}, status_code=202
-        )
+        return JSONResponse({"deployment": store.get_deployment(deployment_id)}, status_code=202)
 
     @app.post("/api/deployments/{deployment_id}/retry", status_code=202)
     async def deployment_retry(
@@ -763,17 +1190,13 @@ def create_fastapi_app(
             raise HTTPException(status_code=404, detail=str(error)) from error
         return {"deployment": item}
 
-    @app.post(
-        "/api/enrollment-codes", status_code=201, response_model=EnrollmentCodeResponse
-    )
+    @app.post("/api/enrollment-codes", status_code=201, response_model=EnrollmentCodeResponse)
     async def enrollment_code(
         body: LabelRequest,
         _: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
     ) -> JSONResponse:
         code = store.create_enrollment_code(body.label)
-        return JSONResponse(
-            {"code": code, "expires_in_minutes": 60}, status_code=201
-        )
+        return JSONResponse({"code": code, "expires_in_minutes": 60}, status_code=201)
 
     @app.get("/api/releases")
     async def releases(
@@ -808,9 +1231,7 @@ def create_fastapi_app(
             if not isinstance(artifact, UploadFile):
                 raise HTTPException(status_code=400, detail="A release .tar.gz is required.")
             original_filename = Path(artifact.filename or "takt-release.tar.gz").name
-            with tempfile.NamedTemporaryFile(
-                dir=store.data_directory, delete=False
-            ) as temporary:
+            with tempfile.NamedTemporaryFile(dir=store.data_directory, delete=False) as temporary:
                 temp_path = Path(temporary.name)
                 while chunk := await artifact.read(256 * 1024):
                     size += len(chunk)
@@ -860,9 +1281,7 @@ def create_fastapi_app(
         _: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
     ) -> JSONResponse:
         try:
-            job = store.create_job(
-                device_id, body.action, body.payload, override=body.override
-            )
+            job = store.create_job(device_id, body.action, body.payload, override=body.override)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
@@ -988,8 +1407,7 @@ def create_fastapi_app(
     @app.post("/agent/enroll", status_code=201, response_model=DeviceTokenResponse)
     async def agent_enroll(body: EnrollmentRequest) -> JSONResponse:
         if any(
-            not value
-            for value in (body.enrollment_code, body.device_id, body.name, body.hostname)
+            not value for value in (body.enrollment_code, body.device_id, body.name, body.hostname)
         ):
             raise HTTPException(status_code=400, detail="Enrollment data is incomplete.")
         try:
@@ -1046,6 +1464,7 @@ def create_fastapi_app(
                 stage=body.stage,
                 bytes_downloaded=body.bytes_downloaded,
                 bytes_total=body.bytes_total,
+                result=body.result,
             )
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
@@ -1107,9 +1526,7 @@ def create_fastapi_app(
         )
         try:
             if not expected_sha or actual_sha != expected_sha:
-                raise HTTPException(
-                    status_code=400, detail="Diagnostics checksum does not match."
-                )
+                raise HTTPException(status_code=400, detail="Diagnostics checksum does not match.")
             bundle = store.record_diagnostics(
                 device_id, str(job["id"]), temp_path, actual_sha, size
             )

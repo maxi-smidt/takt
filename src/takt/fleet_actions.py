@@ -8,6 +8,7 @@ SERVICE_CONTROL_CAPABILITY = "service-control-v1"
 POWER_CONTROL_CAPABILITY = "power-control-v1"
 DIAGNOSTICS_CAPABILITY = "diagnostics-v1"
 HEALTH_CHECKS_CAPABILITY = "health-checks-v1"
+RUN_CURATION_CAPABILITY = "run-curation-v1"
 
 INSTALL_STAGES = (
     "queued",
@@ -40,6 +41,7 @@ _SERVICE_STAGES = (*_COMMON_STAGES, "applying", "verifying")
 _POWER_STAGES = (*_COMMON_STAGES, "applying", "rebooting", "powering_off")
 _DIAGNOSTICS_STAGES = (*_COMMON_STAGES, "collecting", "redacting", "uploading")
 _HEALTH_CHECK_STAGES = (*_COMMON_STAGES, "checking")
+_CURATION_STAGES = (*_COMMON_STAGES, "applying", "refreshing_mirror")
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +120,11 @@ FLEET_ACTIONS: dict[str, FleetAction] = {
         name="collect_diagnostics",
         capability=DIAGNOSTICS_CAPABILITY,
         stages=_DIAGNOSTICS_STAGES,
+    ),
+    "curate_run": FleetAction(
+        name="curate_run",
+        capability=RUN_CURATION_CAPABILITY,
+        stages=_CURATION_STAGES,
     ),
     "run_health_checks": FleetAction(
         name="run_health_checks",

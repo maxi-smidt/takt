@@ -35,6 +35,7 @@ from takt.fleet_actions import (
     HEALTH_CHECKS_CAPABILITY,
     LEASED_JOBS_CAPABILITY,
     POWER_CONTROL_CAPABILITY,
+    RUN_CURATION_CAPABILITY,
     SERVICE_CONTROL_CAPABILITY,
     WIFI_PROFILE_CAPABILITY,
 )
@@ -519,6 +520,7 @@ class TaktAgent:
             "wifi_signal_dbm": self._wifi_signal_dbm(),
             "connection_recoveries": self._connection_recoveries,
             "registry_transport": self._registry_transport,
+            "mirror_pending": self._database_signature() != self._last_mirror_signature,
             "update_recovery": recovery_payload,
         }
 
@@ -549,6 +551,8 @@ class TaktAgent:
                 await self._install_release(session, job)
             elif action == "mirror_now":
                 await self._upload_mirror(session)
+            elif action == "curate_run":
+                await self._curate_run(session, job)
             elif action == "restart_takt":
                 await self._restart_takt(session, job)
             elif action in {"start_takt", "stop_takt"}:
@@ -873,6 +877,48 @@ class TaktAgent:
             return None
         return await self._acquire_maintenance(session, job_id, reason)
 
+    async def _curate_run(self, session: ClientSession, job: dict[str, Any]) -> None:
+        payload = job.get("payload")
+        if not isinstance(payload, dict):
+            raise RuntimeError("Run curation payload is missing.")
+        operation = payload.get("operation")
+        run_id = payload.get("run_id")
+        expected_updated_at = payload.get("expected_updated_at")
+        if operation not in {"adjust_added_time", "delete"}:
+            raise RuntimeError("Run curation operation is invalid.")
+        if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+            raise RuntimeError("Run curation run id is invalid.")
+        if not isinstance(expected_updated_at, str) or not expected_updated_at:
+            raise RuntimeError("Run curation version is missing.")
+        job_id = str(job["id"])
+        await self._progress_job(
+            session, job_id, 35, "Applying run correction", stage="applying"
+        )
+        local_base = self.config.health_url.rsplit("/health", 1)[0]
+        request_body = {
+            "command_id": job_id,
+            "operation": operation,
+            "run_id": run_id,
+            "expected_updated_at": expected_updated_at,
+            "desired_added_time_ms": payload.get("desired_added_time_ms"),
+        }
+        async with session.post(
+            f"{local_base}/internal/run-curation",
+            json=request_body,
+            timeout=ClientTimeout(total=15),
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Local run curation failed: {await response.text()}")
+            body = await response.json()
+            if body.get("ok") is not True:
+                raise RuntimeError(f"Local run curation failed: {body}")
+            result = body.get("result")
+        await self._progress_job(
+            session, job_id, 75, "Refreshing run mirror", stage="refreshing_mirror"
+        )
+        await self._upload_mirror(session)
+        self._active_health_report = result if isinstance(result, dict) else {"result": result}
+
     async def _restart_takt(self, session: ClientSession, job: dict[str, Any]) -> None:
         job_id = str(job["id"])
         current_health = await self._local_health(session)
@@ -1013,6 +1059,7 @@ class TaktAgent:
             "maintenance-lock",
             "resumable-releases",
             "sqlite-mirror-v2",
+            RUN_CURATION_CAPABILITY,
             HEALTH_CHECKS_CAPABILITY,
             DIAGNOSTICS_CAPABILITY,
         ]

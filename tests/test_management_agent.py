@@ -69,6 +69,58 @@ class ManagementAgentTests(unittest.TestCase):
                 copy.close()
                 connection.close()
 
+    def test_curation_job_updates_local_db_and_mirrors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            job = {
+                "id": "c" * 24,
+                "payload": {
+                    "operation": "adjust_added_time",
+                    "run_id": 7,
+                    "expected_updated_at": "version-a",
+                    "desired_added_time_ms": 5000,
+                },
+            }
+
+            class Response:
+                status = 200
+
+                async def json(self):
+                    return {"ok": True, "result": {"operation": "adjust_added_time"}}
+
+                async def text(self):
+                    return "unexpected response"
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    return None
+
+            class Session:
+                def __init__(self):
+                    self.request = None
+
+                def post(self, url, **kwargs):
+                    self.request = (url, kwargs)
+                    return Response()
+
+            session = Session()
+            progress = AsyncMock()
+            upload = AsyncMock()
+            with (
+                patch.object(agent, "_progress_job", progress),
+                patch.object(agent, "_upload_mirror", upload),
+            ):
+                asyncio.run(agent._curate_run(session, job))
+            self.assertEqual(session.request[0], "http://127.0.0.1/internal/run-curation")
+            self.assertEqual(session.request[1]["json"]["command_id"], "c" * 24)
+            self.assertEqual(progress.await_args_list[0].kwargs["stage"], "applying")
+            self.assertEqual(progress.await_args_list[1].kwargs["stage"], "refreshing_mirror")
+            upload.assert_awaited_once()
+            self.assertEqual(agent._active_health_report["operation"], "adjust_added_time")
+
     def test_release_archive_rejects_parent_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
