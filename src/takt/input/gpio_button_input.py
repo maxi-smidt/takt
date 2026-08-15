@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from threading import Lock, Timer
+from threading import Lock, RLock, Timer
 from typing import Protocol
 
 LOGGER = logging.getLogger(__name__)
@@ -95,7 +95,7 @@ class SharedEdgeDebouncer:
         self._timer: TimerLike | None = None
         self._generation = 0
         self._closed = False
-        self._lock = Lock()
+        self._lock = RLock()
 
     def press(self) -> None:
         self._accept(True)
@@ -117,26 +117,23 @@ class SharedEdgeDebouncer:
             if self._closed:
                 return
 
-            settled_pressed: bool | None = None
             if self._debounce_deadline is not None and now >= self._debounce_deadline:
-                settled_pressed, settled_callbacks = self._finish_window_locked()
-                callbacks.extend(settled_callbacks)
+                callbacks.extend(self._finish_window_locked(now))
 
             if self._debounce_seconds <= 0:
                 self._delivered_pressed = pressed
                 callbacks.append(self._callback_for(pressed))
             elif self._debounce_deadline is None:
-                if settled_pressed is None or pressed != settled_pressed:
-                    self._delivered_pressed = pressed
-                    callbacks.append(self._callback_for(pressed))
-                    self._pending_pressed = pressed
-                    self._debounce_deadline = now + self._debounce_seconds
-                    self._schedule_timer_locked(self._debounce_seconds)
+                self._delivered_pressed = pressed
+                callbacks.append(self._callback_for(pressed))
+                self._pending_pressed = pressed
+                self._debounce_deadline = now + self._debounce_seconds
+                self._schedule_timer_locked(self._debounce_seconds)
             else:
                 self._pending_pressed = pressed
 
-        for callback in callbacks:
-            callback()
+            for callback in callbacks:
+                callback()
 
     def _callback_for(self, pressed: bool) -> Callable[[], None]:
         return self._on_press if pressed else self._on_release
@@ -161,26 +158,31 @@ class SharedEdgeDebouncer:
             deadline = self._debounce_deadline
             if deadline is None:
                 return
-            remaining = deadline - self._monotonic()
+            now = self._monotonic()
+            remaining = deadline - now
             if remaining > 0:
                 self._schedule_timer_locked(remaining)
                 return
-            _, callbacks = self._finish_window_locked()
+            callbacks.extend(self._finish_window_locked(now))
 
-        for callback in callbacks:
-            callback()
+            for callback in callbacks:
+                callback()
 
     def _finish_window_locked(
         self,
-    ) -> tuple[bool | None, list[Callable[[], None]]]:
+        now: float,
+    ) -> list[Callable[[], None]]:
         pending_pressed = self._pending_pressed
         self._pending_pressed = None
         self._debounce_deadline = None
         self._cancel_timer_locked()
         if pending_pressed is None or pending_pressed == self._delivered_pressed:
-            return pending_pressed, []
+            return []
         self._delivered_pressed = pending_pressed
-        return pending_pressed, [self._callback_for(pending_pressed)]
+        self._pending_pressed = pending_pressed
+        self._debounce_deadline = now + self._debounce_seconds
+        self._schedule_timer_locked(self._debounce_seconds)
+        return [self._callback_for(pending_pressed)]
 
     def _cancel_timer_locked(self) -> None:
         self._generation += 1
