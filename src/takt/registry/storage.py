@@ -17,6 +17,7 @@ from takt.fleet_actions import (
     WIFI_PROFILE_CAPABILITY,
     get_action,
 )
+from takt.registry.accounts import AccountStore
 from takt.registry.job_secrets import JobSecretCipher, JobSecretError
 
 
@@ -32,7 +33,7 @@ def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
 JOB_LEASE_SECONDS = 120
 
@@ -249,6 +250,8 @@ class RegistryStore:
         self._ensure_column("jobs", "bytes_downloaded", "INTEGER")
         self._ensure_column("jobs", "bytes_total", "INTEGER")
         self._ensure_column("jobs", "cancel_requested", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("jobs", "requested_by_user_id", "TEXT")
+        self._ensure_column("jobs", "result_json", "TEXT")
         self._ensure_column("jobs", "retry_of", "TEXT")
         self._ensure_column("jobs", "lease_owner_session", "TEXT")
         self._rebuild_disruptive_index()
@@ -275,6 +278,7 @@ class RegistryStore:
             WHERE status IN ('claimed', 'running') AND lease_expires_at IS NULL
             """
         )
+        self.accounts = AccountStore(self.connection)
         self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.connection.commit()
         self.prune()
@@ -594,6 +598,7 @@ class RegistryStore:
         payload: dict[str, Any] | None = None,
         *,
         override: bool = False,
+        requested_by_user_id: str | None = None,
     ) -> dict[str, Any]:
         payload = dict(payload or {})
         # Operator consent is controlled by the explicit argument, never by caller data.
@@ -645,15 +650,16 @@ class RegistryStore:
             self.connection.execute(
                 """
                 INSERT INTO jobs(
-                    id, device_id, action, payload_json, status, stage, current_version,
-                    target_version, bytes_total, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'queued', 'queued', ?, ?, ?, ?, ?)
+                    id, device_id, action, payload_json, status, stage, requested_by_user_id,
+                    current_version, target_version, bytes_total, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'queued', 'queued', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
                     device_id,
                     action,
                     json.dumps(payload),
+                    requested_by_user_id,
                     device.get("app_version"),
                     release.get("version") if release else None,
                     release.get("size") if release else None,
@@ -810,6 +816,7 @@ class RegistryStore:
         message: str,
         lease_id: str | None = None,
         *,
+        result: dict[str, Any] | None = None,
         stage: str | None = None,
         bytes_downloaded: int | None = None,
         bytes_total: int | None = None,
@@ -878,6 +885,7 @@ class RegistryStore:
             if bytes_total is None
             else min(max(int(bytes_total), 0), 250 * 1024 * 1024)
         )
+        result_json = json.dumps(result, separators=(",", ":")) if result is not None else None
         if downloaded is not None and total is not None and downloaded > total:
             raise ValueError("Downloaded bytes exceed release size.")
         with self.connection:
@@ -886,6 +894,7 @@ class RegistryStore:
                 UPDATE jobs SET status = ?, stage = ?, progress = ?, message = ?, updated_at = ?,
                     bytes_downloaded = ?, bytes_total = ?,
                     completed_at = COALESCE(?, completed_at),
+                    result_json = COALESCE(?, result_json),
                     claimed_at = CASE WHEN ? = 'queued' THEN NULL ELSE claimed_at END,
                     lease_id = CASE WHEN ? IN (
                         'queued', 'succeeded', 'failed', 'rolled_back', 'cancelled'
@@ -905,6 +914,7 @@ class RegistryStore:
                     downloaded,
                     total,
                     completed_at,
+                    result_json,
                     status,
                     status,
                     status,
@@ -1332,6 +1342,8 @@ class RegistryStore:
     def _job(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["payload"] = json.loads(item.pop("payload_json"))
+        result_json = item.pop("result_json", None)
+        item["result"] = json.loads(result_json) if result_json else None
         return item
 
     def _attach_job_secret(self, job: dict[str, Any]) -> dict[str, Any] | None:

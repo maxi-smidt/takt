@@ -109,6 +109,12 @@ export type PiEvent =
   | { type: "system"; data: SystemPayload }
   | { type: "history_changed"; revision?: number };
 export interface SessionResponse {
+  user?: {
+    id: string;
+    username: string;
+    is_admin: boolean;
+    must_change_password?: boolean;
+  };
   authenticated: boolean;
   csrf_token?: string;
 }
@@ -406,8 +412,25 @@ export function parsePiEvent(value: unknown): PiEvent {
 }
 export function parseSession(value: unknown): SessionResponse {
   const item = object(value, "session");
+  const rawUser = item.user;
+  const user =
+    typeof rawUser === "object" && rawUser !== null && !Array.isArray(rawUser)
+      ? (rawUser as JsonRecord)
+      : null;
   return {
     authenticated: flag(item.authenticated, "session.authenticated"),
+    ...(user
+      ? {
+          user: {
+            id: text(user.id, "session.user.id"),
+            username: text(user.username, "session.user.username"),
+            is_admin: flag(user.is_admin, "session.user.is_admin"),
+            ...(typeof user.must_change_password === "boolean"
+              ? { must_change_password: user.must_change_password as boolean }
+              : {}),
+          },
+        }
+      : {}),
     ...(typeof item.csrf_token === "string"
       ? { csrf_token: item.csrf_token }
       : {}),

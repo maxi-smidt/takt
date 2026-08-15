@@ -38,6 +38,7 @@ class ApiModel(BaseModel):
 class LoginRequest(ApiModel):
     model_config = ConfigDict(extra="forbid")
 
+    username: str = ""
     password: SecretStr = Field(min_length=1, max_length=4096)
 
 
@@ -218,6 +219,7 @@ def _normalize_heartbeat(value: Any) -> dict[str, Any]:
         "wifi_signal_dbm",
         "connection_recoveries",
         "registry_transport",
+        "mirror_pending",
         "update_recovery",
     }
     payload = {key: item for key, item in value.items() if key in allowed}
@@ -434,10 +436,12 @@ class HealthResponse(BaseModel):
 class SessionStatusResponse(BaseModel):
     authenticated: bool
     csrf_token: str | None = None
+    user: dict[str, Any] | None = None
 
 
 class LoginResponse(BaseModel):
     ok: bool
+    user: dict[str, Any] | None = None
 
 
 class EnrollmentCodeResponse(BaseModel):

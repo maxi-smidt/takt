@@ -26,6 +26,7 @@ def _parser() -> argparse.ArgumentParser:
         help="registry database, release, and mirror storage",
     )
     parser.add_argument("--admin-password", default=os.environ.get("TAKT_REGISTRY_ADMIN_PASSWORD"))
+    parser.add_argument("--admin-username", default=os.environ.get("TAKT_REGISTRY_ADMIN_USERNAME"))
     parser.add_argument(
         "--admin-password-file",
         default=os.environ.get("TAKT_REGISTRY_ADMIN_PASSWORD_FILE"),
@@ -72,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         store, Path(bundled_release_directory) if bundled_release_directory else None
     )
     LOGGER.info("Bundled release import: %s", store.bundled_release_status)
+    if not store.accounts.has_users() and args.admin_username:
+        store.accounts.bootstrap_admin(args.admin_username, password)
     try:
         auth = AdminAuth(password, data_directory)
     except Exception:

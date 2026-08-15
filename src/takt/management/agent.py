@@ -35,6 +35,7 @@ from takt.fleet_actions import (
     HEALTH_CHECKS_CAPABILITY,
     LEASED_JOBS_CAPABILITY,
     POWER_CONTROL_CAPABILITY,
+    RUN_CURATION_CAPABILITY,
     SERVICE_CONTROL_CAPABILITY,
     WIFI_PROFILE_CAPABILITY,
 )
@@ -519,6 +520,7 @@ class TaktAgent:
             "wifi_signal_dbm": self._wifi_signal_dbm(),
             "connection_recoveries": self._connection_recoveries,
             "registry_transport": self._registry_transport,
+            "mirror_pending": self._database_signature() != self._last_mirror_signature,
             "update_recovery": recovery_payload,
         }
 
@@ -549,6 +551,8 @@ class TaktAgent:
                 await self._install_release(session, job)
             elif action == "mirror_now":
                 await self._upload_mirror(session)
+            elif action == "curate_run":
+                await self._curate_run(session, job)
             elif action == "restart_takt":
                 await self._restart_takt(session, job)
             elif action in {"start_takt", "stop_takt"}:
@@ -1013,6 +1017,7 @@ class TaktAgent:
             "maintenance-lock",
             "resumable-releases",
             "sqlite-mirror-v2",
+            RUN_CURATION_CAPABILITY,
             HEALTH_CHECKS_CAPABILITY,
             DIAGNOSTICS_CAPABILITY,
         ]

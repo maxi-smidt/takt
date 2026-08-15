@@ -1,0 +1,147 @@
+"""Regression tests for Registry accounts and authoritative run commands."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from takt.domain.duration import Duration
+from takt.persistence.run_repository import SQLiteRunRepository
+from takt.registry.auth import AdminAuth
+from takt.registry.fastapi_app import create_fastapi_app
+from takt.registry.storage import RegistryStore
+
+
+class AccountStoreTests(unittest.TestCase):
+    def test_passwords_sessions_and_acl_are_persistent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RegistryStore(Path(directory), allow_thread_handoff=True)
+            try:
+                accounts = store.accounts
+                admin = accounts.bootstrap_admin("Admin.User", "correct-horse-battery")
+                row = store.connection.execute(
+                    "SELECT password_hash FROM users WHERE id = ?", (admin["id"],)
+                ).fetchone()
+                self.assertNotIn("correct-horse-battery", row["password_hash"])
+                self.assertEqual(
+                    accounts.authenticate("admin.user", "correct-horse-battery")["id"], admin["id"]
+                )
+                self.assertIsNone(accounts.authenticate("admin.user", "wrong-password"))
+                token, metadata = accounts.create_session(admin["id"])
+                self.assertEqual(accounts.verify_session(token)["csrf"], metadata["csrf"])
+                accounts.revoke_session(token)
+                self.assertIsNone(accounts.verify_session(token))
+                user = accounts.create_user("runner", "another-correct-password")
+                device_id = "12345678-1234-1234-1234-123456789abc"
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token="a" * 64,
+                )
+                self.assertEqual(
+                    accounts.grant_access(user["id"], device_id, "write")["access_level"], "write"
+                )
+                self.assertEqual(accounts.access_level(user["id"], device_id), "write")
+                self.assertTrue(accounts.revoke_access(user["id"], device_id))
+                self.assertIsNone(accounts.access_level(user["id"], device_id))
+            finally:
+                store.close()
+
+    def test_disabled_user_and_last_admin_guards(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RegistryStore(Path(directory))
+            try:
+                accounts = store.accounts
+                admin = accounts.bootstrap_admin("admin", "correct-horse-battery")
+                with self.assertRaises(ValueError):
+                    accounts.set_user_state(admin["id"], disabled=True)
+                user = accounts.create_user("runner", "another-correct-password")
+                token, _ = accounts.create_session(user["id"])
+                accounts.set_user_state(user["id"], disabled=True)
+                self.assertIsNone(accounts.verify_session(token))
+                with self.assertRaises(ValueError):
+                    accounts.create_session(user["id"])
+            finally:
+                store.close()
+
+    def test_account_login_and_admin_user_creation_api(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = RegistryStore(root, allow_thread_handoff=True)
+            store.accounts.bootstrap_admin("admin", "correct-horse-battery")
+            try:
+                with TestClient(
+                    create_fastapi_app(store, AdminAuth("correct-horse-battery", root))
+                ) as client:
+                    login = client.post(
+                        "/api/session",
+                        json={"username": "admin", "password": "correct-horse-battery"},
+                    )
+                    self.assertEqual(login.status_code, 200)
+                    csrf = client.get("/api/session").json()["csrf_token"]
+                    created = client.post(
+                        "/api/admin/users",
+                        json={"username": "runner"},
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(created.status_code, 201)
+                    self.assertTrue(created.json()["temporary_password"])
+                    self.assertEqual(client.get("/api/admin/users").status_code, 200)
+            finally:
+                store.close()
+
+
+class RemoteCurationTests(unittest.TestCase):
+    def test_curation_is_idempotent_and_rejects_stale_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SQLiteRunRepository(Path(directory) / "runs.db")
+            try:
+                start = datetime(2026, 8, 5, 9, 0, tzinfo=UTC)
+                run = repository.create_and_save(
+                    started_at=start,
+                    stopped_at=start + timedelta(seconds=80),
+                    saved_at=start + timedelta(seconds=81),
+                    actual_time=Duration(80_000),
+                    added_time=Duration(10_000),
+                )
+                expected = repository.connection.execute(
+                    "SELECT updated_at FROM runs WHERE id = ?", (run.id,)
+                ).fetchone()[0]
+                result = repository.apply_remote_curation(
+                    command_id="cmd-1",
+                    operation="adjust_added_time",
+                    run_id=run.id,
+                    expected_updated_at=expected,
+                    desired_added_time_ms=5_000,
+                )
+                self.assertEqual(
+                    repository.apply_remote_curation(
+                        command_id="cmd-1",
+                        operation="adjust_added_time",
+                        run_id=run.id,
+                        expected_updated_at=expected,
+                        desired_added_time_ms=5_000,
+                    ),
+                    result,
+                )
+                self.assertEqual(repository.get_run(run.id).added_time, Duration(5_000))
+                with self.assertRaisesRegex(ValueError, "changed"):
+                    repository.apply_remote_curation(
+                        command_id="cmd-2",
+                        operation="delete",
+                        run_id=run.id,
+                        expected_updated_at=expected,
+                    )
+            finally:
+                repository.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

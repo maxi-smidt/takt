@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from takt.persistence.database import connect_database
 
 class SQLiteRunRepository:
     """Transactional local run repository."""
+
     CSV_EXPORT_COLUMNS = (
         "id",
         "run_number",
@@ -207,6 +209,86 @@ class SQLiteRunRepository:
                 tuple(self._csv_value(row[column]) for column in self.CSV_EXPORT_COLUMNS)
                 for row in rows
             )
+
+    def apply_remote_curation(
+        self,
+        *,
+        command_id: str,
+        operation: str,
+        run_id: int,
+        expected_updated_at: str,
+        desired_added_time_ms: int | None = None,
+    ) -> dict[str, object]:
+        with self.connection:
+            receipt = self.connection.execute(
+                "SELECT operation, result_json FROM remote_command_receipts WHERE command_id = ?",
+                (command_id,),
+            ).fetchone()
+            if receipt is not None:
+                if receipt["operation"] != operation:
+                    raise ValueError("The command_id was already used for another operation.")
+                return json.loads(receipt["result_json"])
+            row = self.connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None or row["updated_at"] != expected_updated_at:
+                raise ValueError("Run changed or no longer exists on the authoritative device.")
+            before = self._row_to_run(row)
+            if operation == "adjust_added_time":
+                if (
+                    desired_added_time_ms is None
+                    or not 0 <= desired_added_time_ms <= 24 * 60 * 60 * 1000
+                ):
+                    raise ValueError("The requested added time is invalid.")
+                now = datetime.now().astimezone().isoformat()
+                self.connection.execute(
+                    "UPDATE runs SET added_time_ms = ?, total_time_ms = "
+                    "actual_time_ms + ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+                    (
+                        desired_added_time_ms,
+                        desired_added_time_ms,
+                        now,
+                        run_id,
+                        expected_updated_at,
+                    ),
+                )
+                updated_row = self.connection.execute(
+                    "SELECT * FROM runs WHERE id = ?", (run_id,)
+                ).fetchone()
+                if updated_row is None:
+                    raise RuntimeError("Updated run unexpectedly disappeared.")
+                result = {
+                    "operation": operation,
+                    "run": self._run_result(self._row_to_run(updated_row)),
+                    "previous": self._run_result(before),
+                }
+            elif operation == "delete":
+                self.connection.execute(
+                    "DELETE FROM runs WHERE id = ? AND updated_at = ?",
+                    (run_id, expected_updated_at),
+                )
+                result = {"operation": operation, "deleted": True, "run": self._run_result(before)}
+            else:
+                raise ValueError("Unsupported run curation operation.")
+            self.connection.execute(
+                "INSERT INTO remote_command_receipts("
+                "command_id, operation, result_json, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    command_id,
+                    operation,
+                    json.dumps(result, separators=(",", ":")),
+                    datetime.now().astimezone().isoformat(),
+                ),
+            )
+            return result
+
+    @staticmethod
+    def _run_result(run: Run) -> dict[str, object]:
+        return {
+            "id": run.id,
+            "run_number": run.run_number,
+            "actual_time_ms": run.actual_time.milliseconds,
+            "added_time_ms": run.added_time.milliseconds,
+            "total_time_ms": run.total_time.milliseconds,
+        }
 
     def _open_export_connection(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=10.0)
