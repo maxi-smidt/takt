@@ -249,8 +249,6 @@ def _stage_and_call(
     try:
         with tempfile.NamedTemporaryFile(dir=data_directory, delete=False) as temporary:
             staged = Path(temporary.name)
-        if staged is None:
-            raise RuntimeError("Failed to create a staged release path.")
         shutil.copyfile(archive_path, staged)
         call(staged)
     except Exception as error:
@@ -260,14 +258,11 @@ def _stage_and_call(
         try:
             staged.unlink(missing_ok=True)
         except Exception as cleanup_error:
-            if failure is None:
-                failure = cleanup_error
-            else:
-                LOGGER.error(
-                    "Failed to clean up staged bundled release %s: %s",
-                    version,
-                    cleanup_error,
-                )
+            LOGGER.error(
+                "Failed to clean up staged bundled release %s: %s",
+                version,
+                cleanup_error,
+            )
 
     if failure is not None:
         error = failure

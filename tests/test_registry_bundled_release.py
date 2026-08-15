@@ -145,7 +145,34 @@ class BundledReleaseImportTests(unittest.TestCase):
             )
             self.assertEqual(list(data_directory.iterdir()), [])
 
+    def test_cleanup_failure_after_callback_consumes_file_still_reports_imported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = root / "archive.tar.gz"
+            archive_path.write_bytes(b"archive")
+            data_directory = root / "data"
+            data_directory.mkdir()
+            installed_path = root / "installed.tar.gz"
+
+            def consume(staged: Path) -> None:
+                staged.replace(installed_path)
+
+            with patch.object(Path, "unlink", side_effect=OSError("cleanup failed")):
+                status = _stage_and_call(
+                    archive_path,
+                    data_directory,
+                    consume,
+                    version=__version__,
+                    sha256="sha256",
+                )
+
+            self.assertEqual(
+                status,
+                {"status": "imported", "version": __version__, "sha256": "sha256"},
+            )
+            self.assertEqual(installed_path.read_bytes(), b"archive")
     def test_absent_bundle_is_a_noop(self) -> None:
+
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = RegistryStore(Path(temporary_directory) / "data")
             try:
