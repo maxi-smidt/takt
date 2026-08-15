@@ -87,8 +87,9 @@ export async function requestJson<T>(
 export async function requestBlob(
   url: string,
   fallbackFilename: string,
+  options: RequestInit = {},
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(url);
+  const response = await fetch(url, options);
   if (!response.ok) {
     const text = await response.text();
     throw new ApiError(response.status, errorMessage(text, response.status));

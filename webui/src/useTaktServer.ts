@@ -73,6 +73,7 @@ const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 const RETRY_JITTER_MIN = 0.8;
 const RETRY_JITTER_MAX = 1.2;
+const MUTATION_TIMEOUT_MS = 15_000;
 
 interface PendingEvents {
   state: TimerStatePayload | null;
@@ -83,6 +84,7 @@ interface PendingEvents {
 type ExclusiveRequest = "action" | "audio" | "confirmation" | "export";
 
 type PendingRequests = Record<ExclusiveRequest, boolean>;
+type RequestMap<T> = Map<string, Promise<T>>;
 
 function isFileMode(): boolean {
   return window.location.protocol === "file:";
@@ -138,6 +140,7 @@ export function useTaktServer(): TaktServerState {
   const connectTimeoutRef = useRef<number | null>(null);
   const bootstrapAbortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
+  const historyRequestRef = useRef(0);
   const refreshHistory = useCallback(
     async (period: ChartPeriod = chartDaysRef.current) => {
       if (isFileMode()) return;
@@ -159,8 +162,17 @@ export function useTaktServer(): TaktServerState {
       retryRef.current = null;
     }
   }, []);
-  const historyRequestRef = useRef(0);
-  const requestsRef = useRef(new Map<ExclusiveRequest, Promise<unknown>>());
+  const pendingCountsRef = useRef<Record<ExclusiveRequest, number>>({
+    action: 0,
+    audio: 0,
+    confirmation: 0,
+    export: 0,
+  });
+  const actionRequestsRef = useRef<RequestMap<ReturnType<typeof parseAction>>>(new Map());
+  const audioRequestsRef = useRef<RequestMap<ReturnType<typeof parseSystemResponse>>>(new Map());
+  const prepareRequestsRef = useRef<RequestMap<ConfirmationPayload>>(new Map());
+  const confirmRequestsRef = useRef<RequestMap<ConfirmationResponse>>(new Map());
+  const exportRequestsRef = useRef<RequestMap<string>>(new Map());
   const [pending, setPending] = useState<PendingRequests>({
     action: false,
     audio: false,
@@ -168,17 +180,29 @@ export function useTaktServer(): TaktServerState {
     export: false,
   });
   const runExclusive = useCallback(
-    <T,>(key: ExclusiveRequest, task: () => Promise<T>): Promise<T> => {
-      const existing = requestsRef.current.get(key) as Promise<T> | undefined;
+    <T,>(
+      requests: RequestMap<T>,
+      requestKey: string,
+      pendingKey: ExclusiveRequest,
+      task: () => Promise<T>,
+    ): Promise<T> => {
+      const existing = requests.get(requestKey);
       if (existing) return existing;
 
-      setPending((current) => ({ ...current, [key]: true }));
+      pendingCountsRef.current[pendingKey] += 1;
+      setPending((current) => ({ ...current, [pendingKey]: true }));
       const request = task();
-      requestsRef.current.set(key, request);
+      requests.set(requestKey, request);
       const clear = () => {
-        if (requestsRef.current.get(key) === request) {
-          requestsRef.current.delete(key);
-          setPending((current) => ({ ...current, [key]: false }));
+        if (requests.get(requestKey) === request) {
+          requests.delete(requestKey);
+          pendingCountsRef.current[pendingKey] = Math.max(
+            0,
+            pendingCountsRef.current[pendingKey] - 1,
+          );
+          if (pendingCountsRef.current[pendingKey] === 0) {
+            setPending((current) => ({ ...current, [pendingKey]: false }));
+          }
         }
       };
       void request.then(clear, clear);
@@ -495,76 +519,114 @@ export function useTaktServer(): TaktServerState {
   }, [clearRetry, loadBootstrap, stopSocket]);
   const sendAction = useCallback(
     (action: string) =>
-      runExclusive("action", async () => {
-        const result = await requestJson(
-          "/api/action",
-          { method: "POST", body: { action } },
-          parseAction,
-        );
-        setState(result.state);
-        return result;
-      }),
+      runExclusive(
+        actionRequestsRef.current,
+        `action:${action}`,
+        "action",
+        async () => {
+          const result = await requestJson(
+            "/api/action",
+            {
+              method: "POST",
+              body: { action },
+              signal: withTimeout(undefined, MUTATION_TIMEOUT_MS),
+            },
+            parseAction,
+          );
+          setState(result.state);
+          return result;
+        },
+      ),
     [runExclusive],
   );
   const sendAudioRequest = useCallback(
     (operation: string, payload: Record<string, unknown> = {}) =>
-      runExclusive("audio", async () => {
-        const result = await requestJson(
-          `/api/audio/${operation}`,
-          { method: "POST", body: payload },
-          parseSystemResponse,
-        );
-        setSystem(result.system);
-        return result;
-      }),
+      runExclusive(
+        audioRequestsRef.current,
+        `audio:${operation}:${JSON.stringify(payload)}`,
+        "audio",
+        async () => {
+          const result = await requestJson(
+            `/api/audio/${operation}`,
+            {
+              method: "POST",
+              body: payload,
+              signal: withTimeout(undefined, MUTATION_TIMEOUT_MS),
+            },
+            parseSystemResponse,
+          );
+          setSystem(result.system);
+          return result;
+        },
+      ),
     [runExclusive],
   );
   const prepareConfirmation = useCallback(
     (operation: string, runId: number | null = null, deltaMs = 0) =>
-      runExclusive("confirmation", () =>
-        requestJson(
-          "/api/confirmations",
-          {
-            method: "POST",
-            body: { operation, run_id: runId, delta_ms: deltaMs },
-          },
-          parseConfirmation,
-        ),
+      runExclusive(
+        prepareRequestsRef.current,
+        `prepare:${operation}:${runId ?? ""}:${deltaMs}`,
+        "confirmation",
+        () =>
+          requestJson(
+            "/api/confirmations",
+            {
+              method: "POST",
+              body: { operation, run_id: runId, delta_ms: deltaMs },
+              signal: withTimeout(undefined, MUTATION_TIMEOUT_MS),
+            },
+            parseConfirmation,
+          ),
       ),
     [runExclusive],
   );
   const confirmPrepared = useCallback(
     (token: string, operation: string) =>
-      runExclusive("confirmation", async () => {
-        const result = await requestJson(
-          `/api/confirmations/${token}`,
-          { method: "POST", body: {} },
-          parseConfirmationResponse,
-        );
-        if (operation !== "shutdown") await refreshHistory();
-        return result;
-      }),
+      runExclusive(
+        confirmRequestsRef.current,
+        `confirm:${token}:${operation}`,
+        "confirmation",
+        async () => {
+          const result = await requestJson(
+            `/api/confirmations/${token}`,
+            {
+              method: "POST",
+              body: {},
+              signal: withTimeout(undefined, MUTATION_TIMEOUT_MS),
+            },
+            parseConfirmationResponse,
+          );
+          if (operation !== "shutdown") await refreshHistory();
+          return result;
+        },
+      ),
     [refreshHistory, runExclusive],
   );
   const downloadExport = useCallback(
     (format: DataExportFormat) =>
-      runExclusive("export", async () => {
-        if (isFileMode()) throw new Error("Der Datenexport ist im Vorschaumodus nicht verfügbar.");
-        const fallbackFilename = format === "db" ? "takt.db" : "takt-runs.csv";
-        const result = await requestBlob(
-          `/api/database/export?format=${format}`,
-          fallbackFilename,
-        );
-        const objectUrl = URL.createObjectURL(result.blob);
-        const link = document.createElement("a");
-        link.href = objectUrl;
-        link.download = result.filename;
-        document.body.append(link);
-        link.click();
-        link.remove();
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 500);
-        return result.filename;
-      }),
+      runExclusive(
+        exportRequestsRef.current,
+        `export:${format}`,
+        "export",
+        async () => {
+          if (isFileMode()) throw new Error("Der Datenexport ist im Vorschaumodus nicht verfügbar.");
+          const fallbackFilename = format === "db" ? "takt.db" : "takt-runs.csv";
+          const result = await requestBlob(
+            `/api/database/export?format=${format}`,
+            fallbackFilename,
+            { signal: withTimeout(undefined, MUTATION_TIMEOUT_MS) },
+          );
+          const objectUrl = URL.createObjectURL(result.blob);
+          const link = document.createElement("a");
+          link.href = objectUrl;
+          link.download = result.filename;
+          document.body.append(link);
+          link.click();
+          link.remove();
+          window.setTimeout(() => URL.revokeObjectURL(objectUrl), 500);
+          return result.filename;
+        },
+      ),
     [runExclusive],
   );
 

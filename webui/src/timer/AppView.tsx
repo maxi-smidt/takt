@@ -928,7 +928,7 @@ function SettingsModal({
     else await document.documentElement.requestFullscreen();
   };
   return (
-    <div className="modal-backdrop" role="presentation" aria-hidden={blocked || undefined} inert={blocked || undefined} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="modal-backdrop" role="presentation" aria-hidden={blocked || undefined} inert={blocked || undefined} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section
         ref={dialogRef}
         className="settings-modal"
@@ -1011,19 +1011,22 @@ function SettingsModal({
                 <tr
                   key={run.id}
                   className={selectedRunId === run.id ? "is-selected" : ""}
-                  role="button"
-                  tabIndex={0}
-                  aria-pressed={selectedRunId === run.id}
-                  aria-label={`Lauf ${run.number} auswählen`}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelectRun(run.id);
-                    }
-                  }}
                   onClick={() => onSelectRun(run.id)}
                 >
-                  <td>{run.number}</td><td>{run.date}</td><td>{run.time}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="run-select-button"
+                      aria-pressed={selectedRunId === run.id}
+                      aria-label={`Lauf ${run.number} auswählen`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSelectRun(run.id);
+                      }}
+                    >
+                      {run.number}
+                    </button>
+                  </td><td>{run.date}</td><td>{run.time}</td>
                   <td>{run.actual}</td><td className="penalty-cell">{run.added}</td>
                   <td className="total-cell">{run.total}</td>
                 </tr>
@@ -1095,7 +1098,7 @@ function ConfirmationModal({ confirmation, busy, onCancel, onConfirm }) {
         )}
         {confirmation.warning && <div className="confirmation-warning">{confirmation.warning}</div>}
         <div className="confirmation-actions">
-          <button type="button" onClick={onCancel} disabled={busy}>ABBRECHEN</button>
+          <button type="button" onClick={onCancel}>ABBRECHEN</button>
           <button
             type="button"
             className={destructive ? "is-danger" : "is-confirm"}
@@ -1230,7 +1233,7 @@ function App() {
       const tag = event.target?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea") return;
       if (confirmation) {
-        if (event.key === "Escape" && !confirmationBusy && !pending.confirmation) setConfirmation(null);
+        if (event.key === "Escape") setConfirmation(null);
         return;
       }
       if (settingsOpen) {

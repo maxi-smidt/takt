@@ -8,6 +8,7 @@ import { useTaktServer, type TaktServerState } from "./useTaktServer";
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const LIVENESS_TIMEOUT_MS = 45_000;
 const CONNECT_TIMEOUT_MS = 15_000;
+const MUTATION_TIMEOUT_MS = 15_000;
 
 function statePayload(revision: number, label = "BEREIT") {
   return {
@@ -372,12 +373,13 @@ describe("useTaktServer mutation safety", () => {
     vi.useRealTimers();
   });
 
-  it("shares one in-flight timer action across rapid calls", async () => {
-    let resolveAction: ((response: Response) => void) | undefined;
-    fetchMock.mockImplementation(async (input) => {
+  it("deduplicates identical actions but sends distinct actions", async () => {
+    const actionResolvers = new Map<string, (response: Response) => void>();
+    fetchMock.mockImplementation(async (input, init) => {
       if (String(input) === "/api/action") {
+        const action = JSON.parse(String(init?.body)).action as string;
         return new Promise<Response>((resolve) => {
-          resolveAction = resolve;
+          actionResolvers.set(action, resolve);
         });
       }
       return new Response(JSON.stringify(bootstrapPayload(1)), { status: 200 });
@@ -390,17 +392,56 @@ describe("useTaktServer mutation safety", () => {
     await openLatestSocket();
 
     let first: Promise<unknown>;
+    let duplicate: Promise<unknown>;
     let second: Promise<unknown>;
     await act(async () => {
       first = latest.sendAction("primary");
+      duplicate = latest.sendAction("primary");
       second = latest.sendAction("save");
       await flush();
     });
-    expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/action")).toHaveLength(1);
+    expect(duplicate!).toBe(first!);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/action")).toHaveLength(2);
     expect(latest.pending.action).toBe(true);
-    resolveAction?.(new Response(JSON.stringify({ ok: true, state: statePayload(2, "LÄUFT") })));
+    actionResolvers.get("primary")?.(new Response(JSON.stringify({ ok: true, state: statePayload(2, "LÄUFT") })));
     await act(async () => {
-      await Promise.all([first!, second!]);
+      await first!;
+      await flush();
+    });
+    expect(latest.pending.action).toBe(true);
+    actionResolvers.get("save")?.(new Response(JSON.stringify({ ok: true, state: statePayload(3, "GESPEICHERT") })));
+    await act(async () => {
+      await second!;
+      await flush();
+    });
+    expect(latest.pending.action).toBe(false);
+  });
+
+  it("clears pending state when a mutation request times out", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === "/api/action") {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("Aborted")), { once: true });
+        });
+      }
+      return new Response(JSON.stringify(bootstrapPayload(1)), { status: 200 });
+    });
+    root = createRoot(document.createElement("div"));
+    await act(async () => {
+      root?.render(createElement(Probe, { onState: (state) => { latest = state; } }));
+      await flush();
+    });
+    await openLatestSocket();
+
+    let request: Promise<unknown>;
+    await act(async () => {
+      request = latest.sendAction("primary");
+      await flush();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(MUTATION_TIMEOUT_MS);
+      await flush();
+      await expect(request!).rejects.toThrow("Aborted");
       await flush();
     });
     expect(latest.pending.action).toBe(false);
@@ -433,14 +474,14 @@ describe("useTaktServer mutation safety", () => {
       await flush();
     });
     await act(async () => {
-      resolvers.get("7")?.(new Response(JSON.stringify({
-        today: [], today_count: 0, best: [], chart: [], all: [], chart_days: 7,
+      resolvers.get("90")?.(new Response(JSON.stringify({
+        today: [], today_count: 0, best: [], chart: [], all: [], chart_days: 90,
       })));
       await flush();
     });
     await act(async () => {
-      resolvers.get("90")?.(new Response(JSON.stringify({
-        today: [], today_count: 0, best: [], chart: [], all: [], chart_days: 90,
+      resolvers.get("7")?.(new Response(JSON.stringify({
+        today: [], today_count: 0, best: [], chart: [], all: [], chart_days: 7,
       })));
       await flush();
     });

@@ -72,7 +72,7 @@ tr {
   height: 100vh;
   height: 100dvh;
   margin: 0 auto;
-  padding: 0 max(14px, env(safe-area-inset-left)) max(8px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-right));
+  padding: 0 max(14px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
   display: grid;
   grid-template-rows: 62px minmax(0, 1fr) 36px;
   color: var(--text);
@@ -1751,13 +1751,23 @@ button:active:not(:disabled),
   max-height: min(720px, calc(100dvh - 40px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
 }
 
-.settings-table tbody tr[role="button"] {
+.run-select-button {
+  min-width: var(--touch-target);
+  min-height: 34px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
 }
 
-.settings-table tbody tr[role="button"]:focus-visible {
-  outline: 2px solid var(--blue);
+.run-select-button:focus-visible {
   outline-offset: -2px;
+}
+
+.settings-table tbody tr {
+  cursor: pointer;
 }
 
 .toast-message {
@@ -1771,6 +1781,7 @@ button:active:not(:disabled),
   .action-button,
   .mock-trigger,
   .system-tile button,
+  .run-select-button,
   .delete-control,
   .audio-mode-switch button,
   .bluetooth-device-row button,
@@ -1818,12 +1829,8 @@ button:active:not(:disabled),
   .runs-table td,
   .settings-table th,
   .settings-table td {
-    min-height: var(--touch-target);
-    padding-block: 12px;
-  }
-
-  .settings-table tbody tr[role="button"] {
-    min-height: var(--touch-target);
+    height: var(--touch-target);
+    padding-block: 0;
   }
 
   .settings-modal {
@@ -1846,6 +1853,10 @@ button:active:not(:disabled),
   .bluetooth-device-row {
     grid-template-columns: 1fr 1fr 1fr;
     gap: 8px;
+  }
+
+  .bluetooth-device-row select {
+    grid-column: 1 / -1;
   }
 
   .audio-settings-footer {
@@ -1884,7 +1895,7 @@ button:active:not(:disabled),
 @media (hover: hover) and (pointer: fine) {
   .icon-button:hover:not(:disabled),
   .action-button:hover:not(:disabled),
-  .settings-table tbody tr[role="button"]:hover {
+  .settings-table tbody tr:hover {
     background: var(--surface-raised);
   }
 }
