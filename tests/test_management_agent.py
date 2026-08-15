@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import sqlite3
 import tarfile
@@ -101,6 +102,103 @@ class ManagementAgentTests(unittest.TestCase):
             install = run.call_args_list[-1]
             self.assertEqual(install.kwargs["cwd"], destination)
             self.assertNotIn("-e", install.args[0])
+
+    def test_large_release_download_coalesces_progress_and_reports_final_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            job_id = "a" * 24
+            agent._active_job = {
+                "id": job_id,
+                "lease_id": "lease",
+                "control_lost": False,
+                "cancel_requested": False,
+            }
+            chunk_size = 256 * 1024
+            chunks = [bytes([index]) * chunk_size for index in range(24)]
+            payload = b"".join(chunks)
+
+            class Content:
+                async def iter_chunked(self, _size: int):
+                    for chunk in chunks:
+                        yield chunk
+
+            class Response:
+                status = 200
+                content = Content()
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args: object) -> None:
+                    return None
+
+            class Session:
+                def get(self, *_args: object, **_kwargs: object) -> Response:
+                    return Response()
+
+            clock = {"now": 0.0}
+
+            def monotonic() -> float:
+                clock["now"] += 0.2
+                return clock["now"]
+
+            progress = AsyncMock()
+            session = Session()
+            artifact = root / "release.tar.gz.part"
+            with (
+                patch.object(agent, "_progress_job", progress),
+                patch("takt.management.agent.time.monotonic", side_effect=monotonic),
+            ):
+                asyncio.run(
+                    agent._download_release(
+                        session,
+                        job_id=job_id,
+                        artifact=artifact,
+                        expected_size=len(payload),
+                        expected_sha256=hashlib.sha256(payload).hexdigest(),
+                    )
+                )
+
+            self.assertEqual(artifact.read_bytes(), payload)
+            self.assertLess(progress.await_count, len(chunks))
+            final_call = progress.await_args_list[-1]
+            self.assertEqual(final_call.args[:2], (session, job_id))
+            self.assertEqual(final_call.kwargs["stage"], "verifying")
+            self.assertEqual(final_call.kwargs["bytes_downloaded"], len(payload))
+            self.assertEqual(final_call.kwargs["bytes_total"], len(payload))
+
+    def test_complete_partial_release_reports_final_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            job_id = "b" * 24
+            payload = b"complete release"
+            artifact = root / "release.tar.gz.part"
+            artifact.write_bytes(payload)
+            progress = AsyncMock()
+            session = object()
+
+            with patch.object(agent, "_progress_job", progress):
+                asyncio.run(
+                    agent._download_release(
+                        session,  # type: ignore[arg-type]
+                        job_id=job_id,
+                        artifact=artifact,
+                        expected_size=len(payload),
+                        expected_sha256=hashlib.sha256(payload).hexdigest(),
+                    )
+                )
+
+            progress.assert_awaited_once_with(
+                session,
+                job_id,
+                25,
+                "Verifying release checksum",
+                stage="verifying",
+                bytes_downloaded=len(payload),
+                bytes_total=len(payload),
+            )
 
     def test_interrupted_update_does_not_restore_while_timer_may_be_active(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

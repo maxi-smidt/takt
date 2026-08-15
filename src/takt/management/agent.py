@@ -46,6 +46,7 @@ LOGGER = logging.getLogger(__name__)
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{24}$")
 VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 MAX_RELEASE_SIZE = 250 * 1024 * 1024
+DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 1.0
 MAX_DIAGNOSTICS_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_DIAGNOSTICS_MEMBER_BYTES = 2 * 1024 * 1024
 MAX_LOG_CHARACTERS = 400_000
@@ -1493,6 +1494,16 @@ class TaktAgent:
         offset = artifact.stat().st_size if artifact.exists() else 0
         if offset == expected_size:
             if await asyncio.to_thread(self._sha256, artifact) == expected_sha256:
+                await self._progress_job(
+                    session,
+                    job_id,
+                    25,
+                    "Verifying release checksum",
+                    stage="verifying",
+                    bytes_downloaded=expected_size,
+                    bytes_total=expected_size,
+                )
+                self._assert_job_control()
                 return
             artifact.unlink()
             offset = 0
@@ -1524,6 +1535,7 @@ class TaktAgent:
                         )
                 mode = "ab" if offset and response.status == 206 else "wb"
                 downloaded = offset if mode == "ab" else 0
+                last_progress_at = time.monotonic()
                 with artifact.open(mode) as handle:
                     async for chunk in response.content.iter_chunked(256 * 1024):
                         downloaded += len(chunk)
@@ -1531,16 +1543,20 @@ class TaktAgent:
                             artifact.unlink(missing_ok=True)
                             raise RuntimeError("Registry sent more release data than declared.")
                         handle.write(chunk)
-                        await self._progress_job(
-                            session,
-                            job_id,
-                            5 + int(20 * downloaded / expected_size),
-                            f"Downloading release ({downloaded} of {expected_size} bytes)",
-                            stage="downloading",
-                            bytes_downloaded=downloaded,
-                            bytes_total=expected_size,
-                        )
                         self._assert_job_control()
+                        now = time.monotonic()
+                        if now - last_progress_at >= DOWNLOAD_PROGRESS_INTERVAL_SECONDS:
+                            await self._progress_job(
+                                session,
+                                job_id,
+                                5 + int(20 * downloaded / expected_size),
+                                f"Downloading release ({downloaded} of {expected_size} bytes)",
+                                stage="downloading",
+                                bytes_downloaded=downloaded,
+                                bytes_total=expected_size,
+                            )
+                            last_progress_at = time.monotonic()
+                            self._assert_job_control()
         except (ClientError, TimeoutError) as error:
             raise RetryableJob(f"release transfer interrupted: {error}") from error
         actual_size = artifact.stat().st_size if artifact.exists() else 0
