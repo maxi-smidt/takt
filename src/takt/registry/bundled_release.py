@@ -244,13 +244,28 @@ def _stage_and_call(
     into place) the way ``RegistryStore.add_release``/``replace_bundled_release``
     do. Never raises: a failure here must degrade, not abort startup.
     """
-    with tempfile.NamedTemporaryFile(dir=data_directory, delete=False) as temporary:
-        staged = Path(temporary.name)
-    shutil.copyfile(archive_path, staged)
+    staged: Path | None = None
+    failure: Exception | None = None
     try:
+        with tempfile.NamedTemporaryFile(dir=data_directory, delete=False) as temporary:
+            staged = Path(temporary.name)
+        shutil.copyfile(archive_path, staged)
         call(staged)
     except Exception as error:
-        staged.unlink(missing_ok=True)
+        failure = error
+
+    if staged is not None:
+        try:
+            staged.unlink(missing_ok=True)
+        except Exception as cleanup_error:
+            LOGGER.error(
+                "Failed to clean up staged bundled release %s: %s",
+                version,
+                cleanup_error,
+            )
+
+    if failure is not None:
+        error = failure
         LOGGER.error("Failed to import bundled release %s: %s", version, error)
         return {"status": "error", "reason": "import_failed", "detail": str(error)}
     return {"status": "imported", "version": version, "sha256": sha256}
