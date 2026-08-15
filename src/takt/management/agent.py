@@ -52,6 +52,10 @@ MAX_DIAGNOSTICS_MEMBER_BYTES = 2 * 1024 * 1024
 MAX_LOG_CHARACTERS = 400_000
 
 
+def _now() -> float:
+    return time.monotonic()
+
+
 def _loopback_hostname(hostname: str) -> bool:
     normalized = hostname.rstrip(".").lower()
     if normalized == "localhost" or normalized.endswith(".localhost"):
@@ -1535,7 +1539,7 @@ class TaktAgent:
                         )
                 mode = "ab" if offset and response.status == 206 else "wb"
                 downloaded = offset if mode == "ab" else 0
-                last_progress_at = time.monotonic()
+                last_progress_at = _now()
                 with artifact.open(mode) as handle:
                     async for chunk in response.content.iter_chunked(256 * 1024):
                         downloaded += len(chunk)
@@ -1544,7 +1548,7 @@ class TaktAgent:
                             raise RuntimeError("Registry sent more release data than declared.")
                         handle.write(chunk)
                         self._assert_job_control()
-                        now = time.monotonic()
+                        now = _now()
                         if now - last_progress_at >= DOWNLOAD_PROGRESS_INTERVAL_SECONDS:
                             await self._progress_job(
                                 session,
@@ -1555,7 +1559,7 @@ class TaktAgent:
                                 bytes_downloaded=downloaded,
                                 bytes_total=expected_size,
                             )
-                            last_progress_at = time.monotonic()
+                            last_progress_at = _now()
                             self._assert_job_control()
         except (ClientError, TimeoutError) as error:
             raise RetryableJob(f"release transfer interrupted: {error}") from error

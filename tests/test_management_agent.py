@@ -148,7 +148,7 @@ class ManagementAgentTests(unittest.TestCase):
             artifact = root / "release.tar.gz.part"
             with (
                 patch.object(agent, "_progress_job", progress),
-                patch("takt.management.agent.time.monotonic", side_effect=monotonic),
+                patch("takt.management.agent._now", side_effect=monotonic),
             ):
                 asyncio.run(
                     agent._download_release(
@@ -161,6 +161,13 @@ class ManagementAgentTests(unittest.TestCase):
                 )
 
             self.assertEqual(artifact.read_bytes(), payload)
+            download_progress_calls = [
+                call
+                for call in progress.await_args_list
+                if call.kwargs.get("stage") == "downloading"
+            ]
+            self.assertGreaterEqual(len(download_progress_calls), 1)
+            self.assertGreaterEqual(progress.await_count, 2)
             self.assertLess(progress.await_count, len(chunks))
             final_call = progress.await_args_list[-1]
             self.assertEqual(final_call.args[:2], (session, job_id))
