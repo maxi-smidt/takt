@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -279,6 +280,129 @@ class AccountStoreTests(unittest.TestCase):
                         f"&cursor={first['next_cursor']}"
                     ).json()
                     self.assertEqual(second["summary"]["count"], 2)
+            finally:
+                store.close()
+
+    def test_portal_devices_reflects_read_write_and_no_access(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = RegistryStore(root, allow_thread_handoff=True)
+            store.accounts.bootstrap_admin("admin", "correct-horse-battery")
+            read_device_id = "12345678-1234-1234-1234-123456789ab1"
+            write_device_id = "12345678-1234-1234-1234-123456789ab2"
+            unmirrored_device_id = "12345678-1234-1234-1234-123456789ab3"
+            for index, device_id in enumerate(
+                (read_device_id, write_device_id, unmirrored_device_id)
+            ):
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name=f"Lane {index + 1}",
+                    hostname=f"takt-0{index + 1}",
+                    token="a" * 64,
+                )
+
+            def create_logged_in_user(
+                client: TestClient, csrf: str, username: str
+            ) -> tuple[str, dict[str, Any]]:
+                created = client.post(
+                    "/api/admin/users",
+                    json={"username": username},
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(created.status_code, 201)
+                return created.json()["user"]["id"], created.json()
+
+            try:
+                with TestClient(
+                    create_fastapi_app(store, AdminAuth("correct-horse-battery", root))
+                ) as client:
+                    client.post(
+                        "/api/session",
+                        json={"username": "admin", "password": "correct-horse-battery"},
+                    )
+                    admin_csrf = client.get("/api/session").json()["csrf_token"]
+
+                    user_id, created = create_logged_in_user(client, admin_csrf, "operator")
+                    temporary_password = created["temporary_password"]
+                    self.assertEqual(
+                        client.put(
+                            f"/api/admin/users/{user_id}/devices/{read_device_id}",
+                            json={"access": "read"},
+                            headers={"X-CSRF-Token": admin_csrf},
+                        ).status_code,
+                        200,
+                    )
+                    self.assertEqual(
+                        client.put(
+                            f"/api/admin/users/{user_id}/devices/{write_device_id}",
+                            json={"access": "write"},
+                            headers={"X-CSRF-Token": admin_csrf},
+                        ).status_code,
+                        200,
+                    )
+                    self.assertEqual(
+                        client.put(
+                            f"/api/admin/users/{user_id}/devices/{unmirrored_device_id}",
+                            json={"access": "read"},
+                            headers={"X-CSRF-Token": admin_csrf},
+                        ).status_code,
+                        200,
+                    )
+
+                    no_access_id, no_access_created = create_logged_in_user(
+                        client, admin_csrf, "outsider"
+                    )
+                    no_access_password = no_access_created["temporary_password"]
+
+                    client.delete("/api/session", headers={"X-CSRF-Token": admin_csrf})
+                    client.post(
+                        "/api/session",
+                        json={"username": "operator", "password": temporary_password},
+                    )
+                    operator_session = client.get("/api/session").json()
+                    client.post(
+                        "/api/session/password",
+                        json={
+                            "current_password": temporary_password,
+                            "new_password": "operator-new-password",
+                        },
+                        headers={"X-CSRF-Token": operator_session["csrf_token"]},
+                    )
+
+                    devices = {
+                        item["id"]: item
+                        for item in client.get("/api/portal/devices").json()["devices"]
+                    }
+                    self.assertEqual(
+                        set(devices), {read_device_id, write_device_id, unmirrored_device_id}
+                    )
+                    self.assertEqual(devices[read_device_id]["access"], "read")
+                    self.assertEqual(devices[write_device_id]["access"], "write")
+                    self.assertEqual(devices[unmirrored_device_id]["access"], "read")
+                    self.assertEqual(devices[unmirrored_device_id]["mirror_state"], "missing")
+                    self.assertIsNone(devices[unmirrored_device_id]["last_mirrored_at"])
+
+                    client.delete(
+                        "/api/session", headers={"X-CSRF-Token": operator_session["csrf_token"]}
+                    )
+                    client.post(
+                        "/api/session",
+                        json={"username": "outsider", "password": no_access_password},
+                    )
+                    outsider_session = client.get("/api/session").json()
+                    client.post(
+                        "/api/session/password",
+                        json={
+                            "current_password": no_access_password,
+                            "new_password": "outsider-new-password",
+                        },
+                        headers={"X-CSRF-Token": outsider_session["csrf_token"]},
+                    )
+                    self.assertEqual(
+                        client.get("/api/portal/devices").json()["devices"], []
+                    )
             finally:
                 store.close()
 
