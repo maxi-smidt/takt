@@ -583,6 +583,73 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def _report_stuck_recovery(self, store: RegistryStore, *, phase: str = "activated") -> None:
+        store.update_heartbeat(
+            self.DEVICE_ID,
+            {
+                "protocol_version": 1,
+                "poll_seconds": 10,
+                "update_recovery": {
+                    "stuck": True,
+                    "phase": phase,
+                    "error": "manual repair is required",
+                },
+            },
+        )
+
+    def test_acknowledging_update_recovery_clears_the_alert_until_it_recurs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory))
+            try:
+                with self.assertRaisesRegex(ValueError, "no active"):
+                    store.acknowledge_update_recovery(self.DEVICE_ID, actor="ops@example.com")
+
+                self._report_stuck_recovery(store)
+                device = store.get_device(self.DEVICE_ID)
+                assert device is not None
+                self.assertTrue(device["status"]["update_recovery"]["stuck"])
+
+                acknowledged = store.acknowledge_update_recovery(
+                    self.DEVICE_ID, actor="ops@example.com"
+                )
+                self.assertFalse(acknowledged["status"]["update_recovery"]["stuck"])
+                self.assertEqual(
+                    acknowledged["status"]["update_recovery"]["acknowledged_by"],
+                    "ops@example.com",
+                )
+
+                # A repeated heartbeat reporting the same stale condition must not
+                # silently reinstate the alert.
+                self._report_stuck_recovery(store)
+                device = store.get_device(self.DEVICE_ID)
+                assert device is not None
+                self.assertFalse(device["status"]["update_recovery"]["stuck"])
+
+                events = [
+                    row["event"]
+                    for row in store.connection.execute(
+                        "SELECT event FROM audit_events WHERE device_id = ?", (self.DEVICE_ID,)
+                    )
+                ]
+                self.assertIn("update_recovery_acknowledged", events)
+
+                # Once recovery clears and a *new* failure is reported, the alert
+                # must be raised again even though the phase/error look the same.
+                store.update_heartbeat(
+                    self.DEVICE_ID,
+                    {
+                        "protocol_version": 1,
+                        "poll_seconds": 10,
+                        "update_recovery": {"stuck": False},
+                    },
+                )
+                self._report_stuck_recovery(store)
+                device = store.get_device(self.DEVICE_ID)
+                assert device is not None
+                self.assertTrue(device["status"]["update_recovery"]["stuck"])
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

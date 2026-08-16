@@ -597,7 +597,7 @@ function MaintenancePanel({ device, diagnostics, onAction }) {
   );
 }
 
-function DeviceCard({ device, releases, job, diagnostics, onJob, onCancel, onRetry, onRevoke, onWifi, onMaintenance }) {
+function DeviceCard({ device, releases, job, diagnostics, onJob, onCancel, onRetry, onRevoke, onWifi, onMaintenance, onAcknowledgeRecovery }) {
   const [releaseId, setReleaseId] = useState(preferredReleaseId(releases));
   const effectiveReleaseId = releaseId || preferredReleaseId(releases);
   const status = device.status || {};
@@ -650,7 +650,7 @@ function DeviceCard({ device, releases, job, diagnostics, onJob, onCancel, onRet
             UPDATE RECOVERY NEEDS FLEET ATTENTION
             <small>{updateRecovery.phase || "unknown"} · {updateRecovery.error || "Use the available Fleet retry control."}</small>
           </span>
-          <strong>FLEET RECOVERY</strong>
+          <button className="secondary-button" onClick={() => onAcknowledgeRecovery(device)}>ACKNOWLEDGE</button>
         </div>
       )}
       <div className="mirror-row">
@@ -824,6 +824,20 @@ function Dashboard({ session, refreshSession }) {
     }
   };
 
+  const acknowledgeRecovery = async (device) => {
+    if (!window.confirm(`${device.name}: acknowledge the update recovery alert?`)) return;
+    try {
+      await request(
+        `/api/devices/${device.id}/acknowledge-recovery`,
+        { method: "POST", body: JSON.stringify({}) },
+        session.csrf_token,
+      );
+      await load();
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+
   const revokeDevice = async (device) => {
     if (!window.confirm(`${device.name}: permanently revoke this device credential?`)) return;
     try {
@@ -870,7 +884,7 @@ function Dashboard({ session, refreshSession }) {
         {error && <div className="global-error"><WifiOff size={16} />{error}</div>}
         <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></section>
         <section className="device-grid">
-          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release")} diagnostics={diagnostics[device.id]} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onRevoke={revokeDevice} onWifi={setWifiDevice} onMaintenance={(target, action) => setConfirmation({ device: target, action })} />)}
+          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release")} diagnostics={diagnostics[device.id]} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onRevoke={revokeDevice} onWifi={setWifiDevice} onMaintenance={(target, action) => setConfirmation({ device: target, action })} onAcknowledgeRecovery={acknowledgeRecovery} />)}
           {!devices.length && <div className="empty-card"><Server size={28} /><h3>NO DEVICES ENROLLED</h3><p>Start a guided deployment to connect the first Raspberry Pi.</p><button className="primary-button" onClick={() => setModal("enroll")}>ENROLL FIRST DEVICE</button></div>}
         </section>
         <section className="operations">

@@ -33,7 +33,7 @@ def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
 JOB_LEASE_SECONDS = 120
 
@@ -257,6 +257,9 @@ class RegistryStore:
         self._rebuild_disruptive_index()
         self._ensure_column("devices", "revoked_at", "TEXT")
         self._ensure_column("devices", "health_checks_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column("devices", "recovery_raised_at", "TEXT")
+        self._ensure_column("devices", "recovery_ack_at", "TEXT")
+        self._ensure_column("devices", "recovery_ack_by", "TEXT")
         self._ensure_column("enrollment_codes", "deployment_id", "TEXT")
         self._ensure_column("releases", "source", "TEXT NOT NULL DEFAULT 'upload'")
         self._ensure_column("releases", "commit_sha", "TEXT")
@@ -379,11 +382,30 @@ class RegistryStore:
 
     def update_heartbeat(self, device_id: str, payload: dict[str, Any]) -> None:
         with self.connection:
+            previous = self.connection.execute(
+                "SELECT status_json, recovery_raised_at FROM devices WHERE id = ?",
+                (device_id,),
+            ).fetchone()
+            was_stuck = bool(
+                previous
+                and json.loads(previous["status_json"] or "{}")
+                .get("update_recovery", {})
+                .get("stuck")
+            )
+            is_stuck = bool((payload.get("update_recovery") or {}).get("stuck"))
+            if is_stuck and not was_stuck:
+                # A fresh recovery episode always needs fresh attention, even if the
+                # previous one at this device was already acknowledged.
+                recovery_raised_at = utc_iso()
+            elif is_stuck:
+                recovery_raised_at = previous["recovery_raised_at"] if previous else None
+            else:
+                recovery_raised_at = None
             self.connection.execute(
                 """
                 UPDATE devices
                 SET name = ?, hostname = ?, last_seen_at = ?, app_version = ?,
-                    agent_version = ?, status_json = ?
+                    agent_version = ?, status_json = ?, recovery_raised_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -393,9 +415,34 @@ class RegistryStore:
                     payload.get("app_version"),
                     payload.get("agent_version"),
                     json.dumps(payload, separators=(",", ":")),
+                    recovery_raised_at,
                     device_id,
                 ),
             )
+
+    def acknowledge_update_recovery(self, device_id: str, *, actor: str) -> dict[str, Any]:
+        with self.connection:
+            row = self.connection.execute(
+                "SELECT status_json FROM devices WHERE id = ?", (device_id,)
+            ).fetchone()
+            if row is None:
+                raise LookupError("Device does not exist.")
+            recovery = json.loads(row["status_json"] or "{}").get("update_recovery") or {}
+            if not recovery.get("stuck"):
+                raise ValueError("This device has no active update recovery alert.")
+            now = utc_iso()
+            self.connection.execute(
+                "UPDATE devices SET recovery_ack_at = ?, recovery_ack_by = ? WHERE id = ?",
+                (now, actor, device_id),
+            )
+            self._audit(
+                "update_recovery_acknowledged",
+                device_id,
+                {"phase": recovery.get("phase"), "error": recovery.get("error"), "actor": actor},
+            )
+        device = self.get_device(device_id)
+        assert device is not None
+        return device
 
     def list_devices(self) -> list[dict[str, Any]]:
         rows = self.connection.execute(
@@ -416,6 +463,21 @@ class RegistryStore:
                 and now - datetime.fromisoformat(last_seen) < timedelta(seconds=online_window)
             )
             item.pop("token_hash", None)
+            recovery = item["status"].get("update_recovery")
+            raised_at = item.pop("recovery_raised_at", None)
+            ack_at = item.pop("recovery_ack_at", None)
+            ack_by = item.pop("recovery_ack_by", None)
+            acknowledged = ack_at and (not raised_at or ack_at >= raised_at)
+            if recovery and recovery.get("stuck") and acknowledged:
+                item["status"] = {
+                    **item["status"],
+                    "update_recovery": {
+                        **recovery,
+                        "stuck": False,
+                        "acknowledged_at": ack_at,
+                        "acknowledged_by": ack_by,
+                    },
+                }
             devices.append(item)
         return devices
 

@@ -138,6 +138,7 @@ input:focus, select:focus { border-color: var(--green); }
 .recovery-row span { min-width: 0; color: #f8dda6; font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps); }
 .recovery-row small { display: block; margin-top: 5px; color: #e0c68d; font-size: var(--fs-small); font-weight: 400; overflow-wrap: anywhere; letter-spacing: 0; line-height: 1.5; }
 .recovery-row strong { flex: none; margin-left: auto; font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps); }
+.recovery-row .secondary-button { flex: none; margin-left: auto; min-height: 34px; padding: 0 14px; }
 .update-control { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 18px 20px; }
 .update-control label { color: var(--muted); font-size: var(--fs-label); font-weight: 600; letter-spacing: var(--ls-caps); }
 .update-control select { display: block; margin-top: 8px; padding: 10px 11px; font-size: var(--fs-small); }

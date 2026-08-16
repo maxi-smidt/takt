@@ -173,6 +173,123 @@ class FastApiRegistryTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_acknowledge_recovery_endpoint_clears_and_reraises_the_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_directory = Path(temporary_directory)
+            store = RegistryStore(data_directory, allow_thread_handoff=True)
+            auth = AdminAuth("correct-horse-battery", data_directory)
+            try:
+                with TestClient(create_fastapi_app(store, auth)) as client:
+                    client.post("/api/session", json={"password": "correct-horse-battery"})
+                    csrf = client.get("/api/session").json()["csrf_token"]
+
+                    code = client.post(
+                        "/api/enrollment-codes",
+                        json={"label": "Lane 1"},
+                        headers={"X-CSRF-Token": csrf},
+                    ).json()["code"]
+                    device_id = "12345678-1234-1234-1234-123456789abc"
+                    token = "a" * 64
+                    client.post(
+                        "/agent/enroll",
+                        json={
+                            "enrollment_code": code,
+                            "device_id": device_id,
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "device_token": token,
+                        },
+                    )
+                    agent_headers = {
+                        "X-Device-ID": device_id,
+                        "Authorization": f"Bearer {token}",
+                    }
+
+                    no_alert_yet = client.post(
+                        f"/api/devices/{device_id}/acknowledge-recovery",
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(no_alert_yet.status_code, 400)
+
+                    client.post(
+                        "/agent/status",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "protocol_version": 1,
+                            "poll_seconds": 10,
+                            "update_recovery": {
+                                "stuck": True,
+                                "phase": "activated",
+                                "error": "manual repair is required",
+                            },
+                        },
+                        headers=agent_headers,
+                    )
+                    devices = client.get("/api/devices").json()["devices"]
+                    self.assertTrue(devices[0]["status"]["update_recovery"]["stuck"])
+
+                    missing_csrf = client.post(f"/api/devices/{device_id}/acknowledge-recovery")
+                    self.assertEqual(missing_csrf.status_code, 403)
+
+                    acknowledged = client.post(
+                        f"/api/devices/{device_id}/acknowledge-recovery",
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(acknowledged.status_code, 200)
+                    self.assertFalse(acknowledged.json()["device"]["status"]["update_recovery"]["stuck"])
+
+                    # The stale heartbeat state must not silently bring the alert back.
+                    client.post(
+                        "/agent/status",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "protocol_version": 1,
+                            "poll_seconds": 10,
+                            "update_recovery": {
+                                "stuck": True,
+                                "phase": "activated",
+                                "error": "manual repair is required",
+                            },
+                        },
+                        headers=agent_headers,
+                    )
+                    devices = client.get("/api/devices").json()["devices"]
+                    self.assertFalse(devices[0]["status"]["update_recovery"]["stuck"])
+
+                    # Recovery clearing then a fresh failure raises the alert again.
+                    client.post(
+                        "/agent/status",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "protocol_version": 1,
+                            "poll_seconds": 10,
+                            "update_recovery": {"stuck": False},
+                        },
+                        headers=agent_headers,
+                    )
+                    client.post(
+                        "/agent/status",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "protocol_version": 1,
+                            "poll_seconds": 10,
+                            "update_recovery": {
+                                "stuck": True,
+                                "phase": "activated",
+                                "error": "manual repair is required",
+                            },
+                        },
+                        headers=agent_headers,
+                    )
+                    devices = client.get("/api/devices").json()["devices"]
+                    self.assertTrue(devices[0]["status"]["update_recovery"]["stuck"])
+            finally:
+                store.close()
+
     def test_pydantic_models_preserve_strict_wifi_and_heartbeat_rules(self) -> None:
         with self.assertRaises(ValueError):
             WifiNetworkRequest(ssid="Lane", password="short")

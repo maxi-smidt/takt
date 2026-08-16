@@ -250,3 +250,91 @@ describe("UserAdminPanel device access", () => {
     expect(summaryText()).toContain("Bahn 1 · WRITE");
   });
 });
+
+describe("device card update recovery alert", () => {
+  let root: Root | null = null;
+  let container: HTMLDivElement | null = null;
+  let fetchMock: MockInstance<typeof fetch>;
+  let confirmMock: MockInstance<typeof window.confirm>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    confirmMock = vi.spyOn(window, "confirm").mockReturnValue(true);
+  });
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount();
+        await flush();
+      });
+      root = null;
+    }
+    container?.remove();
+    container = null;
+    fetchMock.mockRestore();
+    confirmMock.mockRestore();
+  });
+
+  it("lets an admin acknowledge a stuck recovery, clearing the card's alert state", async () => {
+    let stuck = true;
+    let acknowledgeCalls = 0;
+
+    fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/api/session")) return jsonResponse(AUTHENTICATED_ADMIN);
+      if (method === "GET" && url.endsWith("/api/devices"))
+        return jsonResponse({
+          devices: [
+            {
+              id: "d1",
+              name: "Bahn 1",
+              hostname: "d1.local",
+              online: true,
+              status: stuck
+                ? { update_recovery: { stuck: true, phase: "activated", error: "manual repair is required" } }
+                : {},
+            },
+          ],
+        });
+      if (method === "GET" && url.endsWith("/api/releases"))
+        return jsonResponse({ releases: [], bundled_release: null });
+      if (method === "GET" && url.endsWith("/api/jobs")) return jsonResponse({ jobs: [] });
+      if (method === "GET" && url.endsWith("/api/admin/users")) return jsonResponse({ users: [] });
+      if (method === "POST" && url.endsWith("/api/devices/d1/acknowledge-recovery")) {
+        acknowledgeCalls += 1;
+        stuck = false;
+        return jsonResponse({ device: { id: "d1" } });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(createElement(App));
+      await flush();
+    });
+
+    expect(container.textContent).toContain("UPDATE RECOVERY NEEDS FLEET ATTENTION");
+    expect(container.querySelector(".device-card.has-recovery")).not.toBeNull();
+
+    const acknowledgeButton = Array.from(container.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === "ACKNOWLEDGE",
+    );
+    if (!acknowledgeButton) throw new Error("Acknowledge button not found");
+    await act(async () => {
+      acknowledgeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(confirmMock).toHaveBeenCalled();
+    expect(acknowledgeCalls).toBe(1);
+    expect(container.textContent).not.toContain("UPDATE RECOVERY NEEDS FLEET ATTENTION");
+    expect(container.querySelector(".device-card.has-recovery")).toBeNull();
+  });
+});
