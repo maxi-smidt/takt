@@ -57,9 +57,10 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 input, select { width: 100%; color: var(--text); border: 1px solid var(--line); background: #091311; padding: 12px 13px; font-size: var(--fs-base); outline: none; }
 .password-field input { border: 0; padding-inline: 0; }
 input:focus, select:focus { border-color: var(--green); }
-.primary-button, .secondary-button { width: 100%; min-height: 46px; border: 0; display: flex; align-items: center; justify-content: center; gap: 9px; font-size: var(--fs-base); font-weight: 700; letter-spacing: var(--ls-caps); }
+.primary-button, .secondary-button { width: fit-content; min-height: 46px; padding: 0 24px; border: 0; display: inline-flex; align-items: center; justify-content: center; gap: 9px; font-size: var(--fs-base); font-weight: 700; letter-spacing: var(--ls-caps); }
 .primary-button { margin-top: 20px; color: #07110e; background: var(--green); }
 .secondary-button { color: var(--green); background: #142520; border: 1px solid #356956; }
+.full-width { width: 100%; }
 .form-error, .global-error { color: #ffb9b9; background: #3d181b; border: 1px solid #7c3037; font-size: var(--fs-small); line-height: 1.5; padding: 11px 13px; margin-top: 12px; }
 
 .topbar { min-height: 68px; border-bottom: 1px solid var(--line); background: #0a1211e8; backdrop-filter: blur(16px); display: flex; align-items: center; padding: 0 max(24px, calc((100vw - 1500px) / 2)); position: sticky; top: 0; z-index: 10; }
@@ -151,7 +152,6 @@ input:focus, select:focus { border-color: var(--green); }
 .empty-card { grid-column: 1 / -1; min-height: 280px; display: grid; place-items: center; align-content: center; text-align: center; border: 1px dashed #3d514c; color: var(--muted); padding: 35px; }
 .empty-card h3 { color: var(--text); font-size: 22px; font-weight: 800; margin: 16px 0 0; }
 .empty-card p { font-size: var(--fs-base); }
-.empty-card .primary-button { width: auto; padding: 0 24px; }
 .operations { margin-top: 12px; }
 .job-list { border: 1px solid var(--line); background: #0e1716; }
 .job-row { min-height: 68px; display: grid; grid-template-columns: auto 1fr minmax(90px, 180px) 92px; gap: 14px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); }
