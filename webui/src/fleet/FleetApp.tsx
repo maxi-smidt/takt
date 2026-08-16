@@ -118,7 +118,7 @@ function Login({ onLogin }) {
             </div>
           </label>
           {error && <div className="form-error">{error}</div>}
-          <button className="primary-button" disabled={busy || !password || !username}>
+          <button className="primary-button full-width" disabled={busy || !password || !username}>
             {busy ? "CONNECTING …" : "OPEN REGISTRY"}
           </button>
         </form>
@@ -289,19 +289,19 @@ function EnrollmentModal({ csrf, onClose, releases, onDone }) {
             )}
           </div>
           {error && <div className="form-error">{error}</div>}
-          <button className="primary-button" disabled={busy || !releases.length}><Plus size={15} /> {busy ? "STARTING …" : "START DEPLOYMENT"}</button>
+          <button className="primary-button full-width" disabled={busy || !releases.length}><Plus size={15} /> {busy ? "STARTING …" : "START DEPLOYMENT"}</button>
         </form>
       ) : (
         <div className="modal-body deployment-panel">
           <div className="deployment-ready"><Activity size={22} /><div><strong>{deployment.status.replaceAll("_", " ").toUpperCase()}</strong><span>{deployment.message}</span></div></div>
           <div className="deployment-log" aria-live="polite">{events.map((item) => <div className={"deployment-log-line level-" + item.level} key={item.id}><span>{item.stage}</span>{item.message}</div>)}</div>
-          {deployment.status === "awaiting_host_key" && <div className="deployment-confirmation"><strong>VERIFY SSH HOST KEY</strong><code>{deployment.host_key_fingerprint}</code><label className="insecure-opt-in"><input type="checkbox" checked={replaceHostKey} onChange={(event) => setReplaceHostKey(event.target.checked)} /><span>Replace an existing trusted key only when expected.</span></label><button className="primary-button" onClick={confirmHostKey} disabled={busy}><KeyRound size={15} /> TRUST HOST KEY</button></div>}
+          {deployment.status === "awaiting_host_key" && <div className="deployment-confirmation"><strong>VERIFY SSH HOST KEY</strong><code>{deployment.host_key_fingerprint}</code><label className="insecure-opt-in"><input type="checkbox" checked={replaceHostKey} onChange={(event) => setReplaceHostKey(event.target.checked)} /><span>Replace an existing trusted key only when expected.</span></label><button className="primary-button full-width" onClick={confirmHostKey} disabled={busy}><KeyRound size={15} /> TRUST HOST KEY</button></div>}
           {deployment.status === "awaiting_credentials" && <form className="deployment-credentials" onSubmit={submitCredentials}>
             <label className="field-label">SSH PASSWORD<input type="password" autoComplete="new-password" value={credentials.ssh_password} onChange={(event) => setCredentials({ ...credentials, ssh_password: event.target.value })} /></label>
             <label className="field-label">OR PRIVATE KEY<textarea rows="4" value={credentials.ssh_private_key} onChange={(event) => setCredentials({ ...credentials, ssh_private_key: event.target.value })} /></label>
             <label className="field-label">KEY PASSPHRASE<input type="password" autoComplete="off" value={credentials.ssh_key_passphrase} onChange={(event) => setCredentials({ ...credentials, ssh_key_passphrase: event.target.value })} /></label>
             <label className="field-label">SUDO PASSWORD<input type="password" autoComplete="off" value={credentials.sudo_password} onChange={(event) => setCredentials({ ...credentials, sudo_password: event.target.value })} placeholder="Defaults to SSH password" /></label>
-            <button className="primary-button" disabled={busy}><KeyRound size={15} /> CONTINUE</button>
+            <button className="primary-button full-width" disabled={busy}><KeyRound size={15} /> CONTINUE</button>
           </form>}
           {error && <div className="form-error">{error}</div>}
           <div className="deployment-actions">
@@ -351,7 +351,7 @@ function ReleaseModal({ csrf, onClose, onUploaded }) {
           <input type="file" accept=".gz,.tar.gz" onChange={(event) => setFile(event.target.files[0] || null)} />
         </label>
         {error && <div className="form-error">{error}</div>}
-        <button className="primary-button" disabled={busy || !file || !version}>
+        <button className="primary-button full-width" disabled={busy || !file || !version}>
           {busy ? "UPLOADING …" : "STORE RELEASE"}
         </button>
       </form>
@@ -413,7 +413,7 @@ function WifiModal({ device, csrf, onClose, onCreated }) {
           />
         </label>
         {error && <div className="form-error">{error}</div>}
-        <button className="primary-button" disabled={busy || !ssid || !password}>
+        <button className="primary-button full-width" disabled={busy || !ssid || !password}>
           <Wifi size={15} /> {busy ? "SAVING …" : "SAVE WI-FI PROFILE"}
         </button>
       </form>
