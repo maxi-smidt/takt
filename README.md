@@ -240,7 +240,13 @@ konsistente Sicherung. Docker-Logs rotieren automatisch.
 ### Automatisch veröffentlichte Artefakte
 
 Der Workflow `.github/workflows/registry-image.yml` läuft auf `main`, auf
-Versionstags (`v*`) und manuell:
+Versionstags (`v*`), manuell und zusätzlich als `quality`-Job auf jedem Pull
+Request gegen `main` — ein neuer Push auf denselben Pull Request bricht den
+noch laufenden Lauf ab. Nur `quality` läuft dabei; Paketierung, Container-Bau
+und Veröffentlichung bleiben Pushes auf `main` und Versionstags vorbehalten,
+damit Pull Requests keine Artefakte oder Images veröffentlichen. `quality`
+ist als erforderlicher Status-Check für `main` hinterlegt, ein Merge ist also
+erst nach einem grünen Lauf möglich:
 
 - Ruff, Pytest, ESLint und der Registry-UI-Build müssen zuerst erfolgreich
   sein.
