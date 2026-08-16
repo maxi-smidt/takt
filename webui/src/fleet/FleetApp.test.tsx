@@ -187,14 +187,14 @@ describe("UserAdminPanel device access", () => {
         });
       const grantMatch = url.match(/\/api\/admin\/users\/u2\/devices\/(d1|d2)$/);
       if (grantMatch && method === "PUT") {
-        const deviceId = grantMatch[1];
+        const deviceId = grantMatch[1]!;
         const body = JSON.parse((init?.body as string) ?? "{}");
         grantCalls.push({ deviceId, access: body.access });
         access = [...access.filter((item) => item.device_id !== deviceId), { device_id: deviceId, access_level: body.access }];
         return jsonResponse({ access: { user_id: "u2", device_id: deviceId, access_level: body.access } });
       }
       if (grantMatch && method === "DELETE") {
-        const deviceId = grantMatch[1];
+        const deviceId = grantMatch[1]!;
         revokeCalls.push(deviceId);
         access = access.filter((item) => item.device_id !== deviceId);
         return jsonResponse({ ok: true });
