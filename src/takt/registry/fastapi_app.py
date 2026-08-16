@@ -1329,6 +1329,20 @@ def create_fastapi_app(
             raise HTTPException(status_code=404, detail=str(error)) from error
         return {"device": device}
 
+    @app.post("/api/devices/{device_id}/acknowledge-recovery")
+    async def acknowledge_recovery(
+        device_id: str,
+        session: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
+    ) -> dict[str, Any]:
+        actor = str(session.get("username") or "admin")
+        try:
+            device = store.acknowledge_update_recovery(device_id, actor=actor)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"device": device}
+
     @app.get("/api/jobs/{job_id}/events")
     async def job_events(
         job_id: str,

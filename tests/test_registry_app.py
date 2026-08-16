@@ -628,6 +628,102 @@ class FleetMaintenanceApiTests(unittest.TestCase):
         async with client.get(f"{base_url}/api/session") as response:
             return str((await response.json())["csrf_token"])
 
+    def test_update_recovery_can_be_acknowledged_and_reraised(self) -> None:
+        asyncio.run(self._exercise_recovery_acknowledgement())
+
+    async def _exercise_recovery_acknowledgement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_directory = Path(temporary_directory) / "registry"
+            data_directory.mkdir()
+            store = RegistryStore(data_directory)
+            runner = web.AppRunner(
+                create_registry_app(store, AdminAuth(self.PASSWORD, data_directory))
+            )
+            await runner.setup()
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            sockets = site._server.sockets  # type: ignore[union-attr]
+            base_url = f"http://127.0.0.1:{sockets[0].getsockname()[1]}"
+            try:
+                async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
+                    csrf = await self._login(client, base_url)
+                    admin = {"X-CSRF-Token": csrf}
+                    agent = await self._enroll(client, base_url, admin)
+                    recovery_status = {
+                        "name": "Lane 1",
+                        "hostname": "takt-01",
+                        "protocol_version": 1,
+                        "poll_seconds": 10,
+                        "update_recovery": {
+                            "stuck": True,
+                            "phase": "activated",
+                            "error": "manual repair is required",
+                        },
+                    }
+
+                    async with client.post(
+                        f"{base_url}/api/devices/{self.DEVICE_ID}/acknowledge-recovery",
+                        headers=admin,
+                    ) as response:
+                        self.assertEqual(response.status, 400)
+
+                    async with client.post(
+                        f"{base_url}/agent/status", json=recovery_status, headers=agent
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                    device = store.get_device(self.DEVICE_ID)
+                    assert device is not None
+                    self.assertTrue(device["status"]["update_recovery"]["stuck"])
+
+                    async with client.post(
+                        f"{base_url}/api/devices/{self.DEVICE_ID}/acknowledge-recovery"
+                    ) as response:
+                        self.assertEqual(response.status, 403)
+
+                    async with client.post(
+                        f"{base_url}/api/devices/{self.DEVICE_ID}/acknowledge-recovery",
+                        headers=admin,
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                        acknowledged = (await response.json())["device"]
+                        self.assertFalse(acknowledged["status"]["update_recovery"]["stuck"])
+
+                    # The agent keeps reporting the same stale condition; it must stay resolved.
+                    async with client.post(
+                        f"{base_url}/agent/status", json=recovery_status, headers=agent
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                    device = store.get_device(self.DEVICE_ID)
+                    assert device is not None
+                    self.assertFalse(device["status"]["update_recovery"]["stuck"])
+
+                    events = [
+                        row["event"]
+                        for row in store.connection.execute(
+                            "SELECT event FROM audit_events WHERE device_id = ?",
+                            (self.DEVICE_ID,),
+                        )
+                    ]
+                    self.assertIn("update_recovery_acknowledged", events)
+
+                    # Recovery clears, then a new failure must raise the alert again.
+                    async with client.post(
+                        f"{base_url}/agent/status",
+                        json={**recovery_status, "update_recovery": {"stuck": False}},
+                        headers=agent,
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                    async with client.post(
+                        f"{base_url}/agent/status", json=recovery_status, headers=agent
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+                    device = store.get_device(self.DEVICE_ID)
+                    assert device is not None
+                    self.assertTrue(device["status"]["update_recovery"]["stuck"])
+            finally:
+                await runner.cleanup()
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

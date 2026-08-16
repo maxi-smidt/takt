@@ -128,6 +128,9 @@ def create_registry_app(
     app.router.add_post("/api/devices/{device_id}/jobs", create_job)
     app.router.add_post("/api/devices/{device_id}/wifi-networks", create_wifi_network)
     app.router.add_post("/api/devices/{device_id}/revoke", revoke_device)
+    app.router.add_post(
+        "/api/devices/{device_id}/acknowledge-recovery", acknowledge_recovery
+    )
     app.router.add_get("/api/devices/{device_id}/mirror", download_mirror)
     app.router.add_get("/api/devices/{device_id}/diagnostics", device_diagnostics)
     app.router.add_get(
@@ -552,6 +555,20 @@ async def revoke_device(request: web.Request) -> web.Response:
         device = request.app[STORE_KEY].revoke_device(request.match_info["device_id"])
     except LookupError as error:
         raise web.HTTPNotFound(text=str(error)) from error
+    return web.json_response({"device": device})
+
+
+async def acknowledge_recovery(request: web.Request) -> web.Response:
+    session = _admin(request, csrf=True)
+    actor = str(session.get("username") or "admin")
+    try:
+        device = request.app[STORE_KEY].acknowledge_update_recovery(
+            request.match_info["device_id"], actor=actor
+        )
+    except LookupError as error:
+        raise web.HTTPNotFound(text=str(error)) from error
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error)) from error
     return web.json_response({"device": device})
 
 
