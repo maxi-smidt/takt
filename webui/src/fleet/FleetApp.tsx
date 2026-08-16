@@ -60,6 +60,53 @@ function bytes(value) {
 }
 
 
+function formatStopwatch(milliseconds) {
+  if (milliseconds == null) return "—";
+  const totalHundredths = Math.round(milliseconds / 10);
+  const hundredths = totalHundredths % 100;
+  const totalSeconds = Math.floor(totalHundredths / 100);
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(hundredths).padStart(2, "0")}`;
+}
+
+function formatDateTime(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function formatDate(value) {
+  if (!value) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) return value;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return new Intl.DateTimeFormat("de-DE", { dateStyle: "medium" }).format(date);
+}
+
+const MIRROR_STATE_LABELS_DE = {
+  missing: "kein Spiegel",
+  offline: "offline",
+  pending: "wird aktualisiert",
+  fresh: "aktuell",
+};
+function mirrorStateLabel(state) {
+  return MIRROR_STATE_LABELS_DE[state] || state;
+}
+
+const PORTAL_ERROR_MESSAGES_DE = {
+  "Device does not exist.": "Dieses Gerät existiert nicht.",
+  "Release does not exist.": "Diese Version existiert nicht.",
+  "Device access has been revoked.": "Der Gerätezugriff wurde widerrufen.",
+  "Device must be online to queue a job.": "Das Gerät muss online sein.",
+  "Another disruptive operation is already queued for this device.":
+    "Für dieses Gerät ist bereits ein anderer Vorgang eingeplant.",
+};
+function translatePortalError(message) {
+  return PORTAL_ERROR_MESSAGES_DE[message] || message;
+}
+
 function insecureRemoteHttp(value) {
   try {
     const parsed = new URL(value);
@@ -854,5 +901,138 @@ function App() {
 }
 export default App;
 function UserAdminPanel({ csrf, devices }) { const [users, setUsers] = useState([]); const [username, setUsername] = useState(""); const [temporaryPassword, setTemporaryPassword] = useState(""); const [error, setError] = useState(""); const load = useCallback(async () => { try { setUsers((await request("/api/admin/users")).users || []); } catch (failure) { setError(failure.message); } }, []); useEffect(() => { queueMicrotask(load); }, [load]); const create = async (event) => { event.preventDefault(); try { const result = await request("/api/admin/users", { method: "POST", body: JSON.stringify({ username }) }, csrf); setTemporaryPassword(result.temporary_password); setUsername(""); await load(); } catch (failure) { setError(failure.message); } }; const changeState = async (user) => { try { await request("/api/admin/users/" + user.id, { method: "PATCH", body: JSON.stringify({ disabled: !user.disabled }) }, csrf); await load(); } catch (failure) { setError(failure.message); } }; const reset = async (user) => { try { const result = await request("/api/admin/users/" + user.id + "/reset-password", { method: "POST", body: JSON.stringify({}) }, csrf); setTemporaryPassword(result.temporary_password); } catch (failure) { setError(failure.message); } }; const grant = async (user, deviceId, access) => { try { await request("/api/admin/users/" + user.id + "/devices/" + deviceId, { method: "PUT", body: JSON.stringify({ access }) }, csrf); await load(); } catch (failure) { setError(failure.message); } }; return <section className="operations"><div className="section-heading"><div><span>03 · ACCESS</span><h2>USERS AND DEVICE ACCESS</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></div><form className="enrollment-fields" onSubmit={create}><label className="field-label">USERNAME<input value={username} onChange={(event) => setUsername(event.target.value)} /></label><button className="primary-button" disabled={!username}>CREATE USER</button></form>{temporaryPassword && <div className="security-warning"><strong>ONE-TIME PASSWORD:</strong> <code>{temporaryPassword}</code></div>}{error && <div className="form-error">{error}</div>}<div className="job-list">{users.map((user) => <div className="job-row" key={user.id}><div className="job-copy"><strong>{user.username}{user.is_admin ? " · ADMIN" : ""}</strong><span>{user.disabled ? "DISABLED" : "ACTIVE"}</span></div><button className="secondary-button" onClick={() => reset(user)}>RESET PASSWORD</button><button className="secondary-button" onClick={() => changeState(user)}>{user.disabled ? "ENABLE" : "DISABLE"}</button>{devices.map((device) => <select key={device.id} value={(user.access || []).find((item) => item.device_id === device.id)?.access_level || "none"} onChange={(event) => event.target.value !== "none" && grant(user, device.id, event.target.value)}><option value="none">{device.name}: none</option><option value="read">{device.name}: read</option><option value="write">{device.name}: write</option></select>)}</div>)}</div></section>; }
-function Portal({ session, refreshSession }) { const [devices, setDevices] = useState([]); const [deviceId, setDeviceId] = useState(""); const [runs, setRuns] = useState(null); const [from, setFrom] = useState(""); const [to, setTo] = useState(""); const [error, setError] = useState(""); const loadDevices = useCallback(async () => { try { const result = await request("/api/portal/devices"); setDevices(result.devices || []); setDeviceId((current) => current || result.devices?.[0]?.id || ""); setError(""); } catch (failure) { setError(failure.message); } }, []); const loadRuns = useCallback(async () => { if (!deviceId) return; try { const query = new URLSearchParams(); if (from) query.set("from", from); if (to) query.set("to", to); setRuns(await request("/api/portal/devices/" + deviceId + "/runs?" + query)); setError(""); } catch (failure) { setError(failure.message); } }, [deviceId, from, to]); useEffect(() => { queueMicrotask(loadDevices); }, [loadDevices]); useEffect(() => { queueMicrotask(loadRuns); }, [loadRuns]); const logout = async () => { await request("/api/session", { method: "DELETE" }, session.csrf_token); await refreshSession(); }; const command = async (run, operation, desired) => { if (!window.confirm(operation === "delete" ? "Delete this saved run permanently?" : "Apply this run correction?")) return; try { await request("/api/portal/devices/" + deviceId + "/runs/" + run.id + "/commands", { method: "POST", body: JSON.stringify({ confirmed: true, operation, desired_added_time_ms: desired, expected_updated_at: run.updated_at, mirror_sha256: runs.mirror.sha256 }) }, session.csrf_token); setTimeout(loadRuns, 1000); } catch (failure) { setError(failure.message); } }; return <div className="fleet-app portal-app"><header className="topbar"><div className="brand"><div className="brand-mark"><Zap size={18} /></div><strong>TAKT <em>RUNS</em></strong></div><div className="top-actions"><span className="portal-username">{session.user?.username}</span><button className="icon-button" onClick={logout} title="Log out"><LogOut size={17} /></button></div></header><main><section className="hero"><div><span className="eyebrow">AUTHORIZED RUN PORTAL</span><h1>MIRRORED RUNS</h1><p>Read-only snapshots remain on the Registry; writes are sent to the authoritative Pi.</p></div></section>{error && <div className="global-error">{error}</div>}<section className="section-heading"><div><span>DEVICES</span><h2>YOUR TAKT DEVICES</h2></div><button onClick={loadDevices}><RefreshCw size={14} /> REFRESH</button></section><section className="device-grid">{devices.map((device) => <button className={"device-card portal-device " + (device.id === deviceId ? "selected" : "")} key={device.id} onClick={() => setDeviceId(device.id)}><strong>{device.name}</strong><span>{device.mirror_state} · {device.run_count ?? 0} runs</span><small>{device.last_mirrored_at || "No mirror yet"}</small></button>)}{!devices.length && <div className="empty-card"><h3>NO ASSIGNED DEVICES</h3><p>Ask an administrator for device access.</p></div>}</section>{runs && <section className="operations"><div className="section-heading"><div><span>RUN HISTORY</span><h2>{runs.summary.count} RUNS</h2></div><span>{runs.mirror.state} · {runs.mirror.last_mirrored_at}</span></div><div className="enrollment-fields"><label className="field-label">FROM<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label className="field-label">TO<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label></div><div className="summary-grid"><div><strong>{runs.summary.best_total_ms ?? "—"}</strong><span>BEST MS</span></div><div><strong>{Math.round(runs.summary.average_total_ms || 0)}</strong><span>AVERAGE MS</span></div><div><strong>{runs.summary.added_time_ms}</strong><span>ADDED MS</span></div></div><div className="job-list">{runs.runs.map((run) => <article className="job-row" key={run.id}><div className="job-copy"><strong>Run {run.run_number} · {run.session_date}</strong><span>{run.total_time_ms} ms total · {run.actual_time_ms} ms actual · +{run.added_time_ms} ms</span></div>{(devices.find((item) => item.id === deviceId)?.access === "write" || session.user?.is_admin) && <><button className="secondary-button" onClick={() => command(run, "adjust_added_time", Math.max(0, run.added_time_ms + 5000))}>+5s</button><button className="secondary-button" onClick={() => command(run, "delete")}>DELETE</button></>}</article>)}{!runs.runs.length && <div className="jobs-empty">No runs match the selected range.</div>}</div></section>}</main></div>; }
+function Portal({ session, refreshSession }) {
+  const [devices, setDevices] = useState([]);
+  const [deviceId, setDeviceId] = useState("");
+  const [runs, setRuns] = useState(null);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [error, setError] = useState("");
+  const loadDevices = useCallback(async () => {
+    try {
+      const result = await request("/api/portal/devices");
+      setDevices(result.devices || []);
+      setDeviceId((current) => current || result.devices?.[0]?.id || "");
+      setError("");
+    } catch (failure) {
+      setError(translatePortalError(failure.message));
+    }
+  }, []);
+  const loadRuns = useCallback(async () => {
+    if (!deviceId) return;
+    try {
+      const query = new URLSearchParams();
+      if (from) query.set("from", from);
+      if (to) query.set("to", to);
+      setRuns(await request("/api/portal/devices/" + deviceId + "/runs?" + query));
+      setError("");
+    } catch (failure) {
+      setError(translatePortalError(failure.message));
+    }
+  }, [deviceId, from, to]);
+  useEffect(() => { queueMicrotask(loadDevices); }, [loadDevices]);
+  useEffect(() => { queueMicrotask(loadRuns); }, [loadRuns]);
+  const logout = async () => {
+    await request("/api/session", { method: "DELETE" }, session.csrf_token);
+    await refreshSession();
+  };
+  const command = async (run, operation, desired) => {
+    if (!window.confirm(operation === "delete"
+      ? "Diesen gespeicherten Lauf endgültig löschen?"
+      : "Diese Korrektur übernehmen?")) return;
+    try {
+      await request(
+        "/api/portal/devices/" + deviceId + "/runs/" + run.id + "/commands",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            confirmed: true,
+            operation,
+            desired_added_time_ms: desired,
+            expected_updated_at: run.updated_at,
+            mirror_sha256: runs.mirror.sha256,
+          }),
+        },
+        session.csrf_token,
+      );
+      setTimeout(loadRuns, 1000);
+    } catch (failure) {
+      setError(translatePortalError(failure.message));
+    }
+  };
+  return (
+    <div className="fleet-app portal-app">
+      <header className="topbar">
+        <div className="brand"><div className="brand-mark"><Zap size={18} /></div><strong>TAKT <em>LÄUFE</em></strong></div>
+        <div className="top-actions">
+          <span className="portal-username">{session.user?.username}</span>
+          <button className="icon-button" onClick={logout} title="Abmelden"><LogOut size={17} /></button>
+        </div>
+      </header>
+      <main>
+        <section className="hero">
+          <div>
+            <span className="eyebrow">AUTORISIERTES LAUFPORTAL</span>
+            <h1>GESPIEGELTE LÄUFE</h1>
+            <p>Schreibgeschützte Momentaufnahmen bleiben in der Registry; Änderungen werden an den maßgeblichen Pi gesendet.</p>
+          </div>
+        </section>
+        {error && <div className="global-error">{error}</div>}
+        <section className="section-heading">
+          <div><span>GERÄTE</span><h2>IHRE TAKT-GERÄTE</h2></div>
+          <button onClick={loadDevices}><RefreshCw size={14} /> AKTUALISIEREN</button>
+        </section>
+        <section className="device-grid">
+          {devices.map((device) => (
+            <button className={"device-card portal-device " + (device.id === deviceId ? "selected" : "")} key={device.id} onClick={() => setDeviceId(device.id)}>
+              <strong>{device.name}</strong>
+              <span>{mirrorStateLabel(device.mirror_state)} · {device.run_count ?? 0} Läufe</span>
+              <small>{formatDateTime(device.last_mirrored_at) || "Noch kein Spiegel"}</small>
+            </button>
+          ))}
+          {!devices.length && (
+            <div className="empty-card">
+              <h3>KEINE ZUGEWIESENEN GERÄTE</h3>
+              <p>Bitte einen Administrator um Gerätezugriff.</p>
+            </div>
+          )}
+        </section>
+        {runs && (
+          <section className="operations">
+            <div className="section-heading">
+              <div><span>LAUFVERLAUF</span><h2>{runs.summary.count} LÄUFE</h2></div>
+              <span>{mirrorStateLabel(runs.mirror.state)} · {formatDateTime(runs.mirror.last_mirrored_at) || "noch nicht gespiegelt"}</span>
+            </div>
+            <div className="enrollment-fields">
+              <label className="field-label">VON<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
+              <label className="field-label">BIS<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+            </div>
+            <div className="summary-grid">
+              <div><strong>{formatStopwatch(runs.summary.best_total_ms)}</strong><span>BESTZEIT</span></div>
+              <div><strong>{formatStopwatch(Math.round(runs.summary.average_total_ms || 0))}</strong><span>DURCHSCHNITT</span></div>
+              <div><strong>{formatStopwatch(runs.summary.added_time_ms)}</strong><span>ZUSCHLAG</span></div>
+            </div>
+            <div className="job-list">
+              {runs.runs.map((run) => (
+                <article className="job-row" key={run.id}>
+                  <div className="job-copy">
+                    <strong>Lauf {run.run_number} · {formatDate(run.session_date)}</strong>
+                    <span>{formatStopwatch(run.total_time_ms)} gesamt · {formatStopwatch(run.actual_time_ms)} Ist-Zeit · +{formatStopwatch(run.added_time_ms)} Zuschlag</span>
+                  </div>
+                  {(devices.find((item) => item.id === deviceId)?.access === "write" || session.user?.is_admin) && (
+                    <>
+                      <button className="secondary-button" onClick={() => command(run, "adjust_added_time", Math.max(0, run.added_time_ms + 5000))}>+5 s</button>
+                      <button className="secondary-button" onClick={() => command(run, "delete")}>LÖSCHEN</button>
+                    </>
+                  )}
+                </article>
+              ))}
+              {!runs.runs.length && <div className="jobs-empty">Keine Läufe im gewählten Zeitraum.</div>}
+            </div>
+          </section>
+        )}
+      </main>
+    </div>
+  );
+}
 function PasswordChange({ session, refreshSession }) { const [currentPassword, setCurrentPassword] = useState(""); const [newPassword, setNewPassword] = useState(""); const [error, setError] = useState(""); const [busy, setBusy] = useState(false); const submit = async (event) => { event.preventDefault(); setBusy(true); setError(""); try { await request("/api/session/password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }, session.csrf_token); await refreshSession(); } catch (failure) { setError(failure.message); } finally { setBusy(false); } }; return <div className="fleet-app"><main><section className="hero"><div><span className="eyebrow">SECURITY</span><h1>CHANGE PASSWORD</h1><p>Your temporary password must be replaced before continuing.</p></div></section><form className="enrollment-fields" onSubmit={submit}><label className="field-label">CURRENT PASSWORD<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" /></label><label className="field-label">NEW PASSWORD<input type="password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" /></label>{error && <div className="form-error">{error}</div>}<button className="primary-button" disabled={busy || !currentPassword || newPassword.length < 12}>{busy ? "SAVING …" : "SET PASSWORD"}</button></form></main></div>; }

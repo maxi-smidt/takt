@@ -487,7 +487,7 @@ def _portal_access(
         return "write"
     level = store.accounts.access_level(str(session.get("user_id") or ""), device_id)
     if level is None or (write and level != "write"):
-        raise HTTPException(status_code=404, detail="Device does not exist.")
+        raise HTTPException(status_code=404, detail="Dieses Gerät existiert nicht.")
     return level
 
 
@@ -497,7 +497,9 @@ def _mirror_connection(
     device = store.get_device(device_id)
     path = store.mirror_path(device_id)
     if device is None or not path.is_file() or not device.get("mirror_sha256"):
-        raise HTTPException(status_code=503, detail="No mirrored database is available.")
+        raise HTTPException(
+            status_code=503, detail="Es liegt noch keine gespiegelte Datenbank vor."
+        )
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
@@ -522,7 +524,9 @@ def _mirror_connection(
     except (OSError, sqlite3.Error, ValueError) as error:
         with contextlib.suppress(Exception):
             connection.close()
-        raise HTTPException(status_code=503, detail="Mirrored database is unavailable.") from error
+        raise HTTPException(
+            status_code=503, detail="Die gespiegelte Datenbank ist nicht verfügbar."
+        ) from error
     assert connection is not None
     return connection, device
 
@@ -553,7 +557,7 @@ def _decode_portal_cursor(value: str) -> tuple[str, int]:
         started_at, run_id = raw.split("\0", 1)
         return started_at, int(run_id)
     except (ValueError, UnicodeError) as error:
-        raise HTTPException(status_code=400, detail="Run cursor is invalid.") from error
+        raise HTTPException(status_code=400, detail="Der Lauf-Cursor ist ungültig.") from error
 
 
 @asynccontextmanager
@@ -965,7 +969,7 @@ def create_fastapi_app(
                 "next_cursor": next_cursor,
             }
         except (ValueError, OverflowError) as error:
-            raise HTTPException(status_code=400, detail="Run filters are invalid.") from error
+            raise HTTPException(status_code=400, detail="Die Filterwerte sind ungültig.") from error
         finally:
             connection.close()
 
@@ -978,7 +982,7 @@ def create_fastapi_app(
         try:
             row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
             if row is None:
-                raise HTTPException(status_code=404, detail="Run does not exist.")
+                raise HTTPException(status_code=404, detail="Dieser Lauf existiert nicht.")
             return {
                 "device": {"id": device["id"], "name": device["name"]},
                 "run": _portal_run(row),
@@ -996,28 +1000,39 @@ def create_fastapi_app(
     ) -> JSONResponse:
         _portal_access(store, session, device_id, write=True)
         if body.get("confirmed") is not True:
-            raise HTTPException(status_code=400, detail="Explicit confirmation is required.")
+            raise HTTPException(
+                status_code=400, detail="Eine ausdrückliche Bestätigung ist erforderlich."
+            )
         operation = str(body.get("operation") or "")
         if operation not in {"adjust_added_time", "delete"}:
-            raise HTTPException(status_code=400, detail="Unsupported run curation operation.")
+            raise HTTPException(
+                status_code=400, detail="Diese Laufkorrektur wird nicht unterstützt."
+            )
         expected_updated_at = body.get("expected_updated_at")
         expected_sha256 = body.get("mirror_sha256")
         desired = body.get("desired_added_time_ms")
         if not isinstance(expected_updated_at, str) or not isinstance(expected_sha256, str):
-            raise HTTPException(status_code=400, detail="Mirror and run version are required.")
+            raise HTTPException(
+                status_code=400, detail="Spiegel- und Laufversion sind erforderlich."
+            )
         if operation == "adjust_added_time" and (
             not isinstance(desired, int) or isinstance(desired, bool) or desired < 0
         ):
-            raise HTTPException(status_code=400, detail="A valid added time is required.")
+            raise HTTPException(status_code=400, detail="Eine gültige Zusatzzeit ist erforderlich.")
         connection, device = _mirror_connection(store, device_id)
         try:
             if expected_sha256 != device.get("mirror_sha256"):
-                raise HTTPException(status_code=409, detail="The mirror changed; reload the run.")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Der Spiegel hat sich geändert; bitte den Lauf neu laden.",
+                )
             row = connection.execute(
                 "SELECT updated_at FROM runs WHERE id = ?", (run_id,)
             ).fetchone()
             if row is None or row["updated_at"] != expected_updated_at:
-                raise HTTPException(status_code=409, detail="The run changed; reload the run.")
+                raise HTTPException(
+                    status_code=409, detail="Der Lauf hat sich geändert; bitte neu laden."
+                )
             payload = {
                 "operation": operation,
                 "run_id": run_id,
@@ -1047,7 +1062,7 @@ def create_fastapi_app(
             not session.get("is_admin")
             and job.get("requested_by_user_id") != session.get("user_id")
         ):
-            raise HTTPException(status_code=404, detail="Command does not exist.")
+            raise HTTPException(status_code=404, detail="Dieser Befehl existiert nicht.")
         if not session.get("is_admin"):
             _portal_access(store, session, str(job.get("device_id") or ""))
         return {"job": job}
