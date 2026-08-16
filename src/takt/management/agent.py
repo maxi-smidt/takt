@@ -47,6 +47,11 @@ LOGGER = logging.getLogger(__name__)
 JOB_ID_PATTERN = re.compile(r"^[0-9a-f]{24}$")
 VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 MAX_RELEASE_SIZE = 250 * 1024 * 1024
+# Strips embedded basic-auth credentials from index URLs (e.g. a private
+# package index) before pip failure output reaches the job log.
+_PIP_CREDENTIAL_URL = re.compile(r"://[^/\s@]+@")
+_FAST_INSTALL_TIMEOUT = 600
+_DEPENDENCY_INSTALL_TIMEOUT = 900
 DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 1.0
 MAX_DIAGNOSTICS_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_DIAGNOSTICS_MEMBER_BYTES = 2 * 1024 * 1024
@@ -1228,8 +1233,19 @@ class TaktAgent:
             )
             download_complete = True
             await self._progress_job(session, job_id, 25, "Staging release", stage="staging")
-            project_directory = await asyncio.to_thread(
+            project_directory, dependencies_changed = await asyncio.to_thread(
                 self._prepare_release, artifact, version, job_id
+            )
+            self._assert_job_control()
+            await self._progress_job(
+                session,
+                job_id,
+                45,
+                "Installing dependencies" if dependencies_changed else "Verifying dependencies",
+                stage="installing_dependencies",
+            )
+            await asyncio.to_thread(
+                self._install_release_dependencies, project_directory, dependencies_changed
             )
             self._assert_job_control()
             maintenance_lease = await self._require_safe_state(
@@ -1330,7 +1346,7 @@ class TaktAgent:
             if download_complete:
                 artifact.unlink(missing_ok=True)
 
-    def _prepare_release(self, artifact: Path, version: str, job_id: str) -> Path:
+    def _prepare_release(self, artifact: Path, version: str, job_id: str) -> tuple[Path, bool]:
         staging = self.config.release_root / f".{version}-{job_id}.staging"
         destination = self.config.release_root / version
         if (
@@ -1366,12 +1382,14 @@ class TaktAgent:
             if project is None:
                 raise RuntimeError("Release does not contain pyproject.toml.")
             with (project / "pyproject.toml").open("rb") as handle:
-                package_version = str(tomllib.load(handle).get("project", {}).get("version", ""))
+                new_metadata = tomllib.load(handle)
+            package_version = str(new_metadata.get("project", {}).get("version", ""))
             if package_version != version:
                 raise RuntimeError(
                     f"Release package version {package_version or 'missing'} does not match "
                     f"requested version {version}."
                 )
+            new_dependencies = self._normalized_dependencies(new_metadata)
             if destination.exists():
                 shutil.rmtree(destination)
             if project == staging:
@@ -1381,7 +1399,8 @@ class TaktAgent:
                 shutil.rmtree(staging)
             venv = destination / ".venv"
             active_venv = self.config.current_link / ".venv"
-            if active_venv.is_dir():
+            reused_venv = active_venv.is_dir()
+            if reused_venv:
                 shutil.copytree(active_venv, venv, symlinks=True)
             else:
                 subprocess.run(
@@ -1389,30 +1408,88 @@ class TaktAgent:
                     check=True,
                     timeout=180,
                 )
-            subprocess.run(
-                [
-                    str(venv / "bin" / "python"),
-                    "-m",
-                    "pip",
-                    "install",
-                    "--no-input",
-                    "--no-deps",
-                    "--no-build-isolation",
-                    ".",
-                ],
-                cwd=destination,
-                check=True,
-                timeout=600,
+            # A freshly created venv never has the runtime dependencies installed
+            # (only whatever --system-site-packages exposes), so it always needs
+            # a full resolve, regardless of whether the dependency set changed.
+            dependencies_changed = (
+                not reused_venv or new_dependencies != self._previous_dependencies()
             )
-            return destination
+            return destination, dependencies_changed
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
-            if destination.exists() and (
-                not self.config.current_link.is_symlink()
-                or self.config.current_link.resolve() != destination
-            ):
-                shutil.rmtree(destination, ignore_errors=True)
+            self._discard_prepared_release(destination)
             raise
+
+    def _previous_dependencies(self) -> tuple[str, ...] | None:
+        pyproject = self.config.current_link / "pyproject.toml"
+        if not pyproject.is_file():
+            return None
+        with pyproject.open("rb") as handle:
+            return self._normalized_dependencies(tomllib.load(handle))
+
+    @staticmethod
+    def _normalized_dependencies(metadata: dict[str, Any]) -> tuple[str, ...]:
+        dependencies = metadata.get("project", {}).get("dependencies", [])
+        return tuple(sorted(str(dependency) for dependency in dependencies))
+
+    def _discard_prepared_release(self, destination: Path) -> None:
+        if destination.exists() and (
+            not self.config.current_link.is_symlink()
+            or self.config.current_link.resolve() != destination
+        ):
+            shutil.rmtree(destination, ignore_errors=True)
+
+    def _install_release_dependencies(self, destination: Path, dependencies_changed: bool) -> None:
+        """Install the release into its venv, resolving dependencies from the
+        configured index only when the dependency set actually changed.
+
+        The offline-safe ``--no-deps`` fast path stays the default so most
+        installs never touch the network; a changed dependency set falls back
+        to a real resolve, which is the only way to pick up an added, removed
+        or bumped runtime dependency.
+        """
+        venv = destination / ".venv"
+        arguments = [
+            str(venv / "bin" / "python"),
+            "-m",
+            "pip",
+            "install",
+            "--no-input",
+            "--no-build-isolation",
+        ]
+        if not dependencies_changed:
+            arguments.append("--no-deps")
+        arguments.append(".")
+        timeout = _DEPENDENCY_INSTALL_TIMEOUT if dependencies_changed else _FAST_INSTALL_TIMEOUT
+        try:
+            subprocess.run(
+                arguments,
+                cwd=destination,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.CalledProcessError as error:
+            self._discard_prepared_release(destination)
+            raise RuntimeError(self._redact_pip_failure(error)) from error
+        except subprocess.TimeoutExpired as error:
+            self._discard_prepared_release(destination)
+            raise RuntimeError(
+                f"Dependency installation timed out after {timeout} seconds."
+            ) from error
+        except Exception:
+            self._discard_prepared_release(destination)
+            raise
+
+    @staticmethod
+    def _redact_pip_failure(error: subprocess.CalledProcessError) -> str:
+        output = "\n".join(part for part in (error.stderr, error.stdout) if part).strip()
+        output = _PIP_CREDENTIAL_URL.sub("://***@", output)
+        tail = "\n".join(output.splitlines()[-20:])[-2000:]
+        if tail:
+            return f"Dependency installation failed (exit code {error.returncode}): {tail}"
+        return f"Dependency installation failed (exit code {error.returncode})."
 
     def _backup_before_update(self, version: str) -> Path | None:
         if not self.config.database_path.exists():

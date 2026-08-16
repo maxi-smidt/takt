@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import sqlite3
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -147,13 +148,147 @@ class ManagementAgentTests(unittest.TestCase):
                 info.size = len(content)
                 archive.addfile(info, io.BytesIO(content))
             with patch("takt.management.agent.subprocess.run") as run:
-                destination = agent._prepare_release(artifact, "0.2.0", "job")
+                destination, dependencies_changed = agent._prepare_release(
+                    artifact, "0.2.0", "job"
+                )
             self.assertEqual(destination, config.release_root / "0.2.0")
             self.assertTrue((destination / "pyproject.toml").exists())
-            self.assertEqual(run.call_count, 2)
-            install = run.call_args_list[-1]
+            # No previous release to copy a venv from, so this is treated like a
+            # first install and always needs a full dependency resolve.
+            self.assertTrue(dependencies_changed)
+            self.assertEqual(run.call_count, 1)
+            self.assertIn("venv", run.call_args.args[0])
+            with patch("takt.management.agent.subprocess.run") as run:
+                agent._install_release_dependencies(destination, dependencies_changed)
+            install = run.call_args
             self.assertEqual(install.kwargs["cwd"], destination)
             self.assertNotIn("-e", install.args[0])
+            self.assertNotIn("--no-deps", install.args[0])
+
+    def test_prepare_release_skips_resolve_when_dependency_set_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = self._config(root, root / "takt.db")
+            self._install_previous_release(config, dependencies=["aiohttp>=3.10,<4"])
+            agent = TaktAgent(config)
+            artifact = self._release_archive(
+                root, "0.2.0", dependencies=["aiohttp>=3.10,<4"]
+            )
+            with patch("takt.management.agent.subprocess.run") as run:
+                destination, dependencies_changed = agent._prepare_release(
+                    artifact, "0.2.0", "job"
+                )
+            self.assertFalse(dependencies_changed)
+            run.assert_not_called()  # the venv was copied, not (re)created
+            with patch("takt.management.agent.subprocess.run") as run:
+                agent._install_release_dependencies(destination, dependencies_changed)
+            install = run.call_args
+            self.assertIn("--no-deps", install.args[0])
+
+    def test_prepare_release_detects_an_added_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = self._config(root, root / "takt.db")
+            self._install_previous_release(config, dependencies=[])
+            agent = TaktAgent(config)
+            artifact = self._release_archive(root, "0.2.0", dependencies=["requests>=2,<3"])
+            destination, dependencies_changed = agent._prepare_release(artifact, "0.2.0", "job")
+            self.assertTrue(dependencies_changed)
+            with patch("takt.management.agent.subprocess.run") as run:
+                agent._install_release_dependencies(destination, dependencies_changed)
+            install = run.call_args
+            self.assertNotIn("--no-deps", install.args[0])
+            self.assertEqual(run.call_args.kwargs["timeout"], 900)
+
+    def test_dependency_install_failure_leaves_running_release_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = self._config(root, root / "takt.db")
+            self._install_previous_release(config, dependencies=[])
+            agent = TaktAgent(config)
+            job_id = "e" * 24
+            release = {
+                "version": "0.2.0",
+                "sha256": "a" * 64,
+                "size": 7,
+            }
+
+            async def download_release(*_args, **kwargs) -> None:
+                self._release_archive(
+                    root, "0.2.0", dependencies=["requests>=2,<3"], destination=kwargs["artifact"]
+                )
+
+            pip_error = subprocess.CalledProcessError(
+                1,
+                ["pip", "install"],
+                output="Collecting requests\n",
+                stderr=(
+                    "ERROR: Could not find a version that satisfies the requirement "
+                    "requests>=2,<3 (from https://user:s3cret@pypi.example/simple)\n"
+                ),
+            )
+            with (
+                patch.object(agent, "_local_health", AsyncMock(return_value={"state": "ready"})),
+                patch.object(agent, "_progress_job", AsyncMock()) as progress,
+                patch.object(
+                    agent, "_download_release", AsyncMock(side_effect=download_release)
+                ),
+                patch.object(agent, "_systemctl", AsyncMock()) as systemctl,
+                patch(
+                    "takt.management.agent.subprocess.run", side_effect=pip_error
+                ),
+            ):
+                with self.assertRaises(RuntimeError) as failure:
+                    asyncio.run(
+                        agent._install_release(
+                            object(),  # type: ignore[arg-type]
+                            {"id": job_id, "release": release},
+                        )
+                    )
+            systemctl.assert_not_awaited()
+            self.assertIn("Dependency installation failed", str(failure.exception))
+            self.assertNotIn("s3cret", str(failure.exception))
+            self.assertIn("requests>=2,<3", str(failure.exception))
+            self.assertFalse((config.release_root / "0.2.0").exists())
+            self.assertEqual(
+                config.current_link.resolve(), config.release_root / "0.1.0"
+            )
+            dependency_stages = [
+                call.kwargs.get("stage") for call in progress.await_args_list
+            ]
+            self.assertIn("installing_dependencies", dependency_stages)
+
+    @staticmethod
+    def _install_previous_release(config: AgentConfig, *, dependencies: list[str]) -> Path:
+        previous = config.release_root / "0.1.0"
+        previous.mkdir(parents=True)
+        (previous / ".venv").mkdir()
+        dependency_list = ", ".join(f'"{dependency}"' for dependency in dependencies)
+        (previous / "pyproject.toml").write_text(
+            f"[project]\nname='takt'\nversion='0.1.0'\ndependencies=[{dependency_list}]\n",
+            encoding="utf-8",
+        )
+        config.current_link.symlink_to(previous)
+        return previous
+
+    @staticmethod
+    def _release_archive(
+        root: Path,
+        version: str,
+        *,
+        dependencies: list[str],
+        destination: Path | None = None,
+    ) -> Path:
+        artifact = destination or (root / f"release-{version}.tar.gz")
+        dependency_list = ", ".join(f'"{dependency}"' for dependency in dependencies)
+        content = (
+            f"[project]\nname='takt'\nversion='{version}'\ndependencies=[{dependency_list}]\n"
+        ).encode()
+        with tarfile.open(artifact, "w:gz") as archive:
+            info = tarfile.TarInfo("takt/pyproject.toml")
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+        return artifact
 
     def test_large_release_download_coalesces_progress_and_reports_final_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -472,7 +607,8 @@ class ManagementAgentTests(unittest.TestCase):
                 patch.object(agent, "_local_health", AsyncMock(return_value={"state": "ready"})),
                 patch.object(agent, "_progress_job", AsyncMock(side_effect=publish_progress)),
                 patch.object(agent, "_download_release", AsyncMock(side_effect=download_release)),
-                patch.object(agent, "_prepare_release", return_value=prepared),
+                patch.object(agent, "_prepare_release", return_value=(prepared, False)),
+                patch.object(agent, "_install_release_dependencies"),
                 patch.object(agent, "_service_is_active", AsyncMock(return_value=True)),
                 patch.object(
                     agent, "_acquire_maintenance", AsyncMock(return_value="maintenance-token")
