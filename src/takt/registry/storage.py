@@ -17,8 +17,11 @@ from takt.fleet_actions import (
     WIFI_PROFILE_CAPABILITY,
     get_action,
 )
+from takt.migrations_runtime import upgrade_to_head
 from takt.registry.accounts import AccountStore
 from takt.registry.job_secrets import JobSecretCipher, JobSecretError
+
+MIGRATIONS_DIRECTORY = Path(__file__).parent / "migrations"
 
 
 def utc_now() -> datetime:
@@ -38,173 +41,6 @@ JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
 JOB_LEASE_SECONDS = 120
 
 
-SCHEMA = """
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS devices (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    hostname TEXT NOT NULL,
-    token_hash TEXT NOT NULL,
-    enrolled_at TEXT NOT NULL,
-    last_seen_at TEXT,
-    app_version TEXT,
-    agent_version TEXT,
-    status_json TEXT NOT NULL DEFAULT '{}',
-    last_mirror_at TEXT,
-    mirror_sha256 TEXT,
-    mirror_size INTEGER,
-    run_count INTEGER,
-    revoked_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS enrollment_codes (
-    code_hash TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    used_at TEXT,
-    label TEXT NOT NULL DEFAULT '',
-    deployment_id TEXT
-);
-
-CREATE TABLE IF NOT EXISTS releases (
-    id TEXT PRIMARY KEY,
-    version TEXT NOT NULL UNIQUE,
-    filename TEXT NOT NULL,
-    sha256 TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS deployments (
-    id TEXT PRIMARY KEY,
-    target TEXT NOT NULL,
-    port INTEGER NOT NULL,
-    ssh_user TEXT NOT NULL,
-    device_name TEXT NOT NULL,
-    requested_hostname TEXT NOT NULL,
-    hostname_change_confirmed INTEGER NOT NULL DEFAULT 0,
-    registry_url TEXT NOT NULL,
-    allow_insecure_http INTEGER NOT NULL DEFAULT 0,
-    release_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    stage TEXT NOT NULL,
-    message TEXT NOT NULL DEFAULT '',
-    host_key TEXT,
-    host_key_fingerprint TEXT,
-    device_id TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    completed_at TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_deployments_target_status
-ON deployments(target, port, status, created_at);
-
-CREATE TABLE IF NOT EXISTS deployment_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    deployment_id TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL,
-    stage TEXT NOT NULL,
-    level TEXT NOT NULL,
-    message TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_deployment_events_deployment
-ON deployment_events(deployment_id, id);
-
-CREATE TABLE IF NOT EXISTS trusted_ssh_hosts (
-    target_key TEXT PRIMARY KEY,
-    host_key TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    trusted_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-    action TEXT NOT NULL,
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    status TEXT NOT NULL,
-    progress INTEGER NOT NULL DEFAULT 0,
-    message TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    claimed_at TEXT,
-    completed_at TEXT,
-    attempt INTEGER NOT NULL DEFAULT 0,
-    lease_id TEXT,
-    lease_expires_at TEXT,
-    lease_owner_session TEXT,
-    stage TEXT NOT NULL DEFAULT 'queued',
-    current_version TEXT,
-    target_version TEXT,
-    bytes_downloaded INTEGER,
-    bytes_total INTEGER,
-    cancel_requested INTEGER NOT NULL DEFAULT 0,
-    retry_of TEXT REFERENCES jobs(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_device_status
-ON jobs(device_id, status, created_at);
-
-
-CREATE TABLE IF NOT EXISTS job_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL,
-    status TEXT NOT NULL,
-    stage TEXT NOT NULL,
-    message TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_job_events_job
-ON job_events(job_id, id);
-
-CREATE TABLE IF NOT EXISTS job_secrets (
-    job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
-    nonce BLOB NOT NULL,
-    ciphertext BLOB NOT NULL,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS audit_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    event TEXT NOT NULL,
-    device_id TEXT,
-    details_json TEXT NOT NULL DEFAULT '{}'
-);
-
-CREATE TABLE IF NOT EXISTS mirror_snapshots (
-    id TEXT PRIMARY KEY,
-    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-    received_at TEXT NOT NULL,
-    sha256 TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    run_count INTEGER NOT NULL,
-    relative_path TEXT NOT NULL UNIQUE,
-    UNIQUE(device_id, sha256)
-);
-
-CREATE INDEX IF NOT EXISTS idx_mirror_snapshots_device_received
-ON mirror_snapshots(device_id, received_at DESC);
-
-CREATE TABLE IF NOT EXISTS diagnostics (
-    id TEXT PRIMARY KEY,
-    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-    job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL,
-    sha256 TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    relative_path TEXT NOT NULL UNIQUE
-);
-
-CREATE INDEX IF NOT EXISTS idx_diagnostics_device_created
-ON diagnostics(device_id, created_at DESC);
-"""
-
-
 class RegistryStore:
     def __init__(self, data_directory: Path, *, allow_thread_handoff: bool = False) -> None:
         self.data_directory = data_directory
@@ -219,53 +55,32 @@ class RegistryStore:
         self.backup_directory.mkdir(parents=True, exist_ok=True)
         self.diagnostics_directory.mkdir(parents=True, exist_ok=True)
         database_existed = self.database_path.exists() and self.database_path.stat().st_size > 0
-        self.connection = sqlite3.connect(
-            self.database_path,
-            timeout=10,
-            check_same_thread=not allow_thread_handoff,
-        )
+        probe = sqlite3.connect(self.database_path, timeout=10)
+        try:
+            previous_version = int(probe.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            probe.close()
         self.database_path.chmod(0o600)
-        self.connection.row_factory = sqlite3.Row
         self._job_secret_cipher: JobSecretCipher | None = None
         self.bundled_release_status: dict[str, Any] = {"status": "absent"}
-        self.connection.execute("PRAGMA busy_timeout = 10000")
-        self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA synchronous = FULL")
-        previous_version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
         if previous_version > SCHEMA_VERSION:
-            self.connection.close()
             raise RuntimeError(
                 f"Registry database schema {previous_version} is newer than this "
                 f"server supports ({SCHEMA_VERSION})."
             )
         if database_existed and previous_version < SCHEMA_VERSION:
             self.backup_database(label=f"pre-migration-v{previous_version}", retain=20)
-        self.connection.executescript(SCHEMA)
-        self._ensure_column("jobs", "attempt", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("jobs", "lease_id", "TEXT")
-        self._ensure_column("jobs", "lease_expires_at", "TEXT")
-        self._ensure_column("jobs", "stage", "TEXT NOT NULL DEFAULT 'queued'")
-        self._ensure_column("jobs", "current_version", "TEXT")
-        self._ensure_column("jobs", "target_version", "TEXT")
-        self._ensure_column("jobs", "bytes_downloaded", "INTEGER")
-        self._ensure_column("jobs", "bytes_total", "INTEGER")
-        self._ensure_column("jobs", "cancel_requested", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("jobs", "requested_by_user_id", "TEXT")
-        self._ensure_column("jobs", "result_json", "TEXT")
-        self._ensure_column("jobs", "retry_of", "TEXT")
-        self._ensure_column("jobs", "lease_owner_session", "TEXT")
-        self._rebuild_disruptive_index()
-        self._ensure_column("devices", "revoked_at", "TEXT")
-        self._ensure_column("devices", "health_checks_json", "TEXT NOT NULL DEFAULT '{}'")
-        self._ensure_column("devices", "recovery_raised_at", "TEXT")
-        self._ensure_column("devices", "recovery_ack_at", "TEXT")
-        self._ensure_column("devices", "recovery_ack_by", "TEXT")
-        self._ensure_column("enrollment_codes", "deployment_id", "TEXT")
-        self._ensure_column("releases", "source", "TEXT NOT NULL DEFAULT 'upload'")
-        self._ensure_column("releases", "commit_sha", "TEXT")
-        self._ensure_column(
-            "deployments", "hostname_change_confirmed", "INTEGER NOT NULL DEFAULT 0"
+        upgrade_to_head(MIGRATIONS_DIRECTORY, self.database_path)
+        self.connection = sqlite3.connect(
+            self.database_path,
+            timeout=10,
+            check_same_thread=not allow_thread_handoff,
         )
+        self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA busy_timeout = 10000")
+        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA synchronous = FULL")
+        self._rebuild_disruptive_index()
         self.connection.execute(
             """
             UPDATE deployments SET status = 'interrupted', stage = 'interrupted',
@@ -1490,11 +1305,6 @@ class RegistryStore:
             """,
             (utc_iso(), event, device_id, json.dumps(details or {})),
         )
-
-    def _ensure_column(self, table: str, column: str, definition: str) -> None:
-        columns = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})")}
-        if column not in columns:
-            self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _rebuild_disruptive_index(self) -> None:
         # Derived from the fleet action table rather than hardcoded, so adding a

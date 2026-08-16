@@ -841,6 +841,51 @@ Für einen isolierten Test lässt sich ein anderer Speicherort angeben:
   --database /tmp/takt-test.db
 ```
 
+## Datenbankmigrationen
+
+Beide SQLite-Datenbanken – die Pi-Laufdaten (`takt.db`) und die Fleet
+Registry (`registry.db`) – werden über [Alembic](https://alembic.sqlalchemy.org/)
+verwaltet. Beim Start wendet die Anwendung automatisch `alembic upgrade
+head` auf die jeweilige Datei an; ein manueller Migrationsschritt ist für
+den normalen Betrieb nicht nötig. Die SQLAlchemy-Tabellen unter
+`src/takt/persistence/models.py` und `src/takt/registry/models.py` sind
+dabei die Quelle der Wahrheit für das aktuelle Schema, die
+Migrationsskripte unter `src/takt/persistence/migrations/versions/` und
+`src/takt/registry/migrations/versions/` wenden es (und seine gesamte
+Historie) schrittweise an.
+
+Um eine Schemaänderung vorzunehmen:
+
+1. Die betroffene Tabelle in `models.py` anpassen.
+2. Eine neue Revision generieren (Beispiel für die Registry-Datenbank):
+
+   ```bash
+   PYTHONPATH=src .venv/bin/python -m alembic -c alembic_registry.ini \
+     revision --autogenerate -m "kurze Beschreibung"
+   ```
+
+   Für die Pi-Laufdaten `alembic_runs.ini` statt `alembic_registry.ini`
+   verwenden. Beide `.ini`-Dateien zeigen auf eine lokale, git-ignorierte
+   Entwicklungsdatenbank (`runs.dev.db` bzw. `registry.dev.db`) und dienen
+   nur dem Autor-Workflow, nicht der Laufzeit.
+3. Die generierte Datei unter `migrations/versions/` prüfen und bei Bedarf
+   anpassen. Für die Registry-Datenbank gilt dabei eine Besonderheit: Da
+   reale Installationen seit Jahren über die frühere handgeschriebene
+   Migrationslogik aktualisiert wurden, müssen neue Revisionen weiterhin
+   idempotent gegen einen bereits teilweise aktuellen Datenbankstand sein.
+   Die Hilfsfunktionen in `src/takt/registry/migrations/_helpers.py`
+   (`create_table_if_missing`, `add_column_if_missing`) kapseln diese
+   Prüfung.
+4. `alembic upgrade head` lokal gegen die Entwicklungsdatenbank laufen
+   lassen und die Tests ausführen.
+
+Aktuellen Migrationsstand oder Historie einer Datenbank ansehen:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m alembic -c alembic_registry.ini current
+PYTHONPATH=src .venv/bin/python -m alembic -c alembic_registry.ini history
+```
+
 ## Tests
 
 Die Python-Tests können ohne gebaute Frontend-Dateien ausgeführt werden; die

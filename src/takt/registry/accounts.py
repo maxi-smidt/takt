@@ -89,58 +89,11 @@ class AccountStore:
     """Persistent Registry accounts, sessions, and device ACLs."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
+        # Schema is established by the Registry's Alembic migrations (see
+        # `takt.registry.migrations`) before a RegistryStore ever constructs
+        # an AccountStore, so there is no schema setup to do here.
         self.connection = connection
-        self.ensure_schema()
         self._dummy_password_hash = hash_password(secrets.token_urlsafe(24))
-
-    def ensure_schema(self) -> None:
-        self.connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                username TEXT NOT NULL,
-                username_key TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                is_admin INTEGER NOT NULL DEFAULT 0,
-                disabled_at TEXT,
-                must_change_password INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                password_changed_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS user_sessions (
-                token_hash TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                csrf_token TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                revoked_at TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_user_sessions_user
-            ON user_sessions(user_id, expires_at);
-
-            CREATE TABLE IF NOT EXISTS device_access (
-                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-                access_level TEXT NOT NULL CHECK (access_level IN ('read', 'write')),
-                granted_at TEXT NOT NULL,
-                granted_by TEXT,
-                PRIMARY KEY (user_id, device_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_device_access_device
-            ON device_access(device_id, user_id);
-            """
-        )
-        columns = {
-            row["name"]
-            for row in self.connection.execute("PRAGMA table_info(audit_events)").fetchall()
-        }
-        for name in ("actor_user_id", "target_user_id"):
-            if name not in columns:
-                self.connection.execute(f"ALTER TABLE audit_events ADD COLUMN {name} TEXT")
-        self.connection.commit()
 
     def has_users(self) -> bool:
         return self.connection.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None

@@ -9,7 +9,7 @@ description = "Offline Feuerwehr-Zeitnahme für Raspberry Pi und Laptop"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = []
+dependencies = ["alembic>=1.13,<2", "SQLAlchemy>=2.0,<3"]
 
 [project.optional-dependencies]
 desktop = ["PySide6-Essentials>=6.6,<7"]
