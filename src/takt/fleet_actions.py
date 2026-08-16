@@ -16,6 +16,7 @@ INSTALL_STAGES = (
     "downloading",
     "verifying",
     "staging",
+    "installing_dependencies",
     "activating",
     "restarting",
     "health_checking",
