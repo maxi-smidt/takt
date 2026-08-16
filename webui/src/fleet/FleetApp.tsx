@@ -107,6 +107,14 @@ function translatePortalError(message) {
   return PORTAL_ERROR_MESSAGES_DE[message] || message;
 }
 
+// A 401 means the session cookie the browser sent was rejected. Treating that
+// as source-of-truth by re-checking /api/session (rather than showing the raw
+// backend error) lets a genuinely dead session redirect to the login screen
+// while a session that is actually still valid keeps the dashboard up.
+function isSessionExpired(failure) {
+  return failure?.status === 401;
+}
+
 function insecureRemoteHttp(value) {
   try {
     const parsed = new URL(value);
@@ -758,9 +766,13 @@ function Dashboard({ session, refreshSession }) {
       }
       setError("");
     } catch (failure) {
+      if (isSessionExpired(failure)) {
+        await refreshSession();
+        return;
+      }
       setError(failure.message);
     }
-  }, []);
+  }, [refreshSession]);
   useEffect(() => {
     queueMicrotask(load);
     const timer = setInterval(load, 5000);
@@ -915,9 +927,13 @@ function Portal({ session, refreshSession }) {
       setDeviceId((current) => current || result.devices?.[0]?.id || "");
       setError("");
     } catch (failure) {
+      if (isSessionExpired(failure)) {
+        await refreshSession();
+        return;
+      }
       setError(translatePortalError(failure.message));
     }
-  }, []);
+  }, [refreshSession]);
   const loadRuns = useCallback(async () => {
     if (!deviceId) return;
     try {
@@ -927,9 +943,13 @@ function Portal({ session, refreshSession }) {
       setRuns(await request("/api/portal/devices/" + deviceId + "/runs?" + query));
       setError("");
     } catch (failure) {
+      if (isSessionExpired(failure)) {
+        await refreshSession();
+        return;
+      }
       setError(translatePortalError(failure.message));
     }
-  }, [deviceId, from, to]);
+  }, [deviceId, from, to, refreshSession]);
   useEffect(() => { queueMicrotask(loadDevices); }, [loadDevices]);
   useEffect(() => { queueMicrotask(loadRuns); }, [loadRuns]);
   const logout = async () => {
