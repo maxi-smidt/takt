@@ -10,7 +10,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from takt.registry.api_models import HeartbeatRequest, WifiNetworkRequest
-from takt.registry.auth import AdminAuth
+from takt.registry.auth import COOKIE_NAME, AdminAuth
 from takt.registry.fastapi_app import create_fastapi_app
 from takt.registry.storage import RegistryStore
 
@@ -182,6 +182,72 @@ class FastApiRegistryTests(unittest.TestCase):
             {"future_field": "ignored", "capabilities": ["x"] * 30, "poll_seconds": 10}
         )
         self.assertEqual(heartbeat.payload()["capabilities"], ["x"] * 20)
+
+    def test_reload_keeps_a_valid_legacy_session_and_redirects_an_expired_one(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_directory = Path(temporary_directory)
+            store = RegistryStore(data_directory, allow_thread_handoff=True)
+            auth = AdminAuth("correct-horse-battery", data_directory)
+            try:
+                with TestClient(create_fastapi_app(store, auth)) as client:
+                    login = client.post(
+                        "/api/session", json={"password": "correct-horse-battery"}
+                    )
+                    self.assertEqual(login.status_code, 200)
+
+                    # A page reload probes /api/session first and then fires the
+                    # dashboard's data requests; with a still-valid session both
+                    # must agree the user is signed in.
+                    session_status = client.get("/api/session")
+                    self.assertTrue(session_status.json()["authenticated"])
+                    for path in ("/api/devices", "/api/releases", "/api/jobs"):
+                        response = client.get(path)
+                        self.assertEqual(response.status_code, 200, path)
+
+                    # A genuinely dead session must be reported identically by
+                    # the session probe and by the protected endpoints, using
+                    # the same wording the account-based path uses.
+                    client.cookies.set(COOKIE_NAME, "not-a-real-session-token")
+                    expired_status = client.get("/api/session")
+                    self.assertFalse(expired_status.json()["authenticated"])
+                    expired_devices = client.get("/api/devices")
+                    self.assertEqual(expired_devices.status_code, 401)
+                    self.assertEqual(expired_devices.text, "Login required.")
+            finally:
+                store.close()
+
+    def test_reload_keeps_a_valid_account_session_and_redirects_an_expired_one(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_directory = Path(temporary_directory)
+            store = RegistryStore(data_directory, allow_thread_handoff=True)
+            auth = AdminAuth("correct-horse-battery", data_directory)
+            store.accounts.bootstrap_admin("admin", "correct-horse-battery")
+            try:
+                with TestClient(create_fastapi_app(store, auth)) as client:
+                    login = client.post(
+                        "/api/session",
+                        json={"username": "admin", "password": "correct-horse-battery"},
+                    )
+                    self.assertEqual(login.status_code, 200)
+
+                    session_status = client.get("/api/session")
+                    self.assertTrue(session_status.json()["authenticated"])
+                    for path in ("/api/devices", "/api/releases", "/api/jobs"):
+                        response = client.get(path)
+                        self.assertEqual(response.status_code, 200, path)
+
+                    client.cookies.set(COOKIE_NAME, "not-a-real-session-token")
+                    expired_status = client.get("/api/session")
+                    self.assertFalse(expired_status.json()["authenticated"])
+                    expired_devices = client.get("/api/devices")
+                    self.assertEqual(expired_devices.status_code, 401)
+                    self.assertEqual(expired_devices.text, "Login required.")
+            finally:
+                store.close()
 
     def test_index_reports_missing_static_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -71,7 +71,7 @@ class AdminAuth:
         except CsrfError:
             raise
         except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-            raise SessionError("Administrator login required.") from None
+            raise SessionError("Login required.") from None
 
     @staticmethod
     def _encode(value: bytes) -> bytes:
