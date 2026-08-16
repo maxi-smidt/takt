@@ -137,6 +137,95 @@ class AccountStoreTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_admin_can_grant_several_devices_change_level_and_revoke_over_http(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = RegistryStore(root, allow_thread_handoff=True)
+            store.accounts.bootstrap_admin("admin", "correct-horse-battery")
+            device_ids = [
+                "12345678-1234-1234-1234-123456789ab1",
+                "12345678-1234-1234-1234-123456789ab2",
+            ]
+            for index, device_id in enumerate(device_ids):
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name=f"Lane {index + 1}",
+                    hostname=f"takt-0{index + 1}",
+                    token="a" * 64,
+                )
+            try:
+                with TestClient(
+                    create_fastapi_app(store, AdminAuth("correct-horse-battery", root))
+                ) as client:
+                    client.post(
+                        "/api/session",
+                        json={"username": "admin", "password": "correct-horse-battery"},
+                    )
+                    csrf = client.get("/api/session").json()["csrf_token"]
+                    created = client.post(
+                        "/api/admin/users",
+                        json={"username": "operator"},
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    user_id = created.json()["user"]["id"]
+
+                    granted_read = client.put(
+                        f"/api/admin/users/{user_id}/devices/{device_ids[0]}",
+                        json={"access": "read"},
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(granted_read.status_code, 200)
+                    granted_write = client.put(
+                        f"/api/admin/users/{user_id}/devices/{device_ids[1]}",
+                        json={"access": "write"},
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(granted_write.status_code, 200)
+
+                    users_after_grant = {
+                        item["device_id"]: item["access_level"]
+                        for item in client.get("/api/admin/users").json()["users"][1]["access"]
+                    }
+                    self.assertEqual(
+                        users_after_grant,
+                        {device_ids[0]: "read", device_ids[1]: "write"},
+                    )
+
+                    changed_level = client.put(
+                        f"/api/admin/users/{user_id}/devices/{device_ids[0]}",
+                        json={"access": "write"},
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(changed_level.status_code, 200)
+                    self.assertEqual(
+                        store.accounts.access_level(user_id, device_ids[0]), "write"
+                    )
+
+                    revoked = client.delete(
+                        f"/api/admin/users/{user_id}/devices/{device_ids[1]}",
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(revoked.status_code, 200)
+                    self.assertIsNone(store.accounts.access_level(user_id, device_ids[1]))
+
+                    missing_revoke = client.delete(
+                        f"/api/admin/users/{user_id}/devices/{device_ids[1]}",
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(missing_revoke.status_code, 404)
+
+                    events = {
+                        row["event"]
+                        for row in store.connection.execute(
+                            "SELECT event FROM audit_events WHERE target_user_id = ?", (user_id,)
+                        ).fetchall()
+                    }
+                    self.assertIn("device_access_changed", events)
+                    self.assertIn("device_access_revoked", events)
+            finally:
+                store.close()
 
     def test_portal_summary_ignores_keyset_cursor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -912,7 +912,179 @@ function App() {
   return session ? ((session.user?.is_admin ?? true) ? <Dashboard session={session} refreshSession={refreshSession} /> : <Portal session={session} refreshSession={refreshSession} />) : <Login onLogin={refreshSession} />;
 }
 export default App;
-function UserAdminPanel({ csrf, devices }) { const [users, setUsers] = useState([]); const [username, setUsername] = useState(""); const [temporaryPassword, setTemporaryPassword] = useState(""); const [error, setError] = useState(""); const load = useCallback(async () => { try { setUsers((await request("/api/admin/users")).users || []); } catch (failure) { setError(failure.message); } }, []); useEffect(() => { queueMicrotask(load); }, [load]); const create = async (event) => { event.preventDefault(); try { const result = await request("/api/admin/users", { method: "POST", body: JSON.stringify({ username }) }, csrf); setTemporaryPassword(result.temporary_password); setUsername(""); await load(); } catch (failure) { setError(failure.message); } }; const changeState = async (user) => { try { await request("/api/admin/users/" + user.id, { method: "PATCH", body: JSON.stringify({ disabled: !user.disabled }) }, csrf); await load(); } catch (failure) { setError(failure.message); } }; const reset = async (user) => { try { const result = await request("/api/admin/users/" + user.id + "/reset-password", { method: "POST", body: JSON.stringify({}) }, csrf); setTemporaryPassword(result.temporary_password); } catch (failure) { setError(failure.message); } }; const grant = async (user, deviceId, access) => { try { await request("/api/admin/users/" + user.id + "/devices/" + deviceId, { method: "PUT", body: JSON.stringify({ access }) }, csrf); await load(); } catch (failure) { setError(failure.message); } }; return <section className="operations"><div className="section-heading"><div><span>03 · ACCESS</span><h2>USERS AND DEVICE ACCESS</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></div><form className="enrollment-fields" onSubmit={create}><label className="field-label">USERNAME<input value={username} onChange={(event) => setUsername(event.target.value)} /></label><button className="primary-button" disabled={!username}>CREATE USER</button></form>{temporaryPassword && <div className="security-warning"><strong>ONE-TIME PASSWORD:</strong> <code>{temporaryPassword}</code></div>}{error && <div className="form-error">{error}</div>}<div className="job-list">{users.map((user) => <div className="job-row" key={user.id}><div className="job-copy"><strong>{user.username}{user.is_admin ? " · ADMIN" : ""}</strong><span>{user.disabled ? "DISABLED" : "ACTIVE"}</span></div><button className="secondary-button" onClick={() => reset(user)}>RESET PASSWORD</button><button className="secondary-button" onClick={() => changeState(user)}>{user.disabled ? "ENABLE" : "DISABLE"}</button>{devices.map((device) => <select key={device.id} value={(user.access || []).find((item) => item.device_id === device.id)?.access_level || "none"} onChange={(event) => event.target.value !== "none" && grant(user, device.id, event.target.value)}><option value="none">{device.name}: none</option><option value="read">{device.name}: read</option><option value="write">{device.name}: write</option></select>)}</div>)}</div></section>; }
+function AccessModal({ user, devices, csrf, onClose, onChanged }) {
+  const [error, setError] = useState("");
+  const [busyDeviceId, setBusyDeviceId] = useState(null);
+
+  const accessFor = (deviceId) =>
+    (user.access || []).find((item) => item.device_id === deviceId)?.access_level || "none";
+
+  const setAccess = async (deviceId, level) => {
+    setError("");
+    setBusyDeviceId(deviceId);
+    try {
+      if (level === "none") {
+        await request(`/api/admin/users/${user.id}/devices/${deviceId}`, { method: "DELETE" }, csrf);
+      } else {
+        await request(
+          `/api/admin/users/${user.id}/devices/${deviceId}`,
+          { method: "PUT", body: JSON.stringify({ access: level }) },
+          csrf,
+        );
+      }
+      await onChanged();
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setBusyDeviceId(null);
+    }
+  };
+
+  return (
+    <Modal title={`DEVICE ACCESS · ${user.username}`} eyebrow="ACCESS CONTROL" onClose={onClose} wide>
+      <div className="modal-body access-fields">
+        <p>Grant or revoke access per device. Changes apply immediately and are audited.</p>
+        {error && <div className="form-error">{error}</div>}
+        <div className="access-list">
+          {devices.map((device) => (
+            <div className="access-row" key={device.id}>
+              <span className="access-device-name">{device.name}</span>
+              <select
+                value={accessFor(device.id)}
+                disabled={busyDeviceId === device.id}
+                onChange={(event) => setAccess(device.id, event.target.value)}
+              >
+                <option value="none">NO ACCESS</option>
+                <option value="read">READ</option>
+                <option value="write">WRITE</option>
+              </select>
+            </div>
+          ))}
+          {!devices.length && <p>No devices enrolled yet.</p>}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function UserAdminPanel({ csrf, devices }) {
+  const [users, setUsers] = useState([]);
+  const [username, setUsername] = useState("");
+  const [temporaryPassword, setTemporaryPassword] = useState("");
+  const [error, setError] = useState("");
+  const [accessUserId, setAccessUserId] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      setUsers((await request("/api/admin/users")).users || []);
+    } catch (failure) {
+      setError(failure.message);
+    }
+  }, []);
+  useEffect(() => {
+    queueMicrotask(load);
+  }, [load]);
+
+  const create = async (event) => {
+    event.preventDefault();
+    try {
+      const result = await request(
+        "/api/admin/users",
+        { method: "POST", body: JSON.stringify({ username }) },
+        csrf,
+      );
+      setTemporaryPassword(result.temporary_password);
+      setUsername("");
+      await load();
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+
+  const changeState = async (user) => {
+    try {
+      await request(
+        "/api/admin/users/" + user.id,
+        { method: "PATCH", body: JSON.stringify({ disabled: !user.disabled }) },
+        csrf,
+      );
+      await load();
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+
+  const reset = async (user) => {
+    try {
+      const result = await request(
+        "/api/admin/users/" + user.id + "/reset-password",
+        { method: "POST", body: JSON.stringify({}) },
+        csrf,
+      );
+      setTemporaryPassword(result.temporary_password);
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+
+  const deviceName = (deviceId) => devices.find((device) => device.id === deviceId)?.name || deviceId;
+  const accessUser = users.find((user) => user.id === accessUserId) || null;
+
+  return (
+    <section className="operations">
+      <div className="section-heading">
+        <div><span>03 · ACCESS</span><h2>USERS AND DEVICE ACCESS</h2></div>
+        <button onClick={load}><RefreshCw size={14} /> REFRESH</button>
+      </div>
+      <form className="enrollment-fields" onSubmit={create}>
+        <label className="field-label">USERNAME
+          <input value={username} onChange={(event) => setUsername(event.target.value)} />
+        </label>
+        <button className="primary-button" disabled={!username}>CREATE USER</button>
+      </form>
+      {temporaryPassword && (
+        <div className="security-warning"><strong>ONE-TIME PASSWORD:</strong> <code>{temporaryPassword}</code></div>
+      )}
+      {error && <div className="form-error">{error}</div>}
+      <div className="user-list">
+        {users.map((user) => (
+          <div className="user-row" key={user.id}>
+            <div className="job-copy">
+              <strong>{user.username}{user.is_admin ? " · ADMIN" : ""}</strong>
+              <span>{user.disabled ? "DISABLED" : "ACTIVE"}</span>
+            </div>
+            <div className="access-summary">
+              {(user.access || []).length
+                ? user.access.map((item) => (
+                    <span className="access-badge" key={item.device_id}>
+                      {deviceName(item.device_id)} · {item.access_level.toUpperCase()}
+                    </span>
+                  ))
+                : <span className="access-badge access-badge-empty">NO DEVICE ACCESS</span>}
+            </div>
+            <div className="user-row-actions">
+              <button className="secondary-button" onClick={() => setAccessUserId(user.id)}>MANAGE ACCESS</button>
+              <button className="secondary-button" onClick={() => reset(user)}>RESET PASSWORD</button>
+              <button className="secondary-button" onClick={() => changeState(user)}>
+                {user.disabled ? "ENABLE" : "DISABLE"}
+              </button>
+            </div>
+          </div>
+        ))}
+        {!users.length && <p className="access-empty-state">No users yet.</p>}
+      </div>
+      {accessUser && (
+        <AccessModal
+          user={accessUser}
+          devices={devices}
+          csrf={csrf}
+          onClose={() => setAccessUserId(null)}
+          onChanged={load}
+        />
+      )}
+    </section>
+  );
+}
 function Portal({ session, refreshSession }) {
   const [devices, setDevices] = useState([]);
   const [deviceId, setDeviceId] = useState("");

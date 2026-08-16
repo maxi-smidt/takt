@@ -171,6 +171,22 @@ input:focus, select:focus { border-color: var(--green); }
 .job-row time { text-align: right; }
 .jobs-empty { padding: 30px; color: var(--muted); text-align: center; font-size: var(--fs-base); }
 
+.user-list { border: 1px solid var(--line); background: #0e1716; }
+.user-row { display: grid; gap: 12px; padding: 16px; border-bottom: 1px solid var(--line); }
+.user-row:last-child { border: 0; }
+.user-row-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.user-row-actions .secondary-button { min-height: 38px; padding: 0 16px; }
+.access-summary { display: flex; flex-wrap: wrap; gap: 8px; }
+.access-badge { display: inline-flex; align-items: center; padding: 5px 10px; border: 1px solid var(--line); background: var(--panel-2); color: #cfe1dc; font-size: var(--fs-small); font-weight: 700; letter-spacing: var(--ls-caps); }
+.access-badge-empty { color: var(--muted); background: transparent; border-style: dashed; font-weight: 400; }
+.access-empty-state { padding: 30px; color: var(--muted); text-align: center; font-size: var(--fs-base); }
+.access-fields { display: grid; gap: 4px; }
+.access-list { display: grid; gap: 10px; }
+.access-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.access-row:last-child { border: 0; }
+.access-device-name { font-weight: 700; letter-spacing: var(--ls-caps); font-size: var(--fs-label); }
+.access-row select { width: auto; min-width: 160px; }
+
 .modal-layer { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; background: #020706d9; backdrop-filter: blur(8px); padding: 20px; overflow: auto; }
 .modal { width: min(540px, 100%); border: 1px solid #3b514c; background: var(--panel); box-shadow: 0 30px 100px #000b; }
 .modal-wide { width: min(720px, 100%); }
@@ -283,4 +299,6 @@ input:focus, select:focus { border-color: var(--green); }
   .enrollment-fields { grid-template-columns: 1fr; }
   .enrollment-url, .insecure-opt-in { grid-column: auto; }
   .maintenance-group { grid-template-columns: 1fr; gap: 6px; }
+  .access-row { flex-wrap: wrap; }
+  .access-row select { width: 100%; }
 }
