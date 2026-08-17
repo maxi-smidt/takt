@@ -56,6 +56,8 @@ DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 1.0
 MAX_DIAGNOSTICS_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_DIAGNOSTICS_MEMBER_BYTES = 2 * 1024 * 1024
 MAX_LOG_CHARACTERS = 400_000
+MAX_PENDING_RESULT_ATTEMPTS = 20
+MAX_JOBS_PER_CYCLE = 5
 
 
 def _now() -> float:
@@ -387,8 +389,7 @@ class TaktAgent:
                     failures += 1
                     if once or enroll_only:
                         raise
-                    delay = min(300.0, self.config.poll_seconds * (2 ** min(failures - 1, 5)))
-                    delay *= random.uniform(0.8, 1.2)
+                    delay = self._reconnect_delay(failures)
                     LOGGER.warning(
                         "registry_connection_failed attempt=%s retry_seconds=%.1f error=%s",
                         failures,
@@ -403,6 +404,14 @@ class TaktAgent:
                 if once:
                     return
                 await asyncio.sleep(self.config.poll_seconds * random.uniform(0.9, 1.1))
+
+    def _reconnect_delay(self, failures: int) -> float:
+        # Capped well under a minute: queued jobs no longer time out on the
+        # registry side, but a fast reconnect still matters for the
+        # operator's sense of responsiveness and for lease renewal during an
+        # in-progress job.
+        base = min(60.0, self.config.poll_seconds * (2 ** min(failures - 1, 5)))
+        return base * random.uniform(0.8, 1.2)
 
     async def _ensure_enrolled(self, session: ClientSession) -> None:
         if self.identity.enrolled:
@@ -431,7 +440,29 @@ class TaktAgent:
         LOGGER.info("agent_enrolled device_id=%s", self.identity.device_id)
 
     async def _cycle(self, session: ClientSession) -> None:
-        await self._flush_pending_results(session)
+        # Heartbeat (and the job claim riding on it) always goes out first and
+        # unconditionally, so a device that is online and polling normally
+        # never looks broken to the operator because of an unrelated problem
+        # reporting an old job's result. Pending results are flushed
+        # afterwards, and failures there are logged rather than raised so
+        # they can never block the next heartbeat.
+        job = await self._heartbeat(session)
+        jobs_handled = 0
+        while job and jobs_handled < MAX_JOBS_PER_CYCLE:
+            job_id = str(job.get("id", ""))
+            if job_id in self.state.pending_results:
+                await self._safe_flush_pending_results(session, only=job_id)
+            else:
+                await self._execute_job(session, job)
+            jobs_handled += 1
+            job = await self._heartbeat(session)
+        await self._safe_flush_pending_results(session)
+        loop_time = asyncio.get_running_loop().time()
+        if loop_time - self._last_mirror_time >= self.config.mirror_seconds:
+            await self._mirror_if_changed(session)
+            self._last_mirror_time = loop_time
+
+    async def _heartbeat(self, session: ClientSession) -> dict[str, Any] | None:
         status = await self._status(session)
         started = asyncio.get_running_loop().time()
         async with session.post(
@@ -452,16 +483,15 @@ class TaktAgent:
                 f"Registry protocol {registry_protocol} is older than this agent's minimum "
                 f"supported protocol {PROTOCOL_VERSION}; update the registry."
             )
-        if job:
-            job_id = str(job.get("id", ""))
-            if job_id in self.state.pending_results:
-                await self._flush_pending_results(session, only=job_id)
-            else:
-                await self._execute_job(session, job)
-        loop_time = asyncio.get_running_loop().time()
-        if loop_time - self._last_mirror_time >= self.config.mirror_seconds:
-            await self._mirror_if_changed(session)
-            self._last_mirror_time = loop_time
+        return job
+
+    async def _safe_flush_pending_results(
+        self, session: ClientSession, *, only: str | None = None
+    ) -> None:
+        try:
+            await self._flush_pending_results(session, only=only)
+        except Exception as error:
+            LOGGER.warning("pending_result_flush_failed error=%s", error)
 
     async def _report_recovery_failure(self, session: ClientSession) -> None:
         status = await self._status(session)
@@ -1787,6 +1817,16 @@ class TaktAgent:
     async def _flush_pending_results(
         self, session: ClientSession, *, only: str | None = None
     ) -> None:
+        """Report stored job outcomes to the registry, never letting one bad
+        result wedge the others or the caller.
+
+        A `StaleJobResult` (see `_send_job_event`) means the registry will
+        never accept this exact report, so the entry is dropped immediately.
+        Any other failure (network blip, transient 5xx) is retried on
+        subsequent calls up to `MAX_PENDING_RESULT_ATTEMPTS` times before
+        being abandoned, so a single unreachable registry can't grow
+        `pending_results` -- and the state file it's persisted in -- forever.
+        """
         job_ids = [only] if only else list(self.state.pending_results)
         changed = False
         for job_id in job_ids:
@@ -1806,6 +1846,24 @@ class TaktAgent:
                 )
             except StaleJobResult as error:
                 LOGGER.warning("stale_job_result_dropped id=%s error=%s", job_id, error)
+            except Exception as error:
+                attempts = int(result.get("attempts") or 0) + 1
+                if attempts < MAX_PENDING_RESULT_ATTEMPTS:
+                    result["attempts"] = attempts
+                    changed = True
+                    LOGGER.warning(
+                        "job_result_flush_retry id=%s attempts=%s error=%s",
+                        job_id,
+                        attempts,
+                        error,
+                    )
+                    continue
+                LOGGER.warning(
+                    "job_result_flush_abandoned id=%s attempts=%s error=%s",
+                    job_id,
+                    attempts,
+                    error,
+                )
             self.state.pending_results.pop(job_id, None)
             changed = True
         if changed:
@@ -1864,7 +1922,11 @@ class TaktAgent:
             headers=self._headers(),
             timeout=ClientTimeout(total=25, connect=10, sock_read=15),
         ) as response:
-            if response.status in {401, 403, 404, 409}:
+            if response.status in {400, 401, 403, 404, 409}:
+                # These are deterministic rejections (invalid transition/stage,
+                # unknown lease, unknown job) -- retrying the identical request
+                # cannot succeed, so treat them the same as a stale result
+                # rather than raising and blocking the agent's heartbeat loop.
                 raise StaleJobResult(await response.text())
             if response.status != 200:
                 raise RuntimeError(f"Could not report job progress: {await response.text()}")

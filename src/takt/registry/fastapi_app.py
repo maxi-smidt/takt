@@ -1535,7 +1535,13 @@ def create_fastapi_app(
         device_id = _device(request)
         payload = body.payload()
         store.update_heartbeat(device_id, payload)
-        job = store.claim_next_job(device_id, str(payload.get("agent_session_id") or ""))
+        try:
+            job = store.claim_next_job(device_id, str(payload.get("agent_session_id") or ""))
+        except Exception:
+            # A claim hiccup must not make an online, heartbeating device look
+            # broken to the operator; the agent simply retries on its next poll.
+            LOGGER.exception("job_claim_failed device_id=%s", device_id)
+            job = None
         if job and job["action"] == "install_release":
             release = store.get_release(job["payload"]["release_id"])
             job["release"] = release

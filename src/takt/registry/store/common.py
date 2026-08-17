@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import AbstractContextManager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -21,10 +21,6 @@ from sqlalchemy.engine import Connection, Engine
 SCHEMA_VERSION = 13
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
 JOB_LEASE_SECONDS = 120
-# A healthy agent claims a queued job within one poll cycle (~10s). If nothing
-# claims it well beyond that, the agent is offline or too old to understand
-# the job-claim protocol (see claim_next_job) and it will never be claimed.
-QUEUED_JOB_STALE_SECONDS = 300
 
 
 def utc_now() -> datetime:
@@ -33,6 +29,23 @@ def utc_now() -> datetime:
 
 def utc_iso(value: datetime | None = None) -> str:
     return (value or utc_now()).isoformat()
+
+
+def device_is_online(
+    *, last_seen_at: str | None, revoked_at: str | None, poll_seconds: float | None
+) -> bool:
+    """Shared online-window formula used by both the devices and jobs lists.
+
+    A device counts as online if it heartbeat within three poll cycles plus a
+    grace margin -- long enough to absorb a couple of missed/slow beats
+    without flapping, short enough that a genuinely offline device is flagged
+    quickly.
+    """
+    if not last_seen_at or revoked_at:
+        return False
+    heartbeat_interval = float(poll_seconds or 10)
+    online_window = min(max(heartbeat_interval * 3 + 15, 30), 180)
+    return utc_now() - datetime.fromisoformat(last_seen_at) < timedelta(seconds=online_window)
 
 
 def hash_secret(value: str) -> str:
@@ -79,8 +92,6 @@ if TYPE_CHECKING:
         ) -> None: ...
 
         def get_device(self, device_id: str) -> dict[str, Any] | None: ...
-
-        def expire_stale_queued_jobs(self) -> None: ...
 
         def expire_stale_leased_jobs(self, device_id: str | None = None) -> None: ...
 

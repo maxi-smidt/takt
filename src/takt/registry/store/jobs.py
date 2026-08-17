@@ -19,16 +19,13 @@ from takt.registry.job_secrets import JobSecretCipher, JobSecretError
 from takt.registry.store.common import (
     JOB_LEASE_SECONDS,
     JOB_TERMINAL_STATUSES,
-    QUEUED_JOB_STALE_SECONDS,
     _Base,
+    device_is_online,
     utc_iso,
     utc_now,
 )
 
-QUEUED_JOB_WAITING_MESSAGE = (
-    "Waiting for the device to come online and claim this job (fails automatically "
-    f"after {QUEUED_JOB_STALE_SECONDS // 60} min if it doesn't)."
-)
+QUEUED_JOB_WAITING_MESSAGE = "Waiting for the device to claim this job."
 
 
 class JobsMixin(_Base):
@@ -301,51 +298,16 @@ class JobsMixin(_Base):
         job = self.get_job(row["id"])
         return self._attach_job_secret(job) if job else None
 
-    def expire_stale_queued_jobs(self) -> None:
-        """Fail queued jobs no agent has claimed in a reasonable time.
-
-        A job stays 'queued' forever if the target device's agent never polls
-        (offline) or predates the heartbeat/job-claim protocol (too old to
-        ever call claim_next_job) -- neither case is caught by the lease
-        expiry above, which only applies once a job has been claimed.
-        """
-        stale_before = utc_iso(utc_now() - timedelta(seconds=QUEUED_JOB_STALE_SECONDS))
-        message = (
-            "No agent claimed this job in time; the device may be offline or its "
-            "Fleet agent too old to support this action. Update the Fleet agent "
-            "once via SSH, then retry."
-        )
-        with self._transaction() as conn:
-            stale = conn.exec_driver_sql(
-                "SELECT id, action, device_id FROM jobs WHERE status = 'queued' AND created_at < ?",
-                (stale_before,),
-            ).mappings().all()
-            for job in stale:
-                job_id = str(job["id"])
-                stage = (
-                    "intervention_required" if job["action"] == "install_release" else "failed"
-                )
-                now = utc_iso()
-                conn.exec_driver_sql(
-                    """
-                    UPDATE jobs SET status = 'failed', stage = ?, progress = 100,
-                        message = ?, updated_at = ?, completed_at = ?
-                    WHERE id = ? AND status = 'queued'
-                    """,
-                    (stage, message, now, now, job_id),
-                )
-                conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
-                self._record_job_event(job_id, "failed", stage, message)
-                self._audit("job_queue_expired", str(job["device_id"]), {"job_id": job_id})
-
     def sweep_stale_jobs(self) -> None:
-        """Resolve every job stuck behind an offline or unresponsive device.
+        """Resolve every claimed/running job stuck behind an unresponsive device.
 
-        Combines both stale-job checks so a periodic fleet-wide sweep (and the
-        Jobs list, which is often the operator's only signal something is
-        wrong) never depends on the affected device's agent reconnecting.
+        Queued jobs are intentionally left alone here -- they wait for their
+        device indefinitely (surfaced honestly in the UI as "waiting"), since
+        a fixed timeout can't distinguish an offline device from one that is
+        simply busy with a run or another queued job. Terminal jobs are
+        pruned separately after 90 days (see `prune`), so nothing accumulates
+        forever.
         """
-        self.expire_stale_queued_jobs()
         self.expire_stale_leased_jobs()
 
     def update_job(
@@ -653,13 +615,30 @@ class JobsMixin(_Base):
         with self._read() as conn:
             rows = conn.exec_driver_sql(
                 """
-                SELECT jobs.*, devices.name AS device_name
+                SELECT jobs.*, devices.name AS device_name,
+                    devices.last_seen_at AS device_last_seen_at,
+                    devices.revoked_at AS device_revoked_at,
+                    devices.status_json AS device_status_json
                 FROM jobs JOIN devices ON devices.id = jobs.device_id
                 ORDER BY jobs.created_at DESC LIMIT ?
                 """,
                 (limit,),
             ).mappings().all()
-        return [self._job(row) for row in rows]
+        jobs = []
+        for row in rows:
+            item = dict(row)
+            device_status_json = item.pop("device_status_json", None)
+            device_revoked_at = item.pop("device_revoked_at", None)
+            poll_seconds = (json.loads(device_status_json) if device_status_json else {}).get(
+                "poll_seconds"
+            )
+            item["device_online"] = device_is_online(
+                last_seen_at=item.get("device_last_seen_at"),
+                revoked_at=device_revoked_at,
+                poll_seconds=poll_seconds,
+            )
+            jobs.append(self._job(item))
+        return jobs
 
     def job_for_device(self, job_id: str, device_id: str) -> dict[str, Any] | None:
         job = self.get_job(job_id)

@@ -699,6 +699,71 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_queued_job_survives_the_sweep_regardless_of_age_or_device_state(self) -> None:
+        # Queued jobs used to auto-fail after a fixed timeout regardless of why
+        # the device hadn't claimed them yet (busy with a run, another queued
+        # job ahead of it, or the agent in a network-error backoff) -- a
+        # legitimately busy device could lose a job it would otherwise have
+        # claimed fine. Queued jobs now wait indefinitely; only claimed/running
+        # leases still expire.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])
+            try:
+                job = store.create_job(self.DEVICE_ID, "mirror_now")
+                with store.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "UPDATE jobs SET created_at = ? WHERE id = ?",
+                        (utc_iso(utc_now() - timedelta(hours=6)), job["id"]),
+                    )
+                store.sweep_stale_jobs()
+                still_queued = store.get_job(job["id"])
+                assert still_queued is not None
+                self.assertEqual(still_queued["status"], "queued")
+            finally:
+                store.close()
+
+    def test_queued_job_survives_the_sweep_even_when_the_device_is_offline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])
+            try:
+                job = store.create_job(self.DEVICE_ID, "mirror_now")
+                with store.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "UPDATE jobs SET created_at = ? WHERE id = ?",
+                        (utc_iso(utc_now() - timedelta(hours=6)), job["id"]),
+                    )
+                    conn.exec_driver_sql(
+                        "UPDATE devices SET last_seen_at = ? WHERE id = ?",
+                        (utc_iso(utc_now() - timedelta(hours=6)), self.DEVICE_ID),
+                    )
+                self.assertFalse(store.get_device(self.DEVICE_ID)["online"])
+                store.sweep_stale_jobs()
+                still_queued = store.get_job(job["id"])
+                assert still_queued is not None
+                self.assertEqual(still_queued["status"], "queued")
+            finally:
+                store.close()
+
+    def test_list_jobs_reports_the_device_online_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])
+            try:
+                job = store.create_job(self.DEVICE_ID, "mirror_now")
+                listed = next(item for item in store.list_jobs() if item["id"] == job["id"])
+                self.assertTrue(listed["device_online"])
+                self.assertIsNotNone(listed["device_last_seen_at"])
+                with store.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "UPDATE devices SET last_seen_at = ? WHERE id = ?",
+                        (utc_iso(utc_now() - timedelta(hours=6)), self.DEVICE_ID),
+                    )
+                offline_listed = next(
+                    item for item in store.list_jobs() if item["id"] == job["id"]
+                )
+                self.assertFalse(offline_listed["device_online"])
+            finally:
+                store.close()
+
     def test_delete_job_removes_a_completed_job(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])

@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from takt.management.agent import (
+    MAX_JOBS_PER_CYCLE,
+    MAX_PENDING_RESULT_ATTEMPTS,
     AgentConfig,
     CancelledJob,
     DeferredJob,
@@ -441,6 +443,102 @@ class ManagementAgentTests(unittest.TestCase):
             ):
                 asyncio.run(agent._flush_pending_results(object()))  # type: ignore[arg-type]
             self.assertEqual(agent.state.pending_results, {})
+
+    def test_pending_result_flush_is_retried_then_abandoned_after_max_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            job_id = "c" * 24
+            agent.state.pending_results[job_id] = {
+                "status": "succeeded",
+                "progress": 100,
+                "message": "done",
+                "lease_id": "lease",
+            }
+            with patch.object(
+                agent, "_send_job_event", AsyncMock(side_effect=RuntimeError("offline"))
+            ):
+                for attempt in range(1, MAX_PENDING_RESULT_ATTEMPTS):
+                    asyncio.run(agent._flush_pending_results(object()))  # type: ignore[arg-type]
+                    self.assertIn(job_id, agent.state.pending_results)
+                    self.assertEqual(
+                        agent.state.pending_results[job_id]["attempts"], attempt
+                    )
+                asyncio.run(agent._flush_pending_results(object()))  # type: ignore[arg-type]
+            self.assertNotIn(job_id, agent.state.pending_results)
+
+    def test_send_job_event_treats_a_400_as_a_stale_result(self) -> None:
+        class Response:
+            status = 400
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def text(self) -> str:
+                return "invalid transition"
+
+        class Session:
+            def post(self, *_args, **_kwargs):
+                return Response()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            with self.assertRaises(StaleJobResult):
+                asyncio.run(  # type: ignore[arg-type]
+                    agent._send_job_event(Session(), "d" * 24, "succeeded", 100, "done")
+                )
+
+    def test_cycle_sends_heartbeat_even_when_pending_result_flush_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            with (
+                patch.object(agent, "_heartbeat", AsyncMock(return_value=None)) as heartbeat,
+                patch.object(
+                    agent,
+                    "_flush_pending_results",
+                    AsyncMock(side_effect=RuntimeError("registry unreachable")),
+                ),
+                patch.object(agent, "_mirror_if_changed", AsyncMock()),
+            ):
+                asyncio.run(agent._cycle(object()))  # type: ignore[arg-type]
+            heartbeat.assert_awaited_once()
+
+    def test_cycle_drains_multiple_queued_jobs_up_to_the_per_cycle_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            heartbeat_jobs = [
+                {"id": f"job-{index}", "action": "mirror_now"}
+                for index in range(MAX_JOBS_PER_CYCLE + 1)
+            ]
+            executed: list[str] = []
+
+            async def fake_execute(_session, job) -> None:
+                executed.append(job["id"])
+
+            with (
+                patch.object(agent, "_heartbeat", AsyncMock(side_effect=heartbeat_jobs)),
+                patch.object(agent, "_execute_job", AsyncMock(side_effect=fake_execute)),
+                patch.object(agent, "_flush_pending_results", AsyncMock()),
+                patch.object(agent, "_mirror_if_changed", AsyncMock()),
+            ):
+                asyncio.run(agent._cycle(object()))  # type: ignore[arg-type]
+            self.assertEqual(len(executed), MAX_JOBS_PER_CYCLE)
+
+    def test_reconnect_delay_is_capped_around_sixty_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = self._config(root, root / "takt.db")
+            config.poll_seconds = 10.0
+            agent = TaktAgent(config)
+            delays = [agent._reconnect_delay(failures) for failures in range(1, 10)]
+            self.assertTrue(all(delay <= 72.0 for delay in delays))
+            self.assertGreater(max(delays), 40.0)
 
     def test_mirror_write_during_upload_remains_dirty(self) -> None:
         class Response:
