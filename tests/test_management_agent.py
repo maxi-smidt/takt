@@ -202,6 +202,44 @@ class ManagementAgentTests(unittest.TestCase):
             self.assertNotIn("--no-deps", install.args[0])
             self.assertEqual(run.call_args.kwargs["timeout"], 900)
 
+    def test_install_release_refuses_upfront_when_current_link_is_a_real_directory(
+        self,
+    ) -> None:
+        # Regression test: _switch_current does an atomic symlink swap onto
+        # current_link, which the OS refuses when current_link is a real
+        # directory instead of a symlink. That used to only surface deep into
+        # the install -- after the live TAKT service was already stopped -- as
+        # a raw IsADirectoryError, and since current_link.is_symlink() is also
+        # false in that case, previous_target was always None too, feeding
+        # straight into the update-recovery dead end. It's now caught upfront,
+        # before anything disruptive (health check, download, service stop)
+        # happens.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = self._config(root, root / "takt.db")
+            config.current_link.mkdir(parents=True)
+            (config.current_link / "marker.txt").write_text("real directory, not a symlink")
+            agent = TaktAgent(config)
+            payload = b"irrelevant"
+            job = {
+                "id": "a" * 24,
+                "lease_id": "lease",
+                "release": {
+                    "version": "0.2.0",
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "size": len(payload),
+                },
+            }
+            with (
+                patch.object(agent, "_local_health", AsyncMock()) as local_health,
+                patch.object(agent, "_download_release", AsyncMock()) as download,
+                self.assertRaisesRegex(RuntimeError, "is not a symlink"),
+            ):
+                asyncio.run(agent._install_release(object(), job))  # type: ignore[arg-type]
+            local_health.assert_not_awaited()
+            download.assert_not_awaited()
+            self.assertTrue((config.current_link / "marker.txt").is_file())
+
     def test_dependency_install_failure_leaves_running_release_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

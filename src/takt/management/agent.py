@@ -1231,6 +1231,18 @@ class TaktAgent:
             raise RuntimeError("Release checksum is invalid.")
         if expected_size <= 0 or expected_size > MAX_RELEASE_SIZE:
             raise RuntimeError("Release size is invalid or exceeds the agent limit.")
+        if self.config.current_link.exists() and not self.config.current_link.is_symlink():
+            # _switch_current does an atomic symlink swap (os.replace onto
+            # current_link), which the OS refuses when current_link is a real
+            # directory instead of a symlink -- it would fail deep into the
+            # install, after already stopping the live TAKT service, with a raw
+            # IsADirectoryError and no previous release to fall back to. Catching
+            # it here, before anything disruptive happens, avoids that outage and
+            # gives an operator a message they can actually act on over SSH.
+            raise RuntimeError(
+                f"{self.config.current_link} exists but is not a symlink; installs require "
+                "it to be a symlink to the active release. Manual repair over SSH is required."
+            )
         health = await self._local_health(session)
         if health.get("state") != "ready":
             await self._progress_job(
