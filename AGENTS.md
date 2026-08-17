@@ -39,6 +39,9 @@ webui/src/
   fleet/           React UI for the Fleet Registry (built into
                    src/takt/registry/static/)
   shared/          code used by both (httpClient, contracts)
+  shared/ui/       base component library (Button, Dialog, Select, ...),
+                   backed by Radix UI Primitives; see its own tokens.css
+                   for the --ui-* contract each app maps its palette onto
 ```
 
 Keep changes inside their owning layer: domain stays free of I/O, route/store
@@ -61,6 +64,12 @@ Each script installs npm deps if needed, then runs typecheck + lint + tests
 tests run fine without built static assets (the browser-asset check is
 skipped); the full suite (`tests/test_static_assets.py`) needs both built.
 
+`design-system/styles.css` is also generated — from
+`webui/src/shared/ui/tokens.css` + `ui.css`, via
+`node scripts/build_design_bundle.mjs`. It mirrors the hosted "TAKT UI"
+Claude Design project; run the script and re-upload after touching either
+source file so the two can't drift apart.
+
 ## Commands
 
 Setup:
@@ -82,6 +91,7 @@ cd webui && npm ci
 | Frontend tests | `cd webui && npm test` (timer) / `npm run test:fleet` (fleet) |
 | Frontend build | `cd webui && npm run build` / `npm run build:fleet` |
 | Dev servers | `./scripts/launch_dev.sh` (desktop mock), `./scripts/launch_web_dev.sh` (web, needs `build_web_ui.sh` first), `./scripts/launch_registry.sh` |
+| shared/ui component gallery | `./scripts/launch_ui_gallery.sh` or `cd webui && npm run dev:ui` — dev-only, never built into either app's static assets. `TAKT_UI_HOST`/`TAKT_UI_PORT` override the default `127.0.0.1:5175`. |
 | Pi transport package | `./scripts/package_for_raspberry_pi.sh` |
 
 Hardware-/environment-specific (do not expect these to run in a normal dev

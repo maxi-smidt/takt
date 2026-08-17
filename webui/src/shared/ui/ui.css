@@ -1,0 +1,422 @@
+@import "./tokens.css";
+
+/*
+ * Base component styles for webui/src/shared/ui. Every selector is prefixed
+ * `takt-` so it can never collide with either app's existing hand-rolled
+ * classes, and every value comes from the --ui-* contract in tokens.css —
+ * no raw hex, no --blue/--green/--panel/... references.
+ */
+
+.takt-btn {
+  min-height: var(--ui-control-height);
+  padding: 0 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: var(--ui-fs-base);
+  font-weight: 750;
+  letter-spacing: var(--ui-ls-caps);
+  cursor: pointer;
+}
+
+.takt-btn:hover:not(:disabled) {
+  border-color: var(--ui-line-strong);
+  background: var(--ui-surface);
+}
+
+.takt-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.takt-btn:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+
+.takt-btn-sm {
+  min-height: calc(var(--ui-control-height) - 10px);
+  padding: 0 14px;
+  font-size: var(--ui-fs-small);
+}
+
+.takt-btn-primary {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent);
+  color: var(--ui-accent-contrast);
+}
+
+.takt-btn-primary:hover:not(:disabled) {
+  background: var(--ui-accent);
+  filter: brightness(1.08);
+}
+
+.takt-btn-secondary {
+  border-color: var(--ui-line-strong);
+  background: var(--ui-accent-tint);
+  color: var(--ui-accent);
+}
+
+.takt-btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ui-text);
+}
+
+.takt-btn-ghost:hover:not(:disabled) {
+  border-color: var(--ui-line);
+  background: var(--ui-surface-raised);
+}
+
+.takt-btn-danger {
+  border-color: color-mix(in srgb, var(--ui-danger) 55%, transparent);
+  background: color-mix(in srgb, var(--ui-danger) 14%, transparent);
+  color: var(--ui-danger);
+}
+
+.takt-icon-btn {
+  width: var(--ui-control-height);
+  min-width: var(--ui-control-height);
+  height: var(--ui-control-height);
+  padding: 0;
+}
+
+/* Field */
+
+.takt-field {
+  display: grid;
+  gap: 8px;
+}
+
+.takt-field-label {
+  color: var(--ui-muted);
+  font-size: var(--ui-fs-label);
+  font-weight: 700;
+  letter-spacing: var(--ui-ls-caps);
+  text-transform: uppercase;
+}
+
+.takt-field-hint {
+  color: var(--ui-muted);
+  font-size: var(--ui-fs-small);
+}
+
+.takt-field-error {
+  color: var(--ui-danger);
+  font-size: var(--ui-fs-small);
+}
+
+/* Text input */
+
+.takt-input {
+  width: 100%;
+  min-height: var(--ui-control-height);
+  padding: 0 13px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: var(--ui-fs-base);
+  outline: none;
+}
+
+.takt-input:focus {
+  border-color: var(--ui-accent);
+}
+
+.takt-input[aria-invalid="true"] {
+  border-color: var(--ui-danger);
+}
+
+.takt-input:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* Select (Radix) */
+
+.takt-select-trigger {
+  width: 100%;
+  min-height: var(--ui-control-height);
+  padding: 0 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font: inherit;
+  font-size: var(--ui-fs-base);
+  cursor: pointer;
+}
+
+.takt-select-trigger:focus-visible,
+.takt-select-trigger[data-state="open"] {
+  border-color: var(--ui-accent);
+}
+
+.takt-select-trigger[data-placeholder] {
+  color: var(--ui-muted);
+}
+
+.takt-select-icon {
+  color: var(--ui-muted);
+  flex: 0 0 auto;
+}
+
+.takt-select-content {
+  overflow: hidden;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
+  z-index: 60;
+}
+
+.takt-select-viewport {
+  padding: 4px;
+}
+
+.takt-select-item {
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: var(--ui-radius);
+  font-size: var(--ui-fs-base);
+  cursor: pointer;
+  outline: none;
+}
+
+.takt-select-item[data-highlighted] {
+  background: var(--ui-accent-tint);
+  color: var(--ui-accent);
+}
+
+.takt-select-item[data-disabled] {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* Checkbox (Radix) */
+
+.takt-checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ui-text);
+  font-size: var(--ui-fs-base);
+}
+
+.takt-checkbox {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius);
+  background: var(--ui-bg);
+  color: var(--ui-accent-contrast);
+  cursor: pointer;
+}
+
+.takt-checkbox[data-state="checked"] {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent);
+}
+
+.takt-checkbox:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+
+.takt-checkbox:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* Dialog (Radix) */
+
+.takt-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(2 7 6 / 85%);
+  backdrop-filter: blur(8px);
+  z-index: 100;
+}
+
+.takt-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: min(480px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: auto;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: 0 30px 100px rgb(0 0 0 / 73%);
+  z-index: 101;
+}
+
+.takt-dialog-wide {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.takt-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--ui-line);
+}
+
+.takt-dialog-eyebrow {
+  display: block;
+  color: var(--ui-accent);
+  font-size: var(--ui-fs-label);
+  font-weight: 700;
+  letter-spacing: var(--ui-ls-caps-wide);
+  text-transform: uppercase;
+}
+
+.takt-dialog-title {
+  margin: 6px 0 0;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -.01em;
+  line-height: 1.2;
+}
+
+.takt-dialog-close {
+  border-color: var(--ui-line);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+}
+
+.takt-dialog-close:hover:not(:disabled) {
+  border-color: var(--ui-line-strong);
+}
+
+.takt-dialog-body {
+  padding: 20px 22px;
+}
+
+.takt-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 22px;
+  border-top: 1px solid var(--ui-line);
+}
+
+/* Badge */
+
+.takt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  color: var(--ui-muted);
+  font-size: var(--ui-fs-label);
+  font-weight: 700;
+  letter-spacing: var(--ui-ls-caps);
+  text-transform: uppercase;
+}
+
+.takt-badge-accent {
+  border-color: color-mix(in srgb, var(--ui-accent) 45%, transparent);
+  color: var(--ui-accent);
+}
+
+.takt-badge-success {
+  border-color: color-mix(in srgb, var(--ui-success) 45%, transparent);
+  color: var(--ui-success);
+}
+
+.takt-badge-warning {
+  border-color: color-mix(in srgb, var(--ui-warning) 45%, transparent);
+  color: var(--ui-warning);
+}
+
+.takt-badge-danger {
+  border-color: color-mix(in srgb, var(--ui-danger) 45%, transparent);
+  color: var(--ui-danger);
+}
+
+/* Callout */
+
+.takt-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  color: var(--ui-text);
+  font-size: var(--ui-fs-small);
+  line-height: 1.5;
+}
+
+.takt-callout-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.takt-callout-info {
+  border-color: color-mix(in srgb, var(--ui-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 8%, transparent);
+}
+
+.takt-callout-info .takt-callout-icon {
+  color: var(--ui-accent);
+}
+
+.takt-callout-warning {
+  border-color: color-mix(in srgb, var(--ui-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--ui-warning) 10%, transparent);
+}
+
+.takt-callout-warning .takt-callout-icon {
+  color: var(--ui-warning);
+}
+
+.takt-callout-danger {
+  border-color: color-mix(in srgb, var(--ui-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--ui-danger) 10%, transparent);
+}
+
+.takt-callout-danger .takt-callout-icon {
+  color: var(--ui-danger);
+}
+
+/* Layout helpers */
+
+.takt-stack {
+  display: flex;
+  flex-direction: column;
+}
+
+.takt-cluster {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+}

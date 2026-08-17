@@ -1899,3 +1899,29 @@ button:active:not(:disabled),
     background: var(--surface-raised);
   }
 }
+
+/* Maps this app's palette onto the shared/ui component contract
+   (webui/src/shared/ui/tokens.css) — see that file for the full list of
+   --ui-* variables components consume. Nothing above this block changes. */
+:root {
+  --ui-bg: var(--bg);
+  --ui-surface: var(--surface);
+  --ui-surface-raised: var(--surface-raised);
+  --ui-line: var(--line);
+  --ui-line-strong: var(--line-strong);
+  --ui-text: var(--text);
+  --ui-muted: var(--muted);
+  --ui-accent: var(--blue);
+  --ui-accent-contrast: var(--surface-deep);
+  --ui-success: var(--green);
+  --ui-warning: var(--amber);
+  --ui-danger: var(--red);
+  --ui-radius: 2px;
+  --ui-control-height: var(--touch-target);
+  --ui-touch-target: var(--touch-target);
+  --ui-font-ui: var(--font-ui);
+  --ui-font-mono: var(--font-mono);
+  --ui-fs-label: var(--fs-label);
+  --ui-fs-small: var(--fs-small);
+  --ui-fs-base: var(--fs-base);
+}

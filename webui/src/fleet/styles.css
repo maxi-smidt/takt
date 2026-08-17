@@ -47,7 +47,7 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .login-card { width: min(440px, 100%); padding: 44px; border: 1px solid var(--line); background: linear-gradient(145deg, rgba(20,32,30,.98), rgba(9,17,16,.98)); box-shadow: 0 30px 100px #0008; position: relative; }
 .login-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: var(--green); }
 .login-card .brand-mark { margin-bottom: 32px; width: 48px; height: 48px; }
-.login-card h1, .hero h1, .section-heading h2, .modal h2 { font-weight: 800; letter-spacing: -.01em; line-height: 1.1; margin: 6px 0; }
+.login-card h1, .hero h1, .section-heading h2 { font-weight: 800; letter-spacing: -.01em; line-height: 1.1; margin: 6px 0; }
 .login-card h1 { font-size: 40px; }
 .login-card h1 em, .brand em { color: var(--green); font-style: normal; }
 .login-card > p { color: var(--muted); line-height: 1.6; font-size: var(--fs-base); margin: 0 0 34px; }
@@ -259,12 +259,6 @@ input:focus, select:focus { border-color: var(--green); }
 .access-device-name { font-weight: 700; letter-spacing: var(--ls-caps); font-size: var(--fs-label); }
 .access-row select { width: auto; min-width: 160px; }
 
-.modal-layer { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; background: #020706d9; backdrop-filter: blur(8px); padding: 20px; overflow: auto; }
-.modal { width: min(540px, 100%); border: 1px solid #3b514c; background: var(--panel); box-shadow: 0 30px 100px #000b; }
-.modal-wide { width: min(720px, 100%); }
-.modal > header { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 20px 22px; border-bottom: 1px solid var(--line); }
-.modal header span { color: var(--green); font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps-wide); }
-.modal h2 { font-size: 24px; }
 .modal-body { padding: 24px; }
 .modal-body > p { margin: 0 0 20px; color: var(--muted); font-size: var(--fs-base); line-height: 1.6; }
 .modal-body > p code { color: var(--green); font-family: var(--font-mono); font-size: var(--fs-small); }
@@ -348,17 +342,6 @@ input:focus, select:focus { border-color: var(--green); }
 .confirm-body { display: grid; gap: 14px; padding: 20px; font-size: var(--fs-base); }
 .confirm-body p { margin: 0; }
 .confirm-aftermath, .confirm-safe { color: var(--muted); font-size: var(--fs-small); }
-.confirm-warning { display: flex; gap: 11px; border: 1px solid #63382f; background: #241512; padding: 14px; }
-.confirm-warning svg { flex: none; color: var(--red); }
-.confirm-warning > div { display: grid; gap: 7px; }
-.confirm-warning strong { color: #ffb0a2; font-size: var(--fs-label); letter-spacing: var(--ls-caps); }
-.confirm-warning span { font-size: var(--fs-small); }
-.confirm-override { display: flex; align-items: center; gap: 9px; font-size: var(--fs-small); font-weight: 700; cursor: pointer; }
-.confirm-override input { width: 17px; height: 17px; accent-color: var(--red); }
-.modal-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 0 20px 20px; }
-.modal-actions button { min-height: 42px; border: 1px solid var(--line); background: #15201e; color: var(--text); padding: 0 20px; font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps); }
-.modal-actions button:disabled { opacity: .42; cursor: not-allowed; }
-.modal-actions .danger-action { color: #ffb0a2; background: #241512; border-color: #63382f; }
 
 @media (max-width: 900px) {
   .registry-state { display: none; }
@@ -385,4 +368,32 @@ input:focus, select:focus { border-color: var(--green); }
   .maintenance-group { grid-template-columns: 1fr; gap: 6px; }
   .access-row { flex-wrap: wrap; }
   .access-row select { width: 100%; }
+}
+
+/* Maps this app's palette onto the shared/ui component contract
+   (webui/src/shared/ui/tokens.css) — see that file for the full list of
+   --ui-* variables components consume. Nothing above this block changes. */
+:root {
+  --ui-bg: #08100f;
+  --ui-surface: var(--panel);
+  --ui-surface-raised: var(--panel-2);
+  --ui-line: var(--line);
+  --ui-line-strong: var(--line-bright);
+  --ui-text: var(--text);
+  --ui-muted: var(--muted);
+  --ui-accent: var(--green);
+  --ui-accent-contrast: #07110e;
+  --ui-success: var(--green);
+  --ui-warning: var(--amber);
+  --ui-danger: var(--red);
+  --ui-radius: 0px;
+  --ui-control-height: 46px;
+  --ui-touch-target: 46px;
+  --ui-font-ui: var(--font-ui);
+  --ui-font-mono: var(--font-mono);
+  --ui-fs-label: var(--fs-label);
+  --ui-fs-small: var(--fs-small);
+  --ui-fs-base: var(--fs-base);
+  --ui-ls-caps: var(--ls-caps);
+  --ui-ls-caps-wide: var(--ls-caps-wide);
 }

@@ -1,0 +1,43 @@
+/*
+ * Semantic token contract for webui/src/shared/ui components.
+ *
+ * Components in this directory read ONLY these `--ui-*` custom properties —
+ * never `--blue`/`--green`/`--panel`/... directly. Each app maps its own
+ * existing palette onto this contract in a small adapter block appended to
+ * its own stylesheet (see the bottom of ../../styles.css and
+ * ../../fleet/styles.css), so the timer app (blue accent) and the fleet
+ * portal (green accent) can share one component set without either
+ * changing colour.
+ *
+ * The values below are a standalone dark-neutral fallback so the design
+ * gallery and the design-system preview pages render sensibly even without
+ * an app-specific adapter in scope.
+ */
+:root {
+  --ui-bg: #0a0f13;
+  --ui-surface: #0f161b;
+  --ui-surface-raised: #141d23;
+  --ui-line: #263238;
+  --ui-line-strong: #384850;
+  --ui-text: #e6ebed;
+  --ui-muted: #93a3aa;
+
+  --ui-accent: #3aa0e0;
+  --ui-accent-contrast: #071016;
+  --ui-accent-tint: color-mix(in srgb, var(--ui-accent) 14%, transparent);
+  --ui-success: #4ac66c;
+  --ui-warning: #f2ad26;
+  --ui-danger: #f05b62;
+
+  --ui-radius: 0px;
+  --ui-control-height: 44px;
+  --ui-touch-target: 44px;
+
+  --ui-font-ui: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  --ui-font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Roboto Mono", Consolas, "Liberation Mono", monospace;
+  --ui-fs-label: 12px;
+  --ui-fs-small: 13px;
+  --ui-fs-base: 14px;
+  --ui-ls-caps: .07em;
+  --ui-ls-caps-wide: .1em;
+}
