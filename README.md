@@ -642,15 +642,20 @@ Ein eigener Ausgabepfad ist optional:
 
 ## Schnellstart auf dem Laptop
 
-Voraussetzung ist Python 3.11 oder neuer.
+Voraussetzung ist Python 3.11 oder neuer. Für die Browser-Oberfläche zuerst
+einmalig bauen, dann den Webserver mit Mock-Taster und Mock-Summer starten:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[dev]'
-.venv/bin/takt --windowed --mock-gpio --mock-buzzer
+./scripts/build_web_ui.sh
+./scripts/launch_web_dev.sh
 ```
 
-Alternativ übernimmt `./scripts/launch_dev.sh` Einrichtung und Start.
+`launch_web_dev.sh` übernimmt Einrichtung der virtuellen Umgebung und Start.
+Anschließend im Browser öffnen:
+
+```text
+http://127.0.0.1:8080
+```
 
 Der blaue **Mock-Taster** am unteren Rand verhält sich wie der spätere
 Mushroom-Taster. Der **Summer-Mock** zeigt bei Start, Stopp, Speichern und
@@ -658,25 +663,8 @@ Verwerfen einen Statusimpuls und löst zusätzlich den Laptop-Systemton aus.
 Beide Mock-Anzeigen erscheinen nur, wenn die zugehörigen Startargumente gesetzt
 sind.
 
-## Weboberfläche auf dem Laptop testen
-
-Der Webserver lässt sich mit Mock-Taster und Mock-Summer starten:
-
-```bash
-./scripts/launch_web_dev.sh
-```
-
-Anschließend im Browser öffnen:
-
-```text
-http://127.0.0.1:8080
-```
-
 Der Entwicklungsschnellstart bindet den Server absichtlich nur an den Laptop
 selbst. Auf dem Pi übernimmt das Installationsskript den Netzwerkzugriff.
-
-`launch_web_dev.sh` startet den Python-Server ohne Node.js oder Frontend-Build;
-für die Browser-Oberfläche vorher `./scripts/build_web_ui.sh` ausführen.
 
 ### Browser-Oberfläche weiterentwickeln
 
@@ -700,15 +688,9 @@ React-Code und erzeugt anschließend die produktiven Dateien.
 
 | Argument | Bedeutung |
 |---|---|
-| `--windowed` | Startet in einem normalen Fenster statt im Vollbild. |
 | `--mock-gpio` | Verwendet und zeigt den blauen Laptop-Mock-Taster. |
 | `--mock-buzzer` | Simuliert den Summer sichtbar und über den Systemton. |
 | `--database PFAD` | Verwendet für einen isolierten Test eine andere Datendatei. |
-
-`takt-server` unterstützt zusätzlich:
-
-| Argument | Bedeutung |
-|---|---|
 | `--host ADRESSE` | Bindeadresse; produktiv `0.0.0.0`. |
 | `--port PORT` | HTTP-Port; der Installer verwendet Port 80. |
 
@@ -829,9 +811,7 @@ journalctl -u takt.service -n 100 --no-pager
 ```
 
 TAKT verwendet produktiv ausdrücklich `GPIOZERO_PIN_FACTORY=lgpio`. Der
-Systemdienst startet nach einem Fehler automatisch neu. Der frühere manuelle
-PySide-Autostart wird vom Installationsskript entfernt, damit nur ein Prozess
-GPIO und Datenbank kontrolliert.
+Systemdienst startet nach einem Fehler automatisch neu.
 
 Der GPIO-Taster reagiert auf die erste fallende Flanke sofort. Der Wert
 `bounce_seconds` unterdrückt anschließend nur weitere Flanken durch
@@ -864,7 +844,7 @@ Der installierte Systemdienst überschreibt den Port mit 80, damit die lokale
 Für einen isolierten Test lässt sich ein anderer Speicherort angeben:
 
 ```bash
-.venv/bin/takt --windowed --mock-gpio --mock-buzzer \
+.venv/bin/takt-server --mock-gpio --mock-buzzer \
   --database /tmp/takt-test.db
 ```
 
