@@ -78,6 +78,24 @@ def expanded(value: str) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def expanded_symlink_path(value: str) -> Path:
+    """Like `expanded()`, but never dereferences the final path component.
+
+    Only for `current_link`, which `_switch_current` treats as a stable
+    location it atomically replaces with a new symlink. `expanded()`'s
+    `Path.resolve()` fully dereferences an *existing* symlink at that path,
+    which would silently turn "the current-link path" into "whatever real
+    release directory it currently points at" the moment current_link
+    already exists (i.e. on every agent start after the very first
+    successful install) -- and every later install would then try to
+    atomically replace that real directory with a symlink, which the OS
+    refuses (IsADirectoryError), deep into the install, after the live TAKT
+    service has already been stopped.
+    """
+    path = Path(value).expanduser()
+    return path.parent.resolve() / path.name
+
+
 def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -123,7 +141,9 @@ class AgentConfig:
     database_path: Path = field(default_factory=lambda: expanded("~/.local/share/takt/takt.db"))
     data_directory: Path = field(default_factory=lambda: expanded("~/.local/share/takt-agent"))
     release_root: Path = field(default_factory=lambda: expanded("~/.local/share/takt/releases"))
-    current_link: Path = field(default_factory=lambda: expanded("~/.local/share/takt/current"))
+    current_link: Path = field(
+        default_factory=lambda: expanded_symlink_path("~/.local/share/takt/current")
+    )
     release_environment: Path = field(
         default_factory=lambda: expanded("~/.config/takt/release.env")
     )
@@ -170,7 +190,6 @@ class AgentConfig:
                 "database_path",
                 "data_directory",
                 "release_root",
-                "current_link",
                 "release_environment",
                 "maintenance_marker",
                 "wifi_helper_path",
@@ -180,6 +199,8 @@ class AgentConfig:
             ):
                 if key in raw:
                     setattr(config, key, expanded(str(raw[key])))
+            if "current_link" in raw:
+                config.current_link = expanded_symlink_path(str(raw["current_link"]))
         config.config_path = path
         config.registry_url = os.environ.get("TAKT_REGISTRY_URL", config.registry_url).rstrip("/")
         config.enrollment_code = os.environ.get("TAKT_ENROLLMENT_CODE", config.enrollment_code)

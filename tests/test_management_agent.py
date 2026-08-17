@@ -20,6 +20,7 @@ from takt.management.agent import (
     Identity,
     StaleJobResult,
     TaktAgent,
+    expanded_symlink_path,
 )
 
 
@@ -52,6 +53,71 @@ class ManagementAgentTests(unittest.TestCase):
             second = Identity.load_or_create(path)
             self.assertEqual(first.device_token, second.device_token)
             self.assertFalse(first.enrolled)
+
+    def test_expanded_symlink_path_does_not_follow_an_existing_symlink(self) -> None:
+        # Regression test: current_link must stay the stable location
+        # _switch_current atomically replaces. Path.resolve() (used by the
+        # plain expanded() helper, for every *other* path config field)
+        # follows an existing symlink all the way to its target -- which
+        # would make current_link silently become "whatever release is
+        # currently active" instead of "the current symlink itself" on every
+        # agent start after the first successful install, breaking every
+        # later install's atomic activation step.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "releases" / "0.6.0"
+            target.mkdir(parents=True)
+            link = root / "current"
+            link.symlink_to(target)
+            self.assertEqual(expanded_symlink_path(str(link)), link)
+
+    def test_expanded_symlink_path_still_normalizes_user_and_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "a" / "b").mkdir(parents=True)
+            self.assertEqual(
+                expanded_symlink_path(str(root / "a" / ".." / "a" / "b" / "current")),
+                root / "a" / "b" / "current",
+            )
+
+    def test_config_load_keeps_current_link_as_the_symlink_not_its_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "releases" / "0.6.0"
+            target.mkdir(parents=True)
+            link = root / "current"
+            link.symlink_to(target)
+            toml_path = root / "agent.toml"
+            toml_path.write_text(
+                f'[agent]\ncurrent_link = "{link}"\n', encoding="utf-8"
+            )
+            config = AgentConfig.load(toml_path)
+            self.assertEqual(config.current_link, link)
+
+    def test_switch_current_activates_a_new_release_when_current_already_points_elsewhere(
+        self,
+    ) -> None:
+        # Confirms _switch_current's atomic swap itself works correctly for a
+        # "second install" (current_link already a symlink to another
+        # release) given a correct current_link value. Combined with the two
+        # tests above -- which confirm current_link now stays that correct,
+        # literal value instead of resolving through to the previous
+        # release's real directory -- this closes the loop on the regression:
+        # before the fix, config.current_link would have held that resolved
+        # real directory, and this exact swap would have crashed with
+        # IsADirectoryError instead of replacing the symlink.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            previous_release = root / "releases" / "0.6.0"
+            previous_release.mkdir(parents=True)
+            new_release = root / "releases" / "0.7.0"
+            new_release.mkdir(parents=True)
+            config = self._config(root, root / "takt.db")
+            config.current_link = root / "current"
+            config.current_link.symlink_to(previous_release)
+            agent = TaktAgent(config)
+            agent._switch_current(new_release)
+            self.assertEqual(config.current_link.resolve(), new_release)
 
     def test_snapshot_is_a_consistent_sqlite_copy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
