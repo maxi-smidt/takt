@@ -84,6 +84,22 @@ jobs:
               f.write(f"version={new_version}\n")
           PY
 
+      # A previous attempt (e.g. a retried run) may have left a stale
+      # release branch and/or PR behind — clear it so this run can push a
+      # fresh branch instead of hitting a non-fast-forward rejection.
+      - name: Clean up a stale branch/PR from a previous attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          existing_pr="$(gh pr view "release/v${NEW_VERSION}" --json number --jq .number 2>/dev/null || true)"
+          if [[ -n "$existing_pr" ]]; then
+            gh pr close "$existing_pr" --delete-branch || true
+          else
+            git push origin --delete "release/v${NEW_VERSION}" 2>/dev/null || true
+          fi
+
       - name: Commit bump to a release branch
         env:
           NEW_VERSION: ${{ steps.bump.outputs.version }}
@@ -97,7 +113,8 @@ jobs:
           git push origin "release/v${NEW_VERSION}"
 
       # main is protected and requires the "quality" check to pass, so we
-      # can't push the bump commit directly — go through a PR instead.
+      # can't push the bump commit directly — go through a PR instead. The
+      # GitHub API occasionally returns transient 5xx errors, so retry.
       - name: Open the release PR
         id: pr
         env:
@@ -105,12 +122,25 @@ jobs:
           NEW_VERSION: ${{ steps.bump.outputs.version }}
         run: |
           set -Eeuo pipefail
-          gh pr create \
+          retry() {
+            local attempt=1 max_attempts=5 delay=5
+            until "$@"; do
+              if (( attempt >= max_attempts )); then
+                return 1
+              fi
+              printf 'Command failed (attempt %s/%s), retrying in %ss: %s\n' \
+                "$attempt" "$max_attempts" "$delay" "$*" >&2
+              sleep "$delay"
+              attempt=$(( attempt + 1 ))
+              delay=$(( delay * 2 ))
+            done
+          }
+          retry gh pr create \
             --base main \
             --head "release/v${NEW_VERSION}" \
             --title "Prepare release ${NEW_VERSION}" \
             --body "Automated version bump. Merges once the \`quality\` check passes; merging tags \`v${NEW_VERSION}\`, which triggers the release pipeline."
-          pr_number="$(gh pr view "release/v${NEW_VERSION}" --json number --jq .number)"
+          pr_number="$(retry gh pr view "release/v${NEW_VERSION}" --json number --jq .number)"
           printf 'number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
 
       - name: Wait for the required check, then squash-merge
@@ -119,12 +149,29 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           set -Eeuo pipefail
+          retry() {
+            local attempt=1 max_attempts=5 delay=5
+            until "$@"; do
+              if (( attempt >= max_attempts )); then
+                return 1
+              fi
+              printf 'Command failed (attempt %s/%s), retrying in %ss: %s\n' \
+                "$attempt" "$max_attempts" "$delay" "$*" >&2
+              sleep "$delay"
+              attempt=$(( attempt + 1 ))
+              delay=$(( delay * 2 ))
+            done
+          }
           elapsed=0
           timeout_seconds=1800
           interval=15
           while true; do
-            conclusion="$(gh pr view "$PR_NUMBER" --json statusCheckRollup \
-              --jq '[.statusCheckRollup[] | select(.name == "quality")][0].conclusion // "PENDING"')"
+            if conclusion="$(gh pr view "$PR_NUMBER" --json statusCheckRollup \
+                --jq '[.statusCheckRollup[] | select(.name == "quality")][0].conclusion // "PENDING"' 2>/dev/null)"; then
+              :
+            else
+              conclusion="PENDING"
+            fi
             case "$conclusion" in
               SUCCESS)
                 break
@@ -141,7 +188,7 @@ jobs:
             sleep "$interval"
             elapsed=$(( elapsed + interval ))
           done
-          gh pr merge "$PR_NUMBER" --squash --delete-branch
+          retry gh pr merge "$PR_NUMBER" --squash --delete-branch
 
       - name: Tag the merged release commit
         env:
