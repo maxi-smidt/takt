@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from takt.domain.duration import Duration
+from takt.persistence.models import runs
 from takt.persistence.run_repository import SQLiteRunRepository
 from takt.registry.auth import AdminAuth
 from takt.registry.fastapi_app import create_fastapi_app
@@ -456,9 +458,10 @@ class RemoteCurationTests(unittest.TestCase):
                     actual_time=Duration(80_000),
                     added_time=Duration(10_000),
                 )
-                expected = repository.connection.execute(
-                    "SELECT updated_at FROM runs WHERE id = ?", (run.id,)
-                ).fetchone()[0]
+                with repository.engine.connect() as conn:
+                    expected = conn.execute(
+                        select(runs.c.updated_at).where(runs.c.id == run.id)
+                    ).fetchone()[0]
                 result = repository.apply_remote_curation(
                     command_id="cmd-1",
                     operation="adjust_added_time",
