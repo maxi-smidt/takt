@@ -13,7 +13,7 @@ export interface PortalDevice {
 }
 
 export interface PortalRunsPayload {
-  summary: { count: number; best_total_ms: number; average_total_ms: number; added_time_ms: number };
+  summary: { count: number; best_total_ms: number; average_actual_ms: number; average_total_ms: number };
   mirror: { state: string; last_mirrored_at?: string | null; sha256?: string };
   runs: PortalRun[];
 }

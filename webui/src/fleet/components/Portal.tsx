@@ -130,8 +130,8 @@ export function Portal({ session, refreshSession }: PortalProps) {
             </div>
             <div className="summary-grid">
               <div><strong>{formatStopwatch(runs.summary.best_total_ms)}</strong><span>BESTZEIT</span></div>
-              <div><strong>{formatStopwatch(Math.round(runs.summary.average_total_ms || 0))}</strong><span>DURCHSCHNITT</span></div>
-              <div><strong>{formatStopwatch(runs.summary.added_time_ms)}</strong><span>ZUSCHLAG</span></div>
+              <div><strong>{formatStopwatch(Math.round(runs.summary.average_actual_ms || 0))}</strong><span>DURCHSCHNITT OHNE FEHLER</span></div>
+              <div><strong>{formatStopwatch(Math.round(runs.summary.average_total_ms || 0))}</strong><span>DURCHSCHNITT MIT FEHLER</span></div>
             </div>
             <div className="portal-chart-panel">
               <PortalRunsChart runs={runs.runs} bestTotalMs={runs.summary.best_total_ms} />
@@ -144,7 +144,7 @@ export function Portal({ session, refreshSession }: PortalProps) {
                     <th>DATUM</th>
                     <th>GESAMT</th>
                     <th>IST-ZEIT</th>
-                    <th>ZUSCHLAG</th>
+                    <th>FEHLER</th>
                     {canWrite && <th className="runs-actions-head">AKTIONEN</th>}
                   </tr>
                 </thead>

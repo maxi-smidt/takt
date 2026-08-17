@@ -21,6 +21,10 @@ from sqlalchemy.engine import Connection, Engine
 SCHEMA_VERSION = 13
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
 JOB_LEASE_SECONDS = 120
+# A healthy agent claims a queued job within one poll cycle (~10s). If nothing
+# claims it well beyond that, the agent is offline or too old to understand
+# the job-claim protocol (see claim_next_job) and it will never be claimed.
+QUEUED_JOB_STALE_SECONDS = 300
 
 
 def utc_now() -> datetime:
@@ -75,6 +79,8 @@ if TYPE_CHECKING:
         ) -> None: ...
 
         def get_device(self, device_id: str) -> dict[str, Any] | None: ...
+
+        def expire_stale_queued_jobs(self) -> None: ...
 
         def get_release(self, release_id: str) -> dict[str, Any] | None: ...
 

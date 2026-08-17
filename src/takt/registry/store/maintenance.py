@@ -84,6 +84,7 @@ class MaintenanceMixin(_Base):
         return next(iter(backups), None)
 
     def prune(self) -> None:
+        self.expire_stale_queued_jobs()
         now = utc_iso()
         audit_before = utc_iso(utc_now() - timedelta(days=180))
         job_before = utc_iso(utc_now() - timedelta(days=90))

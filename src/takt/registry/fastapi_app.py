@@ -961,7 +961,8 @@ def create_fastapi_app(
             ).fetchall()
             summary = connection.execute(
                 f"SELECT COUNT(*) AS count, MIN(total_time_ms) AS best_total_ms, "
-                f"AVG(total_time_ms) AS average_total_ms, SUM(added_time_ms) AS added_time_ms "
+                f"AVG(actual_time_ms) AS average_actual_ms, "
+                f"AVG(total_time_ms) AS average_total_ms "
                 f"FROM runs WHERE {summary_where}",
                 summary_params,
             ).fetchone()
@@ -985,8 +986,8 @@ def create_fastapi_app(
                 "summary": {
                     "count": int(summary["count"] or 0),
                     "best_total_ms": summary["best_total_ms"],
+                    "average_actual_ms": summary["average_actual_ms"],
                     "average_total_ms": summary["average_total_ms"],
-                    "added_time_ms": int(summary["added_time_ms"] or 0),
                 },
                 "runs": [_portal_run(row) for row in page],
                 "next_cursor": next_cursor,

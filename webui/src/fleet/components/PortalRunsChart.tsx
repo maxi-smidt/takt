@@ -1,9 +1,9 @@
 // @ts-nocheck
 import {
-  Bar,
-  BarChart,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -40,7 +40,7 @@ function PortalRunsChartTooltip({ active, payload, label }) {
       </div>
       <div>
         <span className="portal-chart-tooltip-swatch" style={{ background: "var(--amber)" }} />
-        Zuschlag {formatStopwatch(point.addedMs)}
+        Fehler {formatStopwatch(point.addedMs)}
       </div>
       <div className="portal-chart-tooltip-total">Gesamtzeit {formatStopwatch(point.totalMs)}</div>
     </div>
@@ -67,7 +67,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
   return (
     <div className="portal-chart">
       <ResponsiveContainer width="100%" height={260}>
-        <BarChart data={points} margin={{ top: 10, right: 18, bottom: 0, left: 0 }}>
+        <LineChart data={points} margin={{ top: 10, right: 18, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="var(--line)" vertical={false} />
           <XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={{ stroke: "var(--line)" }} tickLine={false} />
           <YAxis
@@ -77,7 +77,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
             tickFormatter={(seconds: number) => formatStopwatch(seconds * 1000)}
             width={70}
           />
-          <Tooltip cursor={{ fill: "var(--line)", opacity: 0.4 }} content={<PortalRunsChartTooltip />} />
+          <Tooltip cursor={{ stroke: "var(--line)", opacity: 0.4 }} content={<PortalRunsChartTooltip />} />
           <Legend
             verticalAlign="top"
             align="right"
@@ -85,6 +85,8 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
             iconType="circle"
             formatter={(value: string) => <span style={{ color: "var(--muted)" }}>{value}</span>}
           />
+          <Line type="monotone" dataKey="actualSeconds" name="Ist-Zeit" stroke="var(--green)" strokeWidth={2} dot={{ r: 3 }} />
+          <Line type="monotone" dataKey="addedSeconds" name="Fehler" stroke="var(--amber)" strokeWidth={2} dot={{ r: 3 }} />
           {bestTotalMs != null && (
             <ReferenceLine
               y={bestTotalMs / 1000}
@@ -93,9 +95,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
               label={{ value: `BESTZEIT ${formatStopwatch(bestTotalMs)}`, position: "insideTopRight", fill: "var(--green)", fontSize: 12 }}
             />
           )}
-          <Bar dataKey="actualSeconds" stackId="run" name="Ist-Zeit" fill="var(--green)" />
-          <Bar dataKey="addedSeconds" stackId="run" name="Zuschlag" fill="var(--amber)" radius={[3, 3, 0, 0]} />
-        </BarChart>
+        </LineChart>
       </ResponsiveContainer>
     </div>
   );
