@@ -11,9 +11,8 @@ there when you need the full story.
 TAKT is an offline stopwatch for fire-brigade training/competitions. It has
 two runtime contexts that share the `takt` Python package:
 
-1. **Pi timer app** (`takt`, `takt-server`) — runs on a Raspberry Pi (or a
-   laptop in mock mode). PySide6 desktop UI or a local aiohttp web server,
-   same domain/application/persistence core underneath.
+1. **Pi timer app** (`takt-server`) — runs on a Raspberry Pi (or a laptop in
+   mock mode) as a local aiohttp web server.
 2. **Fleet Registry** (`takt-registry`, `takt-agent`) — a FastAPI service
    (typically on a NAS/server, see `compose.yaml`) that centrally manages
    many Pis over an agent (`takt.management.agent`) running on each device:
@@ -27,7 +26,6 @@ src/takt/
   application/     use-case services (TimerController, AudioService, SystemPowerService,
                    RunCurationService) — orchestrate domain + persistence
   persistence/     SQLAlchemy models + Alembic migrations for takt.db (run data)
-  ui/              PySide6 desktop UI
   web/             aiohttp server; routes/ is one module per concern
                    (core, runs, maintenance, security, audio, confirmations, common)
   management/      the Pi-resident agent (management/agent.py) + diagnostics redaction
@@ -84,13 +82,13 @@ cd webui && npm ci
 | Python lint | `.venv/bin/ruff check .` |
 | Python typecheck | `.venv/bin/mypy` |
 | Python tests (full) | `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests` |
-| Python tests (pytest) | `.venv/bin/pytest` — needs system Qt/EGL libs for `pytest-qt`; use `unittest discover` above on headless/CI-container environments without them |
+| Python tests (pytest) | `.venv/bin/pytest` |
 | Focused Python test | `.venv/bin/pytest tests/test_timer_controller.py -k some_case` |
 | Frontend typecheck | `cd webui && npm run typecheck` |
 | Frontend lint | `cd webui && npm run check` |
 | Frontend tests | `cd webui && npm test` (timer) / `npm run test:fleet` (fleet) |
 | Frontend build | `cd webui && npm run build` / `npm run build:fleet` |
-| Dev servers | `./scripts/launch_dev.sh` (desktop mock), `./scripts/launch_web_dev.sh` (web, needs `build_web_ui.sh` first), `./scripts/launch_registry.sh` |
+| Dev servers | `./scripts/launch_web_dev.sh` (web, needs `build_web_ui.sh` first), `./scripts/launch_registry.sh` |
 | shared/ui component gallery | `./scripts/launch_ui_gallery.sh` or `cd webui && npm run dev:ui` — dev-only, never built into either app's static assets. `TAKT_UI_HOST`/`TAKT_UI_PORT` override the default `127.0.0.1:5175`. |
 | Pi transport package | `./scripts/package_for_raspberry_pi.sh` |
 

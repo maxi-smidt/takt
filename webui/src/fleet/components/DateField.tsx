@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
+import { Field, IconButton, TextInput } from "../../shared/ui";
 import {
   MONTH_LABELS_DE,
   WEEKDAY_LABELS_DE,
@@ -76,33 +77,34 @@ export function DateField({ label, value, onChange }: DateFieldProps) {
 
   return (
     <div className="date-field" ref={containerRef}>
-      <label className="field-label">
-        {label}
-        <div className={"date-field-input" + (invalid ? " is-invalid" : "")}>
-          <input
-            type="text"
-            inputMode="numeric"
-            placeholder="TT.MM.JJJJ"
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            onBlur={(event) => commitText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") commitText(event.currentTarget.value);
-            }}
-          />
-          <button
-            type="button"
-            className="icon-button date-field-toggle"
-            aria-label="Kalender öffnen"
-            onClick={() => {
-              if (!open && value) setViewDate(new Date(new Date(value).getFullYear(), new Date(value).getMonth(), 1));
-              setOpen((current) => !current);
-            }}
-          >
-            <CalendarDays size={16} />
-          </button>
-        </div>
-      </label>
+      <Field label={label}>
+        {(fieldProps) => (
+          <div className={"date-field-input" + (invalid ? " is-invalid" : "")}>
+            <TextInput
+              {...fieldProps}
+              type="text"
+              inputMode="numeric"
+              placeholder="TT.MM.JJJJ"
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              onBlur={(event) => commitText(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") commitText(event.currentTarget.value);
+              }}
+            />
+            <IconButton
+              type="button"
+              className="date-field-toggle"
+              icon={<CalendarDays size={16} />}
+              aria-label="Kalender öffnen"
+              onClick={() => {
+                if (!open && value) setViewDate(new Date(new Date(value).getFullYear(), new Date(value).getMonth(), 1));
+                setOpen((current) => !current);
+              }}
+            />
+          </div>
+        )}
+      </Field>
       {open && (
         <div className="date-field-popup" role="dialog" aria-label={`Kalender – ${label}`}>
           <div className="date-field-popup-nav">
