@@ -15,6 +15,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 concurrency:
   group: release
@@ -147,7 +148,7 @@ jobs:
             -f title="Prepare release ${NEW_VERSION}" \
             -f head="release/v${NEW_VERSION}" \
             -f base="main" \
-            -f body="Automated version bump. Merges once the \`quality\` check passes; merging tags \`v${NEW_VERSION}\`, which triggers the release pipeline." \
+            -f body="Automated version bump. Merges once the \`quality\` check passes, tags \`v${NEW_VERSION}\`, and explicitly re-triggers the release pipeline (a push made with this workflow's own token can't trigger it on its own)." \
             --jq .number)"
           printf 'number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
 
@@ -208,3 +209,18 @@ jobs:
           git fetch origin main
           git tag "v${NEW_VERSION}" origin/main
           git push origin "v${NEW_VERSION}"
+
+      # GitHub Actions deliberately does not let a push made with a workflow's
+      # own GITHUB_TOKEN trigger other workflows (anti-recursion protection) --
+      # this applies to both the squash-merge above and the tag push just above,
+      # so "Publish TAKT distributions" (which builds/pushes the container image
+      # and creates the GitHub Release) would otherwise silently never run for
+      # an automated release. Dispatching it directly, scoped to the new tag,
+      # is not a cascading event and works fine with GITHUB_TOKEN.
+      - name: Trigger the publish workflow for the new tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          gh workflow run registry-image.yml --ref "v${NEW_VERSION}"
