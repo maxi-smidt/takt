@@ -26,7 +26,7 @@ function runsPayloadFor(deviceId: string) {
   return {
     device: { id: deviceId, name: deviceId },
     mirror: { sha256: "abc", last_mirrored_at: "2026-08-10T10:00:00Z", state: "fresh" },
-    summary: { count: 1, best_total_ms: 12345, average_total_ms: 12345, added_time_ms: 0 },
+    summary: { count: 1, best_total_ms: 12345, average_actual_ms: 12000, average_total_ms: 12345 },
     runs: [
       {
         id: `${deviceId}-run-1`,

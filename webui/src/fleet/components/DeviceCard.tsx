@@ -156,7 +156,12 @@ export function DeviceCard({
       <HealthChecks healthChecks={(device as { health_checks?: unknown }).health_checks} />
       <MaintenancePanel device={device} diagnostics={diagnostics} onAction={onMaintenance} />
       <footer>
-        <Button variant="secondary" disabled={!device.online || Boolean(updateRecovery) || Boolean(device.revoked_at)} onClick={() => onJob(device, "mirror_now")}>
+        <Button
+          variant="secondary"
+          disabled={!device.online || protocolLegacy || Boolean(updateRecovery) || Boolean(device.revoked_at)}
+          title={protocolLegacy ? "This Pi needs a compatible Fleet agent before remote jobs" : ""}
+          onClick={() => onJob(device, "mirror_now")}
+        >
           <Database size={14} /> MIRROR NOW
         </Button>
         <Button

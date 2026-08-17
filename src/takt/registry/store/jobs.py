@@ -19,6 +19,7 @@ from takt.registry.job_secrets import JobSecretCipher, JobSecretError
 from takt.registry.store.common import (
     JOB_LEASE_SECONDS,
     JOB_TERMINAL_STATUSES,
+    QUEUED_JOB_STALE_SECONDS,
     _Base,
     utc_iso,
     utc_now,
@@ -33,6 +34,13 @@ class JobsMixin(_Base):
         assert fleet_action is not None
         status = device.get("status") or {}
         protocol_version = status.get("protocol_version")
+        if protocol_version is None and status:
+            # The device has reported status before but still doesn't send a
+            # protocol version, so its Fleet agent predates the heartbeat/
+            # job-claim protocol entirely (e.g. an old 0.4.x agent) and will
+            # never claim a job -- treat it as protocol 0 rather than silently
+            # skipping the check.
+            protocol_version = 0
         if protocol_version is not None and int(protocol_version) < fleet_action.min_protocol:
             raise ValueError(
                 f"This Pi agent's Fleet protocol is too old for '{action}'; "
@@ -267,6 +275,43 @@ class JobsMixin(_Base):
             )
         job = self.get_job(row["id"])
         return self._attach_job_secret(job) if job else None
+
+    def expire_stale_queued_jobs(self) -> None:
+        """Fail queued jobs no agent has claimed in a reasonable time.
+
+        A job stays 'queued' forever if the target device's agent never polls
+        (offline) or predates the heartbeat/job-claim protocol (too old to
+        ever call claim_next_job) -- neither case is caught by the lease
+        expiry above, which only applies once a job has been claimed.
+        """
+        stale_before = utc_iso(utc_now() - timedelta(seconds=QUEUED_JOB_STALE_SECONDS))
+        message = (
+            "No agent claimed this job in time; the device may be offline or its "
+            "Fleet agent too old to support this action. Update the Fleet agent "
+            "once via SSH, then retry."
+        )
+        with self._transaction() as conn:
+            stale = conn.exec_driver_sql(
+                "SELECT id, action, device_id FROM jobs WHERE status = 'queued' AND created_at < ?",
+                (stale_before,),
+            ).mappings().all()
+            for job in stale:
+                job_id = str(job["id"])
+                stage = (
+                    "intervention_required" if job["action"] == "install_release" else "failed"
+                )
+                now = utc_iso()
+                conn.exec_driver_sql(
+                    """
+                    UPDATE jobs SET status = 'failed', stage = ?, progress = 100,
+                        message = ?, updated_at = ?, completed_at = ?
+                    WHERE id = ? AND status = 'queued'
+                    """,
+                    (stage, message, now, now, job_id),
+                )
+                conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
+                self._record_job_event(job_id, "failed", stage, message)
+                self._audit("job_queue_expired", str(job["device_id"]), {"job_id": job_id})
 
     def update_job(
         self,
@@ -547,6 +592,7 @@ class JobsMixin(_Base):
         return self._job(row) if row else None
 
     def list_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
+        self.expire_stale_queued_jobs()
         with self._read() as conn:
             rows = conn.exec_driver_sql(
                 """

@@ -33,7 +33,7 @@ export function UserAdminPanel({ csrf, devices }: UserAdminPanelProps) {
         <Field label="USERNAME">
           {(fieldProps) => <TextInput {...fieldProps} value={username} onChange={(event) => setUsername(event.target.value)} />}
         </Field>
-        <Button type="submit" variant="primary" disabled={!username}>CREATE USER</Button>
+        <Button type="submit" variant="primary" className="user-create-button" disabled={!username}>CREATE USER</Button>
       </form>
       {temporaryPassword && (
         <Callout tone="warning"><strong>ONE-TIME PASSWORD:</strong> <code>{temporaryPassword}</code></Callout>
