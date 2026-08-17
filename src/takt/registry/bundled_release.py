@@ -7,8 +7,8 @@ Registry imports that archive into persistent storage so a fresh
 ``docker compose up`` already has the matching release available, without any
 runtime network access.
 
-This module intentionally has no dependency on ``takt.registry.app`` so that
-``storage.py``/``server_main.py`` can use it without an import cycle.
+This module intentionally has no dependency on ``takt.registry.fastapi_app``
+so that ``storage.py``/``server_main.py`` can use it without an import cycle.
 """
 
 from __future__ import annotations
