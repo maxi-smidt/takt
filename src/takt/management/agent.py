@@ -1974,10 +1974,29 @@ class TaktAgent:
                 )
                 return
         if previous_target is None or not previous_target.exists():
-            raise RuntimeError(
-                "An interrupted update has no previous release to restore; "
-                "manual repair is required."
+            # Nothing left to retry: no previous release was captured (or it has
+            # since been removed), so automatic rollback is impossible -- the
+            # agent already did its best by restarting whatever was running when
+            # this first happened (see the "no previous release exists" branch
+            # in _install_release). Raising here forever would silently wedge
+            # every future heartbeat and job claim behind a dead end, since this
+            # check runs at the top of every run() iteration. Report the job
+            # failed once and clear the journal so normal operation resumes.
+            LOGGER.error(
+                "update_recovery_abandoned id=%s reason=no_previous_release", job_id
             )
+            await self._remember_result(
+                session,
+                job_id,
+                "failed",
+                "An interrupted update had no previous release to restore; "
+                "manually verify the running version.",
+                lease_id=lease_id,
+                stage="intervention_required",
+            )
+            self._clear_update_journal(job_id)
+            self._remove_maintenance_marker()
+            return
         marker_held = self._maintenance_marker_matches(job_id)
         if await self._service_is_active() and not marker_held:
             await self._acquire_maintenance(session, job_id, "Recover interrupted TAKT update")

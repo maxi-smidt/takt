@@ -426,6 +426,37 @@ class ManagementAgentTests(unittest.TestCase):
             systemctl.assert_not_awaited()
             self.assertTrue(agent.update_journal_path.exists())
 
+    def test_interrupted_update_without_a_previous_release_gives_up_instead_of_looping_forever(
+        self,
+    ) -> None:
+        # Regression test: a journal with no previous_target (e.g. the release
+        # symlink wasn't pointing at a managed release when an install failed)
+        # used to make _recover_interrupted_update raise on every single call
+        # forever, which -- since it runs at the top of every run() iteration --
+        # permanently blocked the heartbeat/job-claim cycle behind a dead end.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            agent._write_update_journal(
+                {
+                    "job_id": "b" * 24,
+                    "lease_id": "lease-b",
+                    "version": "0.4.0",
+                    "previous_target": None,
+                    "previous_version": "0.3.0",
+                    "phase": "rolling_back",
+                }
+            )
+            with patch.object(agent, "_send_job_event", AsyncMock()) as send_event:
+                asyncio.run(agent._recover_interrupted_update(object()))  # type: ignore[arg-type]
+            self.assertFalse(agent.update_journal_path.exists())
+            self.assertEqual(agent.state.pending_results, {})
+            send_event.assert_awaited_once()
+            call = send_event.await_args
+            self.assertEqual(call.args[1], "b" * 24)
+            self.assertEqual(call.args[2], "failed")
+            self.assertEqual(call.kwargs["stage"], "intervention_required")
+
     def test_stale_outbox_result_does_not_block_future_heartbeats(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
