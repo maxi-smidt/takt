@@ -22,6 +22,7 @@ export function useFleetDashboard(args: UseFleetDashboardArgs): {
   cancelJob: (job: Job) => Promise<void>;
   retryJob: (job: Job) => Promise<void>;
   forceClearJob: (job: Job) => Promise<void>;
+  deleteJob: (job: Job) => Promise<void>;
   acknowledgeRecovery: (device: Device) => Promise<void>;
   revokeDevice: (device: Device) => Promise<void>;
   uninstallRelease: (release: Release) => Promise<void>;

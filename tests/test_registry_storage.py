@@ -654,6 +654,85 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_fleet_wide_sweep_resolves_a_stuck_job_without_the_device_reconnecting(self) -> None:
+        # Regression coverage: a device that goes offline for good mid-job (bricked,
+        # decommissioned, powered off) never calls claim_next_job again, so the
+        # per-device lease-expiry check inside it would never run for that job.
+        # The periodic fleet-wide sweep must resolve it anyway.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])
+            try:
+                job = store.create_job(self.DEVICE_ID, "mirror_now")
+                store.claim_next_job(self.DEVICE_ID, "session-a")
+                with store.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "UPDATE jobs SET lease_expires_at = ? WHERE id = ?",
+                        (utc_iso(utc_now() - timedelta(seconds=1)), job["id"]),
+                    )
+                store.expire_stale_leased_jobs()
+                requeued = store.get_job(job["id"])
+                assert requeued is not None
+                self.assertEqual(requeued["status"], "queued")
+            finally:
+                store.close()
+
+    def test_fleet_wide_sweep_fails_a_stuck_power_job_without_the_device_reconnecting(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(
+                Path(temporary_directory), capabilities=["leased-jobs", "power-control-v1"]
+            )
+            try:
+                job = store.create_job(self.DEVICE_ID, "reboot_device")
+                store.claim_next_job(self.DEVICE_ID, "session-a")
+                with store.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "UPDATE jobs SET lease_expires_at = ? WHERE id = ?",
+                        (utc_iso(utc_now() - timedelta(seconds=1)), job["id"]),
+                    )
+                store.sweep_stale_jobs()
+                failed = store.get_job(job["id"])
+                assert failed is not None
+                self.assertEqual(failed["status"], "failed")
+                self.assertIn("did not confirm", failed["message"])
+            finally:
+                store.close()
+
+    def test_delete_job_removes_a_completed_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])
+            try:
+                job = store.create_job(self.DEVICE_ID, "mirror_now")
+                cleared = store.force_clear_job(job["id"], actor="admin")
+                self.assertEqual(cleared["status"], "failed")
+                store.delete_job(job["id"])
+                self.assertIsNone(store.get_job(job["id"]))
+                self.assertEqual(store.list_job_events(job["id"]), [])
+                self.assertNotIn(job["id"], [item["id"] for item in store.list_jobs()])
+            finally:
+                store.close()
+
+    def test_delete_job_refuses_an_active_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])
+            try:
+                job = store.create_job(self.DEVICE_ID, "mirror_now")
+                with self.assertRaisesRegex(ValueError, "Only a completed job"):
+                    store.delete_job(job["id"])
+                self.assertIsNotNone(store.get_job(job["id"]))
+            finally:
+                store.close()
+
+    def test_delete_job_missing_job_raises_lookup_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = self._store(Path(temporary_directory), capabilities=["leased-jobs"])
+            try:
+                with self.assertRaises(LookupError):
+                    store.delete_job("does-not-exist")
+            finally:
+                store.close()
+
     def test_diagnostics_bundles_are_stored_listed_and_pruned(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

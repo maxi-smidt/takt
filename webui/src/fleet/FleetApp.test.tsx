@@ -359,3 +359,94 @@ describe("device card update recovery alert", () => {
     expect(container.querySelector(".device-card.has-recovery")).toBeNull();
   });
 });
+
+describe("job list removal", () => {
+  let root: Root | null = null;
+  let container: HTMLDivElement | null = null;
+  let fetchMock: MockInstance<typeof fetch>;
+  let confirmMock: MockInstance<typeof window.confirm>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    confirmMock = vi.spyOn(window, "confirm").mockReturnValue(true);
+  });
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount();
+        await flush();
+      });
+      root = null;
+    }
+    container?.remove();
+    container = null;
+    fetchMock.mockRestore();
+    confirmMock.mockRestore();
+  });
+
+  it("lets an admin remove a completed job from the activity list", async () => {
+    let removed = false;
+    let deleteCalls = 0;
+
+    fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/api/session")) return jsonResponse(AUTHENTICATED_ADMIN);
+      if (method === "GET" && url.endsWith("/api/devices"))
+        return jsonResponse({
+          devices: [{ id: "d1", name: "Bahn 1", hostname: "d1.local", online: true, status: {} }],
+        });
+      if (method === "GET" && url.endsWith("/api/releases"))
+        return jsonResponse({ releases: [], bundled_release: null });
+      if (method === "GET" && url.endsWith("/api/jobs"))
+        return jsonResponse({
+          jobs: removed
+            ? []
+            : [
+                {
+                  id: "j1",
+                  device_id: "d1",
+                  device_name: "Bahn 1",
+                  action: "mirror_now",
+                  status: "succeeded",
+                  message: "mirror_now completed",
+                  updated_at: "2026-08-17T12:00:00Z",
+                },
+              ],
+        });
+      if (method === "GET" && url.endsWith("/api/admin/users")) return jsonResponse({ users: [] });
+      if (method === "DELETE" && url.endsWith("/api/jobs/j1")) {
+        deleteCalls += 1;
+        removed = true;
+        return jsonResponse({ ok: true });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(createElement(App));
+      await flush();
+    });
+
+    expect(container.textContent).toContain("mirror now");
+
+    const removeButton = Array.from(container.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === "REMOVE",
+    );
+    if (!removeButton) throw new Error("Remove button not found");
+    await act(async () => {
+      removeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(confirmMock).toHaveBeenCalled();
+    expect(deleteCalls).toBe(1);
+    expect(container.textContent).toContain("No remote operations have been requested.");
+  });
+});

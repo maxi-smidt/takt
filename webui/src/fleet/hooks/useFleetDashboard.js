@@ -105,6 +105,16 @@ export function useFleetDashboard({ session, refreshSession }) {
     }
   };
 
+  const deleteJob = async (job) => {
+    if (!window.confirm(`Remove the ${job.action.replaceAll("_", " ")} entry for ${job.device_name}?`)) return;
+    try {
+      await request(`/api/jobs/${job.id}`, { method: "DELETE" }, session.csrf_token);
+      await load();
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+
   const acknowledgeRecovery = async (device) => {
     if (!window.confirm(`${device.name}: acknowledge the update recovery alert?`)) return;
     try {
@@ -175,6 +185,7 @@ export function useFleetDashboard({ session, refreshSession }) {
     cancelJob,
     retryJob,
     forceClearJob,
+    deleteJob,
     acknowledgeRecovery,
     revokeDevice,
     uninstallRelease,

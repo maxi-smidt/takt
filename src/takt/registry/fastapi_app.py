@@ -595,13 +595,29 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             except Exception:
                 LOGGER.exception("registry_maintenance_failed")
 
+    async def sweep_jobs() -> None:
+        # Runs far more often than the hourly `maintain` loop: a device that
+        # goes offline mid-job (bricked, powered off for good, decommissioned)
+        # would otherwise leave that job wedged for up to an hour, blocking
+        # any new disruptive operation queued for it in the meantime.
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await asyncio.to_thread(store.sweep_stale_jobs)
+            except Exception:
+                LOGGER.exception("registry_job_sweep_failed")
+
     task = asyncio.create_task(maintain(), name="registry-maintenance")
+    jobs_task = asyncio.create_task(sweep_jobs(), name="registry-job-sweep")
     try:
         yield
     finally:
         task.cancel()
+        jobs_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        with contextlib.suppress(asyncio.CancelledError):
+            await jobs_task
         await app.state.deployments.close()
 
 
@@ -1426,6 +1442,19 @@ def create_fastapi_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return JSONResponse({"job": job}, status_code=201)
+
+    @app.delete("/api/jobs/{job_id}")
+    async def delete_job(
+        job_id: str,
+        _: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
+    ) -> dict[str, Any]:
+        try:
+            store.delete_job(job_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"ok": True}
 
     @app.get("/api/devices/{device_id}/mirror")
     async def download_mirror(
