@@ -20,6 +20,7 @@ from takt.management.agent import (
     Identity,
     StaleJobResult,
     TaktAgent,
+    expanded_symlink_path,
 )
 
 
@@ -52,6 +53,71 @@ class ManagementAgentTests(unittest.TestCase):
             second = Identity.load_or_create(path)
             self.assertEqual(first.device_token, second.device_token)
             self.assertFalse(first.enrolled)
+
+    def test_expanded_symlink_path_does_not_follow_an_existing_symlink(self) -> None:
+        # Regression test: current_link must stay the stable location
+        # _switch_current atomically replaces. Path.resolve() (used by the
+        # plain expanded() helper, for every *other* path config field)
+        # follows an existing symlink all the way to its target -- which
+        # would make current_link silently become "whatever release is
+        # currently active" instead of "the current symlink itself" on every
+        # agent start after the first successful install, breaking every
+        # later install's atomic activation step.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "releases" / "0.6.0"
+            target.mkdir(parents=True)
+            link = root / "current"
+            link.symlink_to(target)
+            self.assertEqual(expanded_symlink_path(str(link)), link)
+
+    def test_expanded_symlink_path_still_normalizes_user_and_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "a" / "b").mkdir(parents=True)
+            self.assertEqual(
+                expanded_symlink_path(str(root / "a" / ".." / "a" / "b" / "current")),
+                root / "a" / "b" / "current",
+            )
+
+    def test_config_load_keeps_current_link_as_the_symlink_not_its_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "releases" / "0.6.0"
+            target.mkdir(parents=True)
+            link = root / "current"
+            link.symlink_to(target)
+            toml_path = root / "agent.toml"
+            toml_path.write_text(
+                f'[agent]\ncurrent_link = "{link}"\n', encoding="utf-8"
+            )
+            config = AgentConfig.load(toml_path)
+            self.assertEqual(config.current_link, link)
+
+    def test_switch_current_activates_a_new_release_when_current_already_points_elsewhere(
+        self,
+    ) -> None:
+        # Confirms _switch_current's atomic swap itself works correctly for a
+        # "second install" (current_link already a symlink to another
+        # release) given a correct current_link value. Combined with the two
+        # tests above -- which confirm current_link now stays that correct,
+        # literal value instead of resolving through to the previous
+        # release's real directory -- this closes the loop on the regression:
+        # before the fix, config.current_link would have held that resolved
+        # real directory, and this exact swap would have crashed with
+        # IsADirectoryError instead of replacing the symlink.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            previous_release = root / "releases" / "0.6.0"
+            previous_release.mkdir(parents=True)
+            new_release = root / "releases" / "0.7.0"
+            new_release.mkdir(parents=True)
+            config = self._config(root, root / "takt.db")
+            config.current_link = root / "current"
+            config.current_link.symlink_to(previous_release)
+            agent = TaktAgent(config)
+            agent._switch_current(new_release)
+            self.assertEqual(config.current_link.resolve(), new_release)
 
     def test_snapshot_is_a_consistent_sqlite_copy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -201,6 +267,44 @@ class ManagementAgentTests(unittest.TestCase):
             install = run.call_args
             self.assertNotIn("--no-deps", install.args[0])
             self.assertEqual(run.call_args.kwargs["timeout"], 900)
+
+    def test_install_release_refuses_upfront_when_current_link_is_a_real_directory(
+        self,
+    ) -> None:
+        # Regression test: _switch_current does an atomic symlink swap onto
+        # current_link, which the OS refuses when current_link is a real
+        # directory instead of a symlink. That used to only surface deep into
+        # the install -- after the live TAKT service was already stopped -- as
+        # a raw IsADirectoryError, and since current_link.is_symlink() is also
+        # false in that case, previous_target was always None too, feeding
+        # straight into the update-recovery dead end. It's now caught upfront,
+        # before anything disruptive (health check, download, service stop)
+        # happens.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = self._config(root, root / "takt.db")
+            config.current_link.mkdir(parents=True)
+            (config.current_link / "marker.txt").write_text("real directory, not a symlink")
+            agent = TaktAgent(config)
+            payload = b"irrelevant"
+            job = {
+                "id": "a" * 24,
+                "lease_id": "lease",
+                "release": {
+                    "version": "0.2.0",
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "size": len(payload),
+                },
+            }
+            with (
+                patch.object(agent, "_local_health", AsyncMock()) as local_health,
+                patch.object(agent, "_download_release", AsyncMock()) as download,
+                self.assertRaisesRegex(RuntimeError, "is not a symlink"),
+            ):
+                asyncio.run(agent._install_release(object(), job))  # type: ignore[arg-type]
+            local_health.assert_not_awaited()
+            download.assert_not_awaited()
+            self.assertTrue((config.current_link / "marker.txt").is_file())
 
     def test_dependency_install_failure_leaves_running_release_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -425,6 +529,37 @@ class ManagementAgentTests(unittest.TestCase):
                 asyncio.run(agent._recover_interrupted_update(object()))  # type: ignore[arg-type]
             systemctl.assert_not_awaited()
             self.assertTrue(agent.update_journal_path.exists())
+
+    def test_interrupted_update_without_a_previous_release_gives_up_instead_of_looping_forever(
+        self,
+    ) -> None:
+        # Regression test: a journal with no previous_target (e.g. the release
+        # symlink wasn't pointing at a managed release when an install failed)
+        # used to make _recover_interrupted_update raise on every single call
+        # forever, which -- since it runs at the top of every run() iteration --
+        # permanently blocked the heartbeat/job-claim cycle behind a dead end.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            agent = TaktAgent(self._config(root, root / "takt.db"))
+            agent._write_update_journal(
+                {
+                    "job_id": "b" * 24,
+                    "lease_id": "lease-b",
+                    "version": "0.4.0",
+                    "previous_target": None,
+                    "previous_version": "0.3.0",
+                    "phase": "rolling_back",
+                }
+            )
+            with patch.object(agent, "_send_job_event", AsyncMock()) as send_event:
+                asyncio.run(agent._recover_interrupted_update(object()))  # type: ignore[arg-type]
+            self.assertFalse(agent.update_journal_path.exists())
+            self.assertEqual(agent.state.pending_results, {})
+            send_event.assert_awaited_once()
+            call = send_event.await_args
+            self.assertEqual(call.args[1], "b" * 24)
+            self.assertEqual(call.args[2], "failed")
+            self.assertEqual(call.kwargs["stage"], "intervention_required")
 
     def test_stale_outbox_result_does_not_block_future_heartbeats(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

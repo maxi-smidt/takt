@@ -78,6 +78,24 @@ def expanded(value: str) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def expanded_symlink_path(value: str) -> Path:
+    """Like `expanded()`, but never dereferences the final path component.
+
+    Only for `current_link`, which `_switch_current` treats as a stable
+    location it atomically replaces with a new symlink. `expanded()`'s
+    `Path.resolve()` fully dereferences an *existing* symlink at that path,
+    which would silently turn "the current-link path" into "whatever real
+    release directory it currently points at" the moment current_link
+    already exists (i.e. on every agent start after the very first
+    successful install) -- and every later install would then try to
+    atomically replace that real directory with a symlink, which the OS
+    refuses (IsADirectoryError), deep into the install, after the live TAKT
+    service has already been stopped.
+    """
+    path = Path(value).expanduser()
+    return path.parent.resolve() / path.name
+
+
 def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -123,7 +141,9 @@ class AgentConfig:
     database_path: Path = field(default_factory=lambda: expanded("~/.local/share/takt/takt.db"))
     data_directory: Path = field(default_factory=lambda: expanded("~/.local/share/takt-agent"))
     release_root: Path = field(default_factory=lambda: expanded("~/.local/share/takt/releases"))
-    current_link: Path = field(default_factory=lambda: expanded("~/.local/share/takt/current"))
+    current_link: Path = field(
+        default_factory=lambda: expanded_symlink_path("~/.local/share/takt/current")
+    )
     release_environment: Path = field(
         default_factory=lambda: expanded("~/.config/takt/release.env")
     )
@@ -170,7 +190,6 @@ class AgentConfig:
                 "database_path",
                 "data_directory",
                 "release_root",
-                "current_link",
                 "release_environment",
                 "maintenance_marker",
                 "wifi_helper_path",
@@ -180,6 +199,8 @@ class AgentConfig:
             ):
                 if key in raw:
                     setattr(config, key, expanded(str(raw[key])))
+            if "current_link" in raw:
+                config.current_link = expanded_symlink_path(str(raw["current_link"]))
         config.config_path = path
         config.registry_url = os.environ.get("TAKT_REGISTRY_URL", config.registry_url).rstrip("/")
         config.enrollment_code = os.environ.get("TAKT_ENROLLMENT_CODE", config.enrollment_code)
@@ -1231,6 +1252,18 @@ class TaktAgent:
             raise RuntimeError("Release checksum is invalid.")
         if expected_size <= 0 or expected_size > MAX_RELEASE_SIZE:
             raise RuntimeError("Release size is invalid or exceeds the agent limit.")
+        if self.config.current_link.exists() and not self.config.current_link.is_symlink():
+            # _switch_current does an atomic symlink swap (os.replace onto
+            # current_link), which the OS refuses when current_link is a real
+            # directory instead of a symlink -- it would fail deep into the
+            # install, after already stopping the live TAKT service, with a raw
+            # IsADirectoryError and no previous release to fall back to. Catching
+            # it here, before anything disruptive happens, avoids that outage and
+            # gives an operator a message they can actually act on over SSH.
+            raise RuntimeError(
+                f"{self.config.current_link} exists but is not a symlink; installs require "
+                "it to be a symlink to the active release. Manual repair over SSH is required."
+            )
         health = await self._local_health(session)
         if health.get("state") != "ready":
             await self._progress_job(
@@ -1974,10 +2007,29 @@ class TaktAgent:
                 )
                 return
         if previous_target is None or not previous_target.exists():
-            raise RuntimeError(
-                "An interrupted update has no previous release to restore; "
-                "manual repair is required."
+            # Nothing left to retry: no previous release was captured (or it has
+            # since been removed), so automatic rollback is impossible -- the
+            # agent already did its best by restarting whatever was running when
+            # this first happened (see the "no previous release exists" branch
+            # in _install_release). Raising here forever would silently wedge
+            # every future heartbeat and job claim behind a dead end, since this
+            # check runs at the top of every run() iteration. Report the job
+            # failed once and clear the journal so normal operation resumes.
+            LOGGER.error(
+                "update_recovery_abandoned id=%s reason=no_previous_release", job_id
             )
+            await self._remember_result(
+                session,
+                job_id,
+                "failed",
+                "An interrupted update had no previous release to restore; "
+                "manually verify the running version.",
+                lease_id=lease_id,
+                stage="intervention_required",
+            )
+            self._clear_update_journal(job_id)
+            self._remove_maintenance_marker()
+            return
         marker_held = self._maintenance_marker_matches(job_id)
         if await self._service_is_active() and not marker_held:
             await self._acquire_maintenance(session, job_id, "Recover interrupted TAKT update")
