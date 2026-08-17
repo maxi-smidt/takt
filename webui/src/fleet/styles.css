@@ -139,6 +139,7 @@ input:focus, select:focus { border-color: var(--green); }
 .recovery-row small { display: block; margin-top: 5px; color: #e0c68d; font-size: var(--fs-small); font-weight: 400; overflow-wrap: anywhere; letter-spacing: 0; line-height: 1.5; }
 .recovery-row strong { flex: none; margin-left: auto; font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps); }
 .recovery-row .secondary-button { flex: none; margin-left: auto; min-height: 34px; padding: 0 14px; }
+.recovery-row .danger-action { color: #ffb0a2; background: #241512; border-color: #63382f; }
 .update-control { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 18px 20px; }
 .update-control label { color: var(--muted); font-size: var(--fs-label); font-weight: 600; letter-spacing: var(--ls-caps); }
 .update-control select { display: block; margin-top: 8px; padding: 10px 11px; font-size: var(--fs-small); }
@@ -165,6 +166,7 @@ input:focus, select:focus { border-color: var(--green); }
 .job-copy strong { display: block; text-transform: uppercase; font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps); }
 .job-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: var(--fs-small); }
 .job-row time { color: var(--muted); font-size: var(--fs-small); }
+.job-row .danger-action { color: #ffb0a2; background: #241512; border-color: #63382f; }
 .job-progress { width: 100%; height: 5px; border: 0; appearance: none; background: #27332f; }
 .job-progress::-webkit-progress-bar { background: #27332f; }
 .job-progress::-webkit-progress-value { background: var(--green); }

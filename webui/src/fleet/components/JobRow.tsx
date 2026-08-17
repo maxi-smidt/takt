@@ -2,7 +2,7 @@
 import { Check, RefreshCw, RotateCcw, X } from "lucide-react";
 import { bytes, timeAgo } from "../formatters";
 
-export function JobRow({ job, onCancel, onRetry }) {
+export function JobRow({ job, onCancel, onRetry, onForceClear }) {
   const active = ["queued", "claimed", "running"].includes(job.status);
   const progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
   return (
@@ -19,6 +19,7 @@ export function JobRow({ job, onCancel, onRetry }) {
         aria-label={`${job.action.replaceAll("_", " ")} progress`}
       />
       {job.action === "install_release" && active && !["activating", "restarting", "health_checking"].includes(job.stage) && <button className="secondary-button" onClick={() => onCancel(job)}>CANCEL</button>}
+      {active && <button className="secondary-button danger-action" onClick={() => onForceClear(job)}>FORCE CLEAR</button>}
       {job.action !== "add_wifi_network" && ["rolled_back", "failed", "cancelled"].includes(job.status) && <button className="secondary-button" onClick={() => onRetry(job)}><RotateCcw size={14} /> RETRY</button>}
       <time>{timeAgo(job.updated_at)}</time>
     </div>

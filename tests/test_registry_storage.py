@@ -340,6 +340,66 @@ class RegistryStorageTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_force_clear_job_unblocks_a_wedged_late_stage_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            device_id = "12345678-1234-1234-1234-123456789abc"
+            store = RegistryStore(root)
+            try:
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code,
+                    device_id=device_id,
+                    name="Lane 1",
+                    hostname="takt-01",
+                    token="a" * 64,
+                )
+                store.update_heartbeat(
+                    device_id, {"protocol_version": 1, "app_version": "0.1.0", "poll_seconds": 10}
+                )
+                source = root / "release.tar.gz"
+                source.write_bytes(b"release")
+                release = store.add_release(
+                    version="0.2.0",
+                    filename=source.name,
+                    sha256=hashlib.sha256(b"release").hexdigest(),
+                    size=source.stat().st_size,
+                    source=source,
+                )
+                job = store.create_job(device_id, "install_release", {"release_id": release["id"]})
+                claimed = store.claim_next_job(device_id, "session-a")
+                assert claimed is not None
+                store.update_job(
+                    job["id"],
+                    device_id,
+                    "running",
+                    90,
+                    "Activating",
+                    claimed["lease_id"],
+                    stage="activating",
+                )
+
+                with self.assertRaises(ValueError):
+                    store.cancel_job(job["id"])
+                with self.assertRaises(ValueError):
+                    store.create_job(device_id, "restart_takt", {})
+
+                cleared = store.force_clear_job(job["id"], actor="admin")
+                self.assertEqual(cleared["status"], "failed")
+                self.assertEqual(cleared["stage"], "intervention_required")
+                self.assertIsNone(cleared["lease_id"])
+
+                # Already-terminal jobs are left alone (idempotent).
+                reclear = store.force_clear_job(job["id"], actor="admin")
+                self.assertEqual(reclear["status"], "failed")
+
+                # The device's queue is unblocked for a new disruptive job.
+                next_job = store.create_job(device_id, "restart_takt", {})
+                self.assertNotEqual(next_job["id"], job["id"])
+                self.assertGreaterEqual(len(store.list_job_events(job["id"])), 3)
+            finally:
+                store.close()
+
 
 class FleetMaintenanceStorageTests(unittest.TestCase):
     DEVICE_ID = "12345678-1234-1234-1234-123456789abc"
