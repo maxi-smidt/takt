@@ -110,6 +110,38 @@ class FastApiRegistryTests(unittest.TestCase):
                         )
                     self.assertEqual(missing_force_clear.status_code, 404)
 
+                    with patch.object(store, "delete_job", return_value=None) as delete_job:
+                        deleted_job = client.request(
+                            "DELETE",
+                            "/api/jobs/job-1",
+                            headers={"X-CSRF-Token": csrf},
+                        )
+                    self.assertEqual(deleted_job.status_code, 200)
+                    self.assertTrue(deleted_job.json()["ok"])
+                    self.assertEqual(delete_job.call_args.args[0], "job-1")
+
+                    with patch.object(
+                        store, "delete_job", side_effect=LookupError("Job does not exist.")
+                    ):
+                        missing_delete = client.request(
+                            "DELETE",
+                            "/api/jobs/missing",
+                            headers={"X-CSRF-Token": csrf},
+                        )
+                    self.assertEqual(missing_delete.status_code, 404)
+
+                    with patch.object(
+                        store,
+                        "delete_job",
+                        side_effect=ValueError("Only a completed job can be removed."),
+                    ):
+                        active_delete = client.request(
+                            "DELETE",
+                            "/api/jobs/job-1",
+                            headers={"X-CSRF-Token": csrf},
+                        )
+                    self.assertEqual(active_delete.status_code, 400)
+
                     release_archive = io.BytesIO()
                     with tarfile.open(fileobj=release_archive, mode="w:gz") as archive:
                         for name, content in (

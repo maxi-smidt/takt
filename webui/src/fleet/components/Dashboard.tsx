@@ -46,6 +46,7 @@ export function Dashboard({ session, refreshSession }: DashboardProps) {
     cancelJob,
     retryJob,
     forceClearJob,
+    deleteJob,
     acknowledgeRecovery,
     revokeDevice,
     uninstallRelease,
@@ -96,7 +97,7 @@ export function Dashboard({ session, refreshSession }: DashboardProps) {
         {error && <Callout tone="danger">{error}</Callout>}
         <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><Button variant="secondary" onClick={load}><RefreshCw size={14} /> REFRESH</Button></section>
         <section className="device-grid">
-          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release")} diagnostics={diagnostics[device.id]} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onForceClear={forceClearJob} onRevoke={revokeDevice} onWifi={setWifiDevice} onMaintenance={(target, action) => setConfirmation({ device: target, action })} onAcknowledgeRecovery={acknowledgeRecovery} />)}
+          {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release")} diagnostics={diagnostics[device.id]} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onForceClear={forceClearJob} onDelete={deleteJob} onRevoke={revokeDevice} onWifi={setWifiDevice} onMaintenance={(target, action) => setConfirmation({ device: target, action })} onAcknowledgeRecovery={acknowledgeRecovery} />)}
           {!devices.length && (
             <div className="empty-card">
               <Server size={28} />
@@ -109,7 +110,7 @@ export function Dashboard({ session, refreshSession }: DashboardProps) {
         <section className="operations">
           <div className="section-heading"><div><span>02 · ACTIVITY</span><h2>DEPLOYMENT JOBS</h2></div></div>
           <div className="job-list">
-            {jobs.slice(0, 12).map((job) => <JobRow key={job.id} job={job} onCancel={cancelJob} onRetry={retryJob} onForceClear={forceClearJob} />)}
+            {jobs.slice(0, 12).map((job) => <JobRow key={job.id} job={job} onCancel={cancelJob} onRetry={retryJob} onForceClear={forceClearJob} onDelete={deleteJob} />)}
             {!jobs.length && <div className="jobs-empty">No remote operations have been requested.</div>}
           </div>
         </section>

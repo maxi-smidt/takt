@@ -25,6 +25,11 @@ from takt.registry.store.common import (
     utc_now,
 )
 
+QUEUED_JOB_WAITING_MESSAGE = (
+    "Waiting for the device to come online and claim this job (fails automatically "
+    f"after {QUEUED_JOB_STALE_SECONDS // 60} min if it doesn't)."
+)
+
 
 class JobsMixin(_Base):
     _job_secret_cipher: JobSecretCipher | None
@@ -118,8 +123,8 @@ class JobsMixin(_Base):
                 """
                 INSERT INTO jobs(
                     id, device_id, action, payload_json, status, stage, requested_by_user_id,
-                    current_version, target_version, bytes_total, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'queued', 'queued', ?, ?, ?, ?, ?, ?)
+                    current_version, target_version, bytes_total, message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'queued', 'queued', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -130,6 +135,7 @@ class JobsMixin(_Base):
                     device.get("app_version"),
                     release.get("version") if release else None,
                     release.get("size") if release else None,
+                    QUEUED_JOB_WAITING_MESSAGE,
                     now,
                     now,
                 ),
@@ -165,14 +171,15 @@ class JobsMixin(_Base):
             conn.exec_driver_sql(
                 """
                 INSERT INTO jobs(
-                    id, device_id, action, payload_json, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'queued', ?, ?)
+                    id, device_id, action, payload_json, status, message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
                 """,
                 (
                     job_id,
                     device_id,
                     action,
                     json.dumps({"ssid": ssid, "priority": 0}, separators=(",", ":")),
+                    QUEUED_JOB_WAITING_MESSAGE,
                     now,
                     now,
                 ),
@@ -190,9 +197,20 @@ class JobsMixin(_Base):
         assert job is not None
         return job
 
-    def claim_next_job(self, device_id: str, agent_session_id: str = "") -> dict[str, Any] | None:
-        now_value = utc_now()
-        now = utc_iso(now_value)
+    def expire_stale_leased_jobs(self, device_id: str | None = None) -> None:
+        """Resolve claimed/running jobs whose lease expired without renewal.
+
+        Called both per-device from `claim_next_job` (so a device that comes
+        back online never gets stuck behind its own dead job) and fleet-wide
+        from the periodic maintenance sweep (`RegistryStore.sweep_stale_jobs`)
+        -- a device that never reconnects at all (bricked, decommissioned,
+        powered off for good) would otherwise leave its job wedged in
+        'claimed'/'running' forever, since nothing would ever call
+        `claim_next_job` for it again to trigger this cleanup.
+        """
+        now = utc_iso()
+        device_filter = "AND device_id = ?" if device_id is not None else ""
+        device_params: tuple[Any, ...] = (device_id,) if device_id is not None else ()
         with self._transaction() as conn:
             # Power actions kill the agent before it can renew its lease; requeuing
             # them like any other expired lease would make the device reboot or
@@ -201,11 +219,11 @@ class JobsMixin(_Base):
             no_requeue_placeholders = ",".join("?" for _ in NO_REQUEUE_ON_LEASE_EXPIRY)
             expired_no_requeue = conn.exec_driver_sql(
                 f"""
-                SELECT id FROM jobs WHERE device_id = ? AND status IN ('claimed', 'running')
+                SELECT id, device_id FROM jobs WHERE status IN ('claimed', 'running')
                     AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
-                    AND action IN ({no_requeue_placeholders})
+                    AND action IN ({no_requeue_placeholders}) {device_filter}
                 """,
-                (device_id, now, *NO_REQUEUE_ON_LEASE_EXPIRY),
+                (now, *NO_REQUEUE_ON_LEASE_EXPIRY, *device_params),
             ).mappings().all()
             for expired in expired_no_requeue:
                 job_id = str(expired["id"])
@@ -224,17 +242,24 @@ class JobsMixin(_Base):
                 )
                 conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
                 self._record_job_event(job_id, "failed", "failed", message)
-                self._audit("job_lease_expired_unconfirmed", device_id, {"job_id": job_id})
+                self._audit(
+                    "job_lease_expired_unconfirmed", str(expired["device_id"]), {"job_id": job_id}
+                )
             conn.exec_driver_sql(
-                """
+                f"""
                 UPDATE jobs SET status = 'queued', claimed_at = NULL, lease_id = NULL,
                     lease_expires_at = NULL, lease_owner_session = NULL,
                     message = 'Job lease expired; retrying safely', updated_at = ?
-                WHERE device_id = ? AND status IN ('claimed', 'running')
-                    AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
+                WHERE status IN ('claimed', 'running')
+                    AND lease_expires_at IS NOT NULL AND lease_expires_at < ? {device_filter}
                 """,
-                (now, device_id, now),
+                (now, now, *device_params),
             )
+
+    def claim_next_job(self, device_id: str, agent_session_id: str = "") -> dict[str, Any] | None:
+        now_value = utc_now()
+        now = utc_iso(now_value)
+        self.expire_stale_leased_jobs(device_id)
         with self._read() as conn:
             active = conn.exec_driver_sql(
                 """
@@ -312,6 +337,16 @@ class JobsMixin(_Base):
                 conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
                 self._record_job_event(job_id, "failed", stage, message)
                 self._audit("job_queue_expired", str(job["device_id"]), {"job_id": job_id})
+
+    def sweep_stale_jobs(self) -> None:
+        """Resolve every job stuck behind an offline or unresponsive device.
+
+        Combines both stale-job checks so a periodic fleet-wide sweep (and the
+        Jobs list, which is often the operator's only signal something is
+        wrong) never depends on the affected device's agent reconnecting.
+        """
+        self.expire_stale_queued_jobs()
+        self.expire_stale_leased_jobs()
 
     def update_job(
         self,
@@ -551,6 +586,28 @@ class JobsMixin(_Base):
         assert retried is not None
         return retried
 
+    def delete_job(self, job_id: str) -> None:
+        """Remove a completed job from the list once it can no longer affect the device.
+
+        Only terminal jobs qualify -- an active job must go through cancel or
+        force-clear first, both of which unblock the device's queue; deleting
+        an active job outright would just hide that a job (and its lease) is
+        still occupying that slot.
+        """
+        job = self.get_job(job_id)
+        if job is None:
+            raise LookupError("Job does not exist.")
+        if job["status"] not in JOB_TERMINAL_STATUSES:
+            raise ValueError("Only a completed job can be removed.")
+        with self._transaction() as conn:
+            conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
+            conn.exec_driver_sql("DELETE FROM job_events WHERE job_id = ?", (job_id,))
+            conn.exec_driver_sql("UPDATE jobs SET retry_of = NULL WHERE retry_of = ?", (job_id,))
+            conn.exec_driver_sql("DELETE FROM jobs WHERE id = ?", (job_id,))
+            self._audit(
+                "job_deleted", job["device_id"], {"job_id": job_id, "action": job["action"]}
+            )
+
     def list_job_events(self, job_id: str) -> list[dict[str, Any]]:
         with self._read() as conn:
             return [
@@ -592,7 +649,7 @@ class JobsMixin(_Base):
         return self._job(row) if row else None
 
     def list_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
-        self.expire_stale_queued_jobs()
+        self.sweep_stale_jobs()
         with self._read() as conn:
             rows = conn.exec_driver_sql(
                 """

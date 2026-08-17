@@ -10,6 +10,7 @@ import {
   Radio,
   RotateCcw,
   Server,
+  Trash2,
   TriangleAlert,
   Wifi,
 } from "lucide-react";
@@ -29,6 +30,7 @@ interface DeviceCardProps {
   onCancel: (job: Job) => void;
   onRetry: (job: Job) => void;
   onForceClear: (job: Job) => void;
+  onDelete: (job: Job) => void;
   onRevoke: (device: Device) => void;
   onWifi: (device: Device) => void;
   onMaintenance: (device: Device, action: string) => void;
@@ -44,6 +46,7 @@ export function DeviceCard({
   onCancel,
   onRetry,
   onForceClear,
+  onDelete,
   onRevoke,
   onWifi,
   onMaintenance,
@@ -70,6 +73,7 @@ export function DeviceCard({
   ].filter(Boolean);
   const installActive = job && ["queued", "claimed", "running"].includes(job.status);
   const installRetryable = job && ["rolled_back", "failed", "cancelled"].includes(job.status);
+  const installTerminal = job && !installActive;
   const canCancel = installActive && !["activating", "restarting", "health_checking"].includes(job.stage ?? "");
   const stageLabel = job?.stage?.replaceAll("_", " ") || job?.status;
   const transfer = job?.bytes_total != null
@@ -126,6 +130,7 @@ export function DeviceCard({
             {canCancel && <Button variant="secondary" size="sm" onClick={() => onCancel(job)}>CANCEL</Button>}
             {installActive && <Button variant="danger" size="sm" onClick={() => onForceClear(job)}>FORCE CLEAR</Button>}
             {installRetryable && <Button variant="secondary" size="sm" onClick={() => onRetry(job)}><RotateCcw size={14} /> RETRY</Button>}
+            {installTerminal && <Button variant="secondary" size="sm" onClick={() => onDelete(job)}><Trash2 size={14} /> DISMISS</Button>}
           </div>
         </div>
       )}
