@@ -4,7 +4,7 @@ import { KeyRound, Zap } from "lucide-react";
 import { request } from "../services/fleetService";
 
 export function Login({ onLogin }) {
-  const [username, setUsername] = useState("admin");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
