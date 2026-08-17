@@ -86,19 +86,22 @@ jobs:
 
       # A previous attempt (e.g. a retried run) may have left a stale
       # release branch and/or PR behind — clear it so this run can push a
-      # fresh branch instead of hitting a non-fast-forward rejection.
+      # fresh branch instead of hitting a non-fast-forward rejection. Uses
+      # the plain REST API (gh api), not the GraphQL-backed `gh pr`
+      # porcelain commands — see the "Open the release PR" step below.
       - name: Clean up a stale branch/PR from a previous attempt
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_VERSION: ${{ steps.bump.outputs.version }}
         run: |
           set -Eeuo pipefail
-          existing_pr="$(gh pr view "release/v${NEW_VERSION}" --json number --jq .number 2>/dev/null || true)"
+          existing_pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f head="${GITHUB_REPOSITORY_OWNER}:release/v${NEW_VERSION}" -f state=open \
+            --jq '.[0].number // empty' 2>/dev/null || true)"
           if [[ -n "$existing_pr" ]]; then
-            gh pr close "$existing_pr" --delete-branch || true
-          else
-            git push origin --delete "release/v${NEW_VERSION}" 2>/dev/null || true
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${existing_pr}" -f state=closed >/dev/null || true
           fi
+          git push origin --delete "release/v${NEW_VERSION}" 2>/dev/null || true
 
       - name: Commit bump to a release branch
         env:
@@ -113,8 +116,13 @@ jobs:
           git push origin "release/v${NEW_VERSION}"
 
       # main is protected and requires the "quality" check to pass, so we
-      # can't push the bump commit directly — go through a PR instead. The
-      # GitHub API occasionally returns transient 5xx errors, so retry.
+      # can't push the bump commit directly — go through a PR instead.
+      #
+      # `gh pr create`/`gh pr view`/`gh pr merge` go through GitHub's
+      # GraphQL API, which has proven less reliable than the plain REST
+      # API during GitHub incidents — so this and the following steps use
+      # `gh api` (REST) throughout, plus a retry helper for transient 5xx
+      # errors.
       - name: Open the release PR
         id: pr
         env:
@@ -135,18 +143,19 @@ jobs:
               delay=$(( delay * 2 ))
             done
           }
-          retry gh pr create \
-            --base main \
-            --head "release/v${NEW_VERSION}" \
-            --title "Prepare release ${NEW_VERSION}" \
-            --body "Automated version bump. Merges once the \`quality\` check passes; merging tags \`v${NEW_VERSION}\`, which triggers the release pipeline."
-          pr_number="$(retry gh pr view "release/v${NEW_VERSION}" --json number --jq .number)"
+          pr_number="$(retry gh api "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f title="Prepare release ${NEW_VERSION}" \
+            -f head="release/v${NEW_VERSION}" \
+            -f base="main" \
+            -f body="Automated version bump. Merges once the \`quality\` check passes; merging tags \`v${NEW_VERSION}\`, which triggers the release pipeline." \
+            --jq .number)"
           printf 'number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
 
       - name: Wait for the required check, then squash-merge
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
         run: |
           set -Eeuo pipefail
           retry() {
@@ -166,17 +175,17 @@ jobs:
           timeout_seconds=1800
           interval=15
           while true; do
-            if conclusion="$(gh pr view "$PR_NUMBER" --json statusCheckRollup \
-                --jq '[.statusCheckRollup[] | select(.name == "quality")][0].conclusion // "PENDING"' 2>/dev/null)"; then
+            if conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/commits/release%2Fv${NEW_VERSION}/check-runs" \
+                --jq '[.check_runs[] | select(.name == "quality")][0].conclusion // "pending"' 2>/dev/null)"; then
               :
             else
-              conclusion="PENDING"
+              conclusion="pending"
             fi
             case "$conclusion" in
-              SUCCESS)
+              success)
                 break
                 ;;
-              FAILURE | CANCELLED | TIMED_OUT | STARTUP_FAILURE | ACTION_REQUIRED)
+              failure | cancelled | timed_out | action_required | stale)
                 printf 'Required "quality" check finished with conclusion: %s\n' "$conclusion" >&2
                 exit 1
                 ;;
@@ -188,7 +197,8 @@ jobs:
             sleep "$interval"
             elapsed=$(( elapsed + interval ))
           done
-          retry gh pr merge "$PR_NUMBER" --squash --delete-branch
+          retry gh api -X PUT "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge" -f merge_method=squash
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads%2Frelease%2Fv${NEW_VERSION}" >/dev/null || true
 
       - name: Tag the merged release commit
         env:
