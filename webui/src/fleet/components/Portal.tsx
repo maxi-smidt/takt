@@ -1,7 +1,25 @@
 // @ts-nocheck
-import { LogOut, RefreshCw, Zap } from "lucide-react";
+import { Check, LogOut, RefreshCw, Zap } from "lucide-react";
 import { usePortalRuns } from "../hooks/usePortalRuns";
 import { formatDate, formatDateTime, formatStopwatch, mirrorStateLabel } from "../formatters";
+import { formatIsoDate } from "../dateInput";
+import { DateField } from "./DateField";
+import { PortalRunsChart } from "./PortalRunsChart";
+
+const TIMEFRAMES = [
+  { id: "day", label: "TAG" },
+  { id: "year", label: "JAHR" },
+  { id: "all", label: "GESAMT" },
+];
+
+function activeTimeframe(from, to) {
+  const today = formatIsoDate(new Date());
+  const yearStart = formatIsoDate(new Date(new Date().getFullYear(), 0, 1));
+  if (from === today && to === today) return "day";
+  if (from === yearStart && to === today) return "year";
+  if (!from && !to) return "all";
+  return null;
+}
 
 export function Portal({ session, refreshSession }) {
   const {
@@ -19,6 +37,24 @@ export function Portal({ session, refreshSession }) {
     command,
   } = usePortalRuns({ session, refreshSession });
 
+  const applyTimeframe = (preset) => {
+    const today = new Date();
+    if (preset === "day") {
+      const iso = formatIsoDate(today);
+      setFrom(iso);
+      setTo(iso);
+    } else if (preset === "year") {
+      setFrom(formatIsoDate(new Date(today.getFullYear(), 0, 1)));
+      setTo(formatIsoDate(today));
+    } else {
+      setFrom("");
+      setTo("");
+    }
+  };
+
+  const currentTimeframe = activeTimeframe(from, to);
+  const canWrite = devices.find((item) => item.id === deviceId)?.access === "write" || session.user?.is_admin;
+
   return (
     <div className="fleet-app portal-app">
       <header className="topbar">
@@ -32,8 +68,8 @@ export function Portal({ session, refreshSession }) {
         <section className="hero">
           <div>
             <span className="eyebrow">AUTORISIERTES LAUFPORTAL</span>
-            <h1>GESPIEGELTE LÄUFE</h1>
-            <p>Schreibgeschützte Momentaufnahmen bleiben in der Registry; Änderungen werden an den maßgeblichen Pi gesendet.</p>
+            <h1>LÄUFE</h1>
+            <p>Hier findest du die gespeicherten Läufe deiner Buzzer. Sie werden automatisch aktuell gehalten.</p>
           </div>
         </section>
         {error && <div className="global-error">{error}</div>}
@@ -44,9 +80,15 @@ export function Portal({ session, refreshSession }) {
         <section className="device-grid">
           {devices.map((device) => (
             <button className={"device-card portal-device " + (device.id === deviceId ? "selected" : "")} key={device.id} onClick={() => setDeviceId(device.id)}>
-              <strong>{device.name}</strong>
-              <span>{mirrorStateLabel(device.mirror_state)} · {device.run_count ?? 0} Läufe</span>
-              <small>{formatDateTime(device.last_mirrored_at) || "Noch kein Spiegel"}</small>
+              <div className="portal-device-row">
+                <strong>{device.name}</strong>
+                {device.id === deviceId && <Check size={16} />}
+              </div>
+              <div className="portal-device-row">
+                <span>{mirrorStateLabel(device.mirror_state)}</span>
+                <span>{device.run_count ?? 0} Läufe</span>
+              </div>
+              <small>{formatDateTime(device.last_mirrored_at) || "Noch keine Daten"}</small>
             </button>
           ))}
           {!devices.length && (
@@ -60,32 +102,65 @@ export function Portal({ session, refreshSession }) {
           <section className="operations">
             <div className="section-heading">
               <div><span>LAUFVERLAUF</span><h2>{runs.summary.count} LÄUFE</h2></div>
-              <span>{mirrorStateLabel(runs.mirror.state)} · {formatDateTime(runs.mirror.last_mirrored_at) || "noch nicht gespiegelt"}</span>
+              <span>{mirrorStateLabel(runs.mirror.state)} · {formatDateTime(runs.mirror.last_mirrored_at) || "noch nicht aktualisiert"}</span>
             </div>
-            <div className="enrollment-fields">
-              <label className="field-label">VON<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
-              <label className="field-label">BIS<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+            <div className="portal-filters">
+              <div className="timeframe-group">
+                {TIMEFRAMES.map((timeframe) => (
+                  <button
+                    key={timeframe.id}
+                    className={"timeframe-button" + (currentTimeframe === timeframe.id ? " is-active" : "")}
+                    onClick={() => applyTimeframe(timeframe.id)}
+                  >
+                    {timeframe.label}
+                  </button>
+                ))}
+              </div>
+              <div className="portal-date-fields">
+                <DateField label="VON" value={from} onChange={setFrom} />
+                <DateField label="BIS" value={to} onChange={setTo} />
+              </div>
             </div>
             <div className="summary-grid">
               <div><strong>{formatStopwatch(runs.summary.best_total_ms)}</strong><span>BESTZEIT</span></div>
               <div><strong>{formatStopwatch(Math.round(runs.summary.average_total_ms || 0))}</strong><span>DURCHSCHNITT</span></div>
               <div><strong>{formatStopwatch(runs.summary.added_time_ms)}</strong><span>ZUSCHLAG</span></div>
             </div>
-            <div className="job-list">
-              {runs.runs.map((run) => (
-                <article className="job-row" key={run.id}>
-                  <div className="job-copy">
-                    <strong>Lauf {run.run_number} · {formatDate(run.session_date)}</strong>
-                    <span>{formatStopwatch(run.total_time_ms)} gesamt · {formatStopwatch(run.actual_time_ms)} Ist-Zeit · +{formatStopwatch(run.added_time_ms)} Zuschlag</span>
-                  </div>
-                  {(devices.find((item) => item.id === deviceId)?.access === "write" || session.user?.is_admin) && (
-                    <>
-                      <button className="secondary-button" onClick={() => command(run, "adjust_added_time", Math.max(0, run.added_time_ms + 5000))}>+5 s</button>
-                      <button className="secondary-button" onClick={() => command(run, "delete")}>LÖSCHEN</button>
-                    </>
-                  )}
-                </article>
-              ))}
+            <div className="portal-chart-panel">
+              <PortalRunsChart runs={runs.runs} bestTotalMs={runs.summary.best_total_ms} />
+            </div>
+            <div className="runs-table-wrap">
+              <table className="runs-table">
+                <thead>
+                  <tr>
+                    <th>LAUF</th>
+                    <th>DATUM</th>
+                    <th>GESAMT</th>
+                    <th>IST-ZEIT</th>
+                    <th>ZUSCHLAG</th>
+                    {canWrite && <th className="runs-actions-head">AKTIONEN</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {runs.runs.map((run) => (
+                    <tr key={run.id}>
+                      <td>{run.run_number}</td>
+                      <td>{formatDate(run.session_date)}</td>
+                      <td>{formatStopwatch(run.total_time_ms)}</td>
+                      <td>{formatStopwatch(run.actual_time_ms)}</td>
+                      <td>+{formatStopwatch(run.added_time_ms)}</td>
+                      {canWrite && (
+                        <td className="runs-actions">
+                          <div className="runs-actions-buttons">
+                            <button className="secondary-button" onClick={() => command(run, "adjust_added_time", Math.max(0, run.added_time_ms + 5000))}>+5 s</button>
+                            <button className="secondary-button" onClick={() => command(run, "delete")}>LÖSCHEN</button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
               {!runs.runs.length && <div className="jobs-empty">Keine Läufe im gewählten Zeitraum.</div>}
             </div>
           </section>
