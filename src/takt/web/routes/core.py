@@ -24,15 +24,12 @@ async def index(request: web.Request) -> web.FileResponse:
 async def health(request: web.Request) -> web.Response:
     runtime = request.app[RUNTIME_KEY]
     maintenance = runtime.maintenance_status()
-    schema_row = runtime.repository.connection.execute(
-        "SELECT version FROM schema_version LIMIT 1"
-    ).fetchone()
     return web.json_response(
         {
             "ok": True,
             "ready": not maintenance["held"],
             "version": os.environ.get("TAKT_RELEASE_VERSION", __version__),
-            "database_schema_version": int(schema_row[0]) if schema_row else None,
+            "database_schema_version": runtime.repository.get_schema_version(),
             "state": runtime.controller.state.value,
             "hardware_available": runtime.hardware_available,
             "maintenance": maintenance,

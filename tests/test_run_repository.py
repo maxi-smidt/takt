@@ -5,9 +5,11 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from sqlite3 import IntegrityError
+
+from sqlalchemy.exc import IntegrityError
 
 from takt.domain.duration import Duration
+from takt.persistence.models import runs
 from takt.persistence.run_repository import SQLiteRunRepository
 
 
@@ -104,23 +106,20 @@ class RunRepositoryTests(unittest.TestCase):
         )
 
     def test_database_rejects_inconsistent_total(self) -> None:
-        with self.assertRaises(IntegrityError), self.repository.connection:
-            self.repository.connection.execute(
-                """
-                    INSERT INTO runs (
-                        run_number, started_at, stopped_at, saved_at,
-                        actual_time_ms, added_time_ms, total_time_ms,
-                        session_date, created_at, updated_at
-                    ) VALUES (1, ?, ?, ?, 1000, 500, 1000, ?, ?, ?)
-                    """,
-                (
-                    self.base.isoformat(),
-                    self.base.isoformat(),
-                    self.base.isoformat(),
-                    self.base.date().isoformat(),
-                    self.base.isoformat(),
-                    self.base.isoformat(),
-                ),
+        with self.assertRaises(IntegrityError), self.repository.engine.begin() as conn:
+            conn.execute(
+                runs.insert().values(
+                    run_number=1,
+                    started_at=self.base.isoformat(),
+                    stopped_at=self.base.isoformat(),
+                    saved_at=self.base.isoformat(),
+                    actual_time_ms=1000,
+                    added_time_ms=500,
+                    total_time_ms=1000,
+                    session_date=self.base.date().isoformat(),
+                    created_at=self.base.isoformat(),
+                    updated_at=self.base.isoformat(),
+                )
             )
 
 

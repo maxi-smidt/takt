@@ -1,9 +1,9 @@
 """SQLAlchemy Core table definitions for the Pi run database.
 
 This is the source of truth for the schema; `migrations/versions/` applies
-it (and any future changes to it) as Alembic revisions. Application code
-still talks to the database through raw `sqlite3` (see `run_repository.py`)
-so these are plain Core `Table` objects rather than an ORM mapping.
+it (and any future changes to it) as Alembic revisions. `run_repository.py`
+queries these tables through SQLAlchemy Core (plain `Table` objects rather
+than an ORM mapping, matching `registry/models.py`).
 """
 
 from __future__ import annotations

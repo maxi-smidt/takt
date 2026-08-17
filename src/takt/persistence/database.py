@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
+
+from sqlalchemy import Engine, create_engine, event
 
 from takt.migrations_runtime import stamp, upgrade_to_head
 
@@ -10,6 +13,9 @@ HEAD_REVISION = "0001"
 
 
 def _ensure_schema(path: Path) -> None:
+    # Pre-Alembic bootstrap probing happens before the SQLAlchemy engine
+    # exists, so it talks to the file directly (same pattern as
+    # RegistryStore.__init__ probing "PRAGMA user_version").
     probe = sqlite3.connect(path)
     try:
         has_alembic_version = (
@@ -33,12 +39,17 @@ def _ensure_schema(path: Path) -> None:
     upgrade_to_head(MIGRATIONS_DIRECTORY, path)
 
 
-def connect_database(path: Path) -> sqlite3.Connection:
+def connect_database(path: Path) -> Engine:
     path.parent.mkdir(parents=True, exist_ok=True)
     _ensure_schema(path)
-    connection = sqlite3.connect(path, timeout=10.0)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA journal_mode = WAL")
-    connection.execute("PRAGMA synchronous = FULL")
-    return connection
+    engine = create_engine(f"sqlite:///{path}", future=True, connect_args={"timeout": 10.0})
+
+    @event.listens_for(engine, "connect")
+    def _configure_connection(dbapi_connection: Any, connection_record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON")
+        cursor.execute("PRAGMA journal_mode = WAL")
+        cursor.execute("PRAGMA synchronous = FULL")
+        cursor.close()
+
+    return engine
