@@ -1,0 +1,70 @@
+<!-- @dsCard group="Components" -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Forms — TAKT UI</title>
+    <link rel="stylesheet" href="../styles.css" />
+    <link rel="stylesheet" href="../theme-fleet.css" />
+    <style>
+      .ds-field { display: grid; gap: 8px; max-width: 320px; }
+    </style>
+  </head>
+  <body>
+    <div class="ds-page">
+      <nav class="ds-nav">
+        <a href="../thumbnail.html">Overview</a>
+        <a href="../foundations/color.html">Color</a>
+        <a href="../foundations/type.html">Type</a>
+        <a href="./buttons.html">Buttons</a>
+        <a href="./forms.html" aria-current="page">Forms</a>
+        <a href="./dialog.html">Dialog</a>
+        <a href="./feedback.html">Feedback</a>
+      </nav>
+      <span class="ds-eyebrow">Components</span>
+      <h1>Forms</h1>
+      <p class="ds-intro">
+        <code>Field</code> wraps a label/hint/error around any control and hands it a generated
+        id via a render-prop, so the same wrapper works for a native input or a Radix Select.
+        Source: <code>Field.tsx</code>, <code>TextInput.tsx</code>, <code>Select.tsx</code>,
+        <code>Checkbox.tsx</code>.
+      </p>
+
+      <section class="ds-section">
+        <h2>Text field</h2>
+        <div class="ds-row">
+          <div class="ds-field">
+            <label class="takt-field-label" for="name">Device name</label>
+            <input class="takt-input" id="name" value="lehrgang-3" />
+            <span class="takt-field-hint">Shown across the fleet portal</span>
+          </div>
+          <div class="ds-field">
+            <label class="takt-field-label" for="name-err">Device name</label>
+            <input class="takt-input" id="name-err" aria-invalid="true" value="" />
+            <span class="takt-field-error" role="alert">Required</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="ds-section">
+        <h2>Select</h2>
+        <p>Rendered here as a static trigger — the real component opens a Radix listbox.</p>
+        <div class="ds-field">
+          <label class="takt-field-label" for="channel">Release channel</label>
+          <button class="takt-select-trigger" id="channel" type="button" aria-haspopup="listbox">
+            <span>Stable</span>
+            <span class="takt-select-icon" aria-hidden="true">⌄</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="ds-section">
+        <h2>Checkbox</h2>
+        <label class="takt-checkbox-row">
+          <span class="takt-checkbox" data-state="checked" role="checkbox" aria-checked="true" tabindex="0">✓</span>
+          Interrupt the run anyway
+        </label>
+      </section>
+    </div>
+  </body>
+</html>

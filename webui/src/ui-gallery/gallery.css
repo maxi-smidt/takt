@@ -1,0 +1,142 @@
+/* The active theme-timer/theme-fleet class lives on <body> (see Gallery.tsx)
+   so Radix's body-mounted dialog/select portals inherit it too — so the
+   colors and font here just read the --ui-* values body already carries. */
+body {
+  margin: 0;
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font-family: var(--ui-font-ui);
+}
+
+.gallery {
+  min-height: 100vh;
+  padding: 32px 40px 80px;
+}
+
+.gallery-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 20px;
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--ui-line);
+}
+
+.gallery-header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -.01em;
+}
+
+.gallery-theme-toggle {
+  display: inline-flex;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius);
+  overflow: hidden;
+}
+
+.gallery-theme-toggle button {
+  min-height: 36px;
+  padding: 0 16px;
+  border: 0;
+  background: var(--ui-surface);
+  color: var(--ui-muted);
+  font: inherit;
+  font-size: var(--ui-fs-small);
+  font-weight: 700;
+  letter-spacing: var(--ui-ls-caps);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.gallery-theme-toggle button[aria-pressed="true"] {
+  background: var(--ui-accent);
+  color: var(--ui-accent-contrast);
+}
+
+.gallery-section {
+  margin-bottom: 44px;
+}
+
+.gallery-section h2 {
+  margin: 0 0 4px;
+  font-size: var(--ui-fs-label);
+  font-weight: 700;
+  letter-spacing: var(--ui-ls-caps-wide);
+  text-transform: uppercase;
+  color: var(--ui-accent);
+}
+
+.gallery-section p {
+  margin: 0 0 16px;
+  color: var(--ui-muted);
+  font-size: var(--ui-fs-small);
+}
+
+.gallery-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.gallery-row + .gallery-row {
+  margin-top: 12px;
+}
+
+.gallery-card {
+  width: min(360px, 100%);
+  padding: 16px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+
+/* Real per-app palettes, mirrored from the adapter blocks appended to
+   ../styles.css (timer) and ../fleet/styles.css (fleet) — kept in sync by
+   hand since the gallery doesn't load either app's full stylesheet. */
+.theme-timer {
+  --ui-bg: #080e13;
+  --ui-surface: #0c151c;
+  --ui-surface-raised: #101c24;
+  --ui-line: #20313b;
+  --ui-line-strong: #334954;
+  --ui-text: #e8edef;
+  --ui-muted: #94a5ad;
+  --ui-accent: #2ba8e0;
+  --ui-accent-contrast: #071016;
+  --ui-success: #45c667;
+  --ui-warning: #f2ad26;
+  --ui-danger: #f05b62;
+  --ui-radius: 2px;
+  --ui-control-height: 44px;
+  --ui-touch-target: 44px;
+  --ui-fs-label: 11px;
+  --ui-fs-small: 12px;
+  --ui-fs-base: 13px;
+}
+
+.theme-fleet {
+  --ui-bg: #08100f;
+  --ui-surface: #101918;
+  --ui-surface-raised: #14201e;
+  --ui-line: #2a3936;
+  --ui-line-strong: #3a4c48;
+  --ui-text: #e4efec;
+  --ui-muted: #9dada9;
+  --ui-accent: #5ceaad;
+  --ui-accent-contrast: #07110e;
+  --ui-success: #5ceaad;
+  --ui-warning: #f7c665;
+  --ui-danger: #f78585;
+  --ui-radius: 0px;
+  --ui-control-height: 46px;
+  --ui-touch-target: 46px;
+  --ui-fs-label: 12px;
+  --ui-fs-small: 13px;
+  --ui-fs-base: 14px;
+  --ui-ls-caps: .07em;
+  --ui-ls-caps-wide: .1em;
+}

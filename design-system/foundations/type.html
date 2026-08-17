@@ -1,0 +1,70 @@
+<!-- @dsCard group="Foundations" -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Type — TAKT UI</title>
+    <link rel="stylesheet" href="../styles.css" />
+    <link rel="stylesheet" href="../theme-fleet.css" />
+  </head>
+  <body>
+    <div class="ds-page">
+      <nav class="ds-nav">
+        <a href="../thumbnail.html">Overview</a>
+        <a href="./color.html">Color</a>
+        <a href="./type.html" aria-current="page">Type</a>
+        <a href="../components/buttons.html">Buttons</a>
+        <a href="../components/forms.html">Forms</a>
+        <a href="../components/dialog.html">Dialog</a>
+        <a href="../components/feedback.html">Feedback</a>
+      </nav>
+      <span class="ds-eyebrow">Foundations</span>
+      <h1>Type</h1>
+      <p class="ds-intro">
+        One UI face throughout — Inter, falling back to the system sans so a device without it
+        doesn't render narrowed — plus a monospace face reserved for technical values: run
+        times, IDs, protocol numbers. Nothing in the interface drops below --ui-fs-label.
+      </p>
+
+      <section class="ds-section">
+        <h2>Scale</h2>
+        <div class="ds-type-row">
+          <span>--ui-fs-label</span>
+          <strong style="font-size: var(--ui-fs-label); letter-spacing: var(--ui-ls-caps); text-transform: uppercase; font-weight: 700;">
+            Eyebrows &amp; field labels
+          </strong>
+        </div>
+        <div class="ds-type-row">
+          <span>--ui-fs-small</span>
+          <span style="font-size: var(--ui-fs-small);">Secondary lines inside dense rows</span>
+        </div>
+        <div class="ds-type-row">
+          <span>--ui-fs-base</span>
+          <span style="font-size: var(--ui-fs-base);">Prose, buttons, primary row text</span>
+        </div>
+        <div class="ds-type-row">
+          <span>24px</span>
+          <strong style="font-size: 24px; font-weight: 800; letter-spacing: -.01em;">Dialog / section titles</strong>
+        </div>
+      </section>
+
+      <section class="ds-section">
+        <h2>Monospace</h2>
+        <p>--ui-font-mono — reserved for technical readouts, never prose.</p>
+        <div class="ds-type-row">
+          <span>--ui-font-mono</span>
+          <span style="font-family: var(--ui-font-mono); font-size: var(--ui-fs-base);">00:34.812 · rev a1c9f2e · protocol 1</span>
+        </div>
+      </section>
+
+      <section class="ds-section">
+        <h2>Tracking</h2>
+        <p>Uppercase labels carry --ui-ls-caps; wider eyebrows use --ui-ls-caps-wide.</p>
+        <div class="ds-row">
+          <span style="letter-spacing: var(--ui-ls-caps); text-transform: uppercase; font-weight: 700; font-size: var(--ui-fs-label);">Field label</span>
+          <span style="letter-spacing: var(--ui-ls-caps-wide); text-transform: uppercase; color: var(--ui-accent); font-weight: 700; font-size: var(--ui-fs-label);">Confirm maintenance</span>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

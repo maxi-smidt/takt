@@ -1,16 +1,25 @@
-// @ts-nocheck
-import { X } from "lucide-react";
+import type { ReactNode } from "react";
+import { Dialog } from "../../shared/ui";
 
-export function Modal({ title, eyebrow, onClose, children, wide = false }) {
+interface ModalProps {
+  title: string;
+  eyebrow?: string;
+  onClose: () => void;
+  wide?: boolean;
+  children?: ReactNode;
+}
+
+/**
+ * Fleet portal's modal shell. A thin wrapper over the shared Dialog so the
+ * six call sites (AccessModal, ConfirmModal, EnrollmentModal, ReleaseModal,
+ * WifiModal, PasswordChange) don't need to change — but dialog semantics
+ * (focus trap, Escape, scroll lock, ARIA) now come from Radix instead of
+ * being hand-rolled.
+ */
+export function Modal({ title, eyebrow, onClose, wide = false, children }: ModalProps) {
   return (
-    <div className="modal-layer" role="presentation" onMouseDown={onClose}>
-      <section className={`modal ${wide ? "modal-wide" : ""}`} role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <header>
-          <div><span>{eyebrow}</span><h2>{title}</h2></div>
-          <button className="icon-button" onClick={onClose} aria-label="Close"><X size={18} /></button>
-        </header>
-        {children}
-      </section>
-    </div>
+    <Dialog title={title} eyebrow={eyebrow} wide={wide} onClose={onClose}>
+      {children}
+    </Dialog>
   );
 }

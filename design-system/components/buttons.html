@@ -1,0 +1,57 @@
+<!-- @dsCard group="Components" -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Buttons — TAKT UI</title>
+    <link rel="stylesheet" href="../styles.css" />
+    <link rel="stylesheet" href="../theme-fleet.css" />
+  </head>
+  <body>
+    <div class="ds-page">
+      <nav class="ds-nav">
+        <a href="../thumbnail.html">Overview</a>
+        <a href="../foundations/color.html">Color</a>
+        <a href="../foundations/type.html">Type</a>
+        <a href="./buttons.html" aria-current="page">Buttons</a>
+        <a href="./forms.html">Forms</a>
+        <a href="./dialog.html">Dialog</a>
+        <a href="./feedback.html">Feedback</a>
+      </nav>
+      <span class="ds-eyebrow">Components</span>
+      <h1>Buttons</h1>
+      <p class="ds-intro">
+        <code>.takt-btn</code> with a variant and optional <code>.takt-btn-sm</code>. Source:
+        <code>webui/src/shared/ui/Button.tsx</code> / <code>IconButton.tsx</code>.
+      </p>
+
+      <section class="ds-section">
+        <h2>Variants</h2>
+        <div class="ds-row">
+          <button class="takt-btn takt-btn-primary">Primary</button>
+          <button class="takt-btn takt-btn-secondary">Secondary</button>
+          <button class="takt-btn takt-btn-ghost">Ghost</button>
+          <button class="takt-btn takt-btn-danger">Danger</button>
+        </div>
+      </section>
+
+      <section class="ds-section">
+        <h2>Size &amp; state</h2>
+        <div class="ds-row">
+          <button class="takt-btn takt-btn-primary takt-btn-sm">Small</button>
+          <button class="takt-btn takt-btn-primary" disabled>Disabled</button>
+          <button class="takt-btn takt-btn-primary" aria-busy="true" disabled>Loading…</button>
+        </div>
+      </section>
+
+      <section class="ds-section">
+        <h2>Icon button</h2>
+        <p><code>.takt-icon-btn</code> — square, always paired with an aria-label in code.</p>
+        <div class="ds-row">
+          <button class="takt-btn takt-btn-ghost takt-icon-btn" aria-label="Close">✕</button>
+          <button class="takt-btn takt-btn-secondary takt-icon-btn" aria-label="Refresh">↻</button>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

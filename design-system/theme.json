@@ -1,0 +1,28 @@
+{
+  "name": "TAKT UI",
+  "description": "Sharp-edged, high-contrast dark system shared by the TAKT Pi timer and Fleet Registry portal.",
+  "source": "webui/src/shared/ui/tokens.css",
+  "contract": {
+    "ground": ["--ui-bg", "--ui-surface", "--ui-surface-raised", "--ui-line", "--ui-line-strong"],
+    "text": ["--ui-text", "--ui-muted"],
+    "status": ["--ui-accent", "--ui-accent-contrast", "--ui-success", "--ui-warning", "--ui-danger"],
+    "shape": ["--ui-radius", "--ui-control-height", "--ui-touch-target"],
+    "type": ["--ui-font-ui", "--ui-font-mono", "--ui-fs-label", "--ui-fs-small", "--ui-fs-base", "--ui-ls-caps", "--ui-ls-caps-wide"]
+  },
+  "surfaces": {
+    "fleet": {
+      "label": "Fleet Registry portal",
+      "adapter": "webui/src/fleet/styles.css",
+      "accent": "#5ceaad",
+      "bg": "#08100f",
+      "radius": "0px"
+    },
+    "timer": {
+      "label": "Pi timer app",
+      "adapter": "webui/src/styles.css",
+      "accent": "#2ba8e0",
+      "bg": "#080e13",
+      "radius": "2px"
+    }
+  }
+}

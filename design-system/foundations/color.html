@@ -1,0 +1,67 @@
+<!-- @dsCard group="Foundations" -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Color — TAKT UI</title>
+    <link rel="stylesheet" href="../styles.css" />
+    <link rel="stylesheet" href="../theme-fleet.css" />
+  </head>
+  <body>
+    <div class="ds-page">
+      <nav class="ds-nav">
+        <a href="../thumbnail.html">Overview</a>
+        <a href="./color.html" aria-current="page">Color</a>
+        <a href="./type.html">Type</a>
+        <a href="../components/buttons.html">Buttons</a>
+        <a href="../components/forms.html">Forms</a>
+        <a href="../components/dialog.html">Dialog</a>
+        <a href="../components/feedback.html">Feedback</a>
+      </nav>
+      <span class="ds-eyebrow">Foundations</span>
+      <h1>Color</h1>
+      <p class="ds-intro">
+        Every color a component uses comes from the <code>--ui-*</code> contract in
+        <code>tokens.css</code> — never a raw hex. This page is rendered with the real Fleet
+        Registry mapping (<code>theme-fleet.css</code>); the Pi timer app maps the same nine
+        roles onto its own blue-black palette instead. See "Two surfaces, one contract" in
+        readme.md.
+      </p>
+
+      <section class="ds-section">
+        <h2>Ground</h2>
+        <p>--ui-bg, --ui-surface, --ui-surface-raised, --ui-line, --ui-line-strong</p>
+        <div class="ds-swatches">
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-bg)"></i><span>--ui-bg</span></div>
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-surface)"></i><span>--ui-surface</span></div>
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-surface-raised)"></i><span>--ui-surface-raised</span></div>
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-line)"></i><span>--ui-line</span></div>
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-line-strong)"></i><span>--ui-line-strong</span></div>
+        </div>
+      </section>
+
+      <section class="ds-section">
+        <h2>Text</h2>
+        <p>--ui-text, --ui-muted</p>
+        <div class="ds-swatches">
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-text)"></i><span>--ui-text</span></div>
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-muted)"></i><span>--ui-muted</span></div>
+        </div>
+      </section>
+
+      <section class="ds-section">
+        <h2>Accent &amp; status</h2>
+        <p>
+          --ui-accent is the only role that changes between surfaces — green here, blue on the
+          Pi timer. Success/warning/danger stay fixed across both.
+        </p>
+        <div class="ds-swatches">
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-accent)"></i><span>--ui-accent</span></div>
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-success)"></i><span>--ui-success</span></div>
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-warning)"></i><span>--ui-warning</span></div>
+          <div class="ds-swatch"><i style="--ui-swatch: var(--ui-danger)"></i><span>--ui-danger</span></div>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

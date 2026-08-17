@@ -1,0 +1,60 @@
+<!-- @dsCard group="Components" -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Dialog — TAKT UI</title>
+    <link rel="stylesheet" href="../styles.css" />
+    <link rel="stylesheet" href="../theme-fleet.css" />
+  </head>
+  <body>
+    <div class="ds-page">
+      <nav class="ds-nav">
+        <a href="../thumbnail.html">Overview</a>
+        <a href="../foundations/color.html">Color</a>
+        <a href="../foundations/type.html">Type</a>
+        <a href="./buttons.html">Buttons</a>
+        <a href="./forms.html">Forms</a>
+        <a href="./dialog.html" aria-current="page">Dialog</a>
+        <a href="./feedback.html">Feedback</a>
+      </nav>
+      <span class="ds-eyebrow">Components</span>
+      <h1>Dialog</h1>
+      <p class="ds-intro">
+        A modal at the top elevation, backed by Radix Dialog for the focus trap, Escape and
+        scroll lock — this page only shows the static shell. Source:
+        <code>webui/src/shared/ui/Dialog.tsx</code>, wrapped by
+        <code>fleet/components/Modal.tsx</code>.
+      </p>
+
+      <section class="ds-section">
+        <h2>Shell</h2>
+        <div style="position: relative; height: 420px; border: 1px dashed var(--ui-line); display: grid; place-items: center; background: rgb(2 7 6 / 40%);">
+          <div class="takt-dialog" style="position: static; transform: none; width: min(480px, 90%);">
+            <header class="takt-dialog-header">
+              <div>
+                <span class="takt-dialog-eyebrow">Confirm maintenance</span>
+                <h2 class="takt-dialog-title">Restart Pi · lehrgang-3</h2>
+              </div>
+              <button class="takt-btn takt-btn-ghost takt-icon-btn takt-dialog-close" aria-label="Close">✕</button>
+            </header>
+            <div class="takt-dialog-body">
+              <p style="margin: 0 0 14px;">You are about to restart the TAKT service on <strong>lehrgang-3</strong>.</p>
+              <div class="takt-callout takt-callout-danger">
+                <span aria-hidden="true">▲</span>
+                <div>
+                  <strong>THIS PI IS NOT IDLE</strong>
+                  <p style="margin: 6px 0 0;">The timer is <strong>running</strong>. Continuing will interrupt a running or unsaved run.</p>
+                </div>
+              </div>
+            </div>
+            <footer class="takt-dialog-actions">
+              <button class="takt-btn takt-btn-secondary">Cancel</button>
+              <button class="takt-btn takt-btn-primary">Restart</button>
+            </footer>
+          </div>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

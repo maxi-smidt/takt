@@ -1,0 +1,158 @@
+/*
+ * The real TAKT Fleet Registry palette, mapped onto the --ui-* contract in
+ * styles.css. Hand-authored (not generated) — mirrors the adapter block
+ * appended to webui/src/fleet/styles.css exactly. Every preview page in
+ * this project links this file after styles.css so what you see here is
+ * what fleet.takt actually renders.
+ *
+ * The Pi timer app consumes the same component set with a different
+ * mapping instead: blue accent (#2ba8e0), 2px radius, blue-black ground.
+ * See readme.md ("Two surfaces, one contract").
+ */
+:root {
+  --ui-bg: #08100f;
+  --ui-surface: #101918;
+  --ui-surface-raised: #14201e;
+  --ui-line: #2a3936;
+  --ui-line-strong: #3a4c48;
+  --ui-text: #e4efec;
+  --ui-muted: #9dada9;
+  --ui-accent: #5ceaad;
+  --ui-accent-contrast: #07110e;
+  --ui-success: #5ceaad;
+  --ui-warning: #f7c665;
+  --ui-danger: #f78585;
+  --ui-radius: 0px;
+  --ui-control-height: 46px;
+  --ui-touch-target: 46px;
+  --ui-fs-label: 12px;
+  --ui-fs-small: 13px;
+  --ui-fs-base: 14px;
+  --ui-ls-caps: .07em;
+  --ui-ls-caps-wide: .1em;
+}
+
+body {
+  margin: 0;
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font-family: var(--ui-font-ui);
+}
+
+.ds-page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+.ds-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  padding-bottom: 20px;
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--ui-line);
+  font-size: var(--ui-fs-small);
+}
+
+.ds-nav a {
+  color: var(--ui-muted);
+  text-decoration: none;
+}
+
+.ds-nav a:hover,
+.ds-nav a[aria-current="page"] {
+  color: var(--ui-accent);
+}
+
+.ds-eyebrow {
+  display: block;
+  color: var(--ui-accent);
+  font-size: var(--ui-fs-label);
+  font-weight: 700;
+  letter-spacing: var(--ui-ls-caps-wide);
+  text-transform: uppercase;
+}
+
+.ds-page h1 {
+  margin: 6px 0 12px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -.01em;
+}
+
+.ds-page > p.ds-intro {
+  margin: 0 0 40px;
+  max-width: 62ch;
+  color: var(--ui-muted);
+  font-size: var(--ui-fs-base);
+  line-height: 1.6;
+}
+
+.ds-section {
+  margin-bottom: 44px;
+}
+
+.ds-section h2 {
+  margin: 0 0 4px;
+  font-size: var(--ui-fs-label);
+  font-weight: 700;
+  letter-spacing: var(--ui-ls-caps-wide);
+  text-transform: uppercase;
+  color: var(--ui-accent);
+}
+
+.ds-section > p {
+  margin: 0 0 16px;
+  color: var(--ui-muted);
+  font-size: var(--ui-fs-small);
+}
+
+.ds-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.ds-row + .ds-row {
+  margin-top: 12px;
+}
+
+.ds-swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.ds-swatch {
+  border: 1px solid var(--ui-line);
+}
+
+.ds-swatch i {
+  display: block;
+  height: 56px;
+  background: var(--ui-swatch, var(--ui-accent));
+}
+
+.ds-swatch span {
+  display: block;
+  padding: 8px 10px;
+  font-size: var(--ui-fs-small);
+  font-family: var(--ui-font-mono);
+}
+
+.ds-type-row {
+  display: flex;
+  align-items: baseline;
+  gap: 20px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--ui-line);
+}
+
+.ds-type-row span {
+  flex: 0 0 96px;
+  color: var(--ui-muted);
+  font-size: var(--ui-fs-label);
+  font-family: var(--ui-font-mono);
+}
