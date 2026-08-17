@@ -225,6 +225,62 @@ class FastApiRegistryTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_heartbeat_survives_a_job_claim_failure(self) -> None:
+        # A claim-time exception (e.g. a transient DB hiccup) must not turn
+        # into a 500 for an otherwise-healthy heartbeat -- that would make an
+        # online, polling device look broken to the operator. The agent
+        # simply retries the claim on its next poll.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_directory = Path(temporary_directory)
+            store = RegistryStore(data_directory, allow_thread_handoff=True)
+            auth = AdminAuth("correct-horse-battery", data_directory)
+            try:
+                with TestClient(create_fastapi_app(store, auth)) as client:
+                    login = client.post(
+                        "/api/session", json={"password": "correct-horse-battery"}
+                    )
+                    self.assertEqual(login.status_code, 200)
+                    csrf = client.get("/api/session").json()["csrf_token"]
+                    enrollment_response = client.post(
+                        "/api/enrollment-codes",
+                        json={"label": "Lane 1"},
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    code = enrollment_response.json()["code"]
+                    device_id = "12345678-1234-1234-1234-123456789abc"
+                    token = "a" * 64
+                    client.post(
+                        "/agent/enroll",
+                        json={
+                            "enrollment_code": code,
+                            "device_id": device_id,
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "device_token": token,
+                        },
+                    )
+                    agent_headers = {
+                        "X-Device-ID": device_id,
+                        "Authorization": f"Bearer {token}",
+                    }
+                    with patch.object(
+                        store, "claim_next_job", side_effect=RuntimeError("boom")
+                    ):
+                        heartbeat = client.post(
+                            "/agent/heartbeat",
+                            json={
+                                "name": "Lane 1",
+                                "hostname": "takt-01",
+                                "protocol_version": 1,
+                                "poll_seconds": 10,
+                            },
+                            headers=agent_headers,
+                        )
+                    self.assertEqual(heartbeat.status_code, 200)
+                    self.assertIsNone(heartbeat.json()["job"])
+            finally:
+                store.close()
+
     def test_uninstalling_a_release_keeps_its_row_and_blocks_a_download_that_cannot_repair(
         self,
     ) -> None:

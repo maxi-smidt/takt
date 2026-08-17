@@ -434,10 +434,10 @@ describe("job list removal", () => {
       await flush();
     });
 
-    expect(container.textContent).toContain("mirror now");
+    expect(container.textContent).toContain("Mirror runs");
 
     const removeButton = Array.from(container.querySelectorAll("button")).find(
-      (candidate) => candidate.textContent?.trim() === "REMOVE",
+      (candidate) => candidate.getAttribute("aria-label") === "Remove",
     );
     if (!removeButton) throw new Error("Remove button not found");
     await act(async () => {

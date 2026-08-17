@@ -13,7 +13,7 @@ import {
   WifiOff,
   Zap,
 } from "lucide-react";
-import type { Device } from "../../shared/contracts";
+import type { Device, Job } from "../../shared/contracts";
 import { Button, Callout, IconButton } from "../../shared/ui";
 import { useFleetDashboard } from "../hooks/useFleetDashboard";
 import { ConfirmModal } from "./ConfirmModal";
@@ -27,6 +27,17 @@ import { WifiModal } from "./WifiModal";
 interface DashboardProps {
   session: { csrf_token: string };
   refreshSession: () => Promise<void>;
+}
+
+const ACTIVE_JOB_STATUSES = new Set(["queued", "claimed", "running"]);
+
+// Active jobs surface above finished ones so an operator glancing at the
+// panel sees what's still in flight first; Array.prototype.sort is stable,
+// so each group keeps the server's newest-first ordering.
+function sortJobsActiveFirst(jobs: Job[]): Job[] {
+  return [...jobs].sort(
+    (a, b) => Number(ACTIVE_JOB_STATUSES.has(b.status)) - Number(ACTIVE_JOB_STATUSES.has(a.status))
+  );
 }
 
 export function Dashboard({ session, refreshSession }: DashboardProps) {
@@ -110,7 +121,7 @@ export function Dashboard({ session, refreshSession }: DashboardProps) {
         <section className="operations">
           <div className="section-heading"><div><span>02 · ACTIVITY</span><h2>DEPLOYMENT JOBS</h2></div></div>
           <div className="job-list">
-            {jobs.slice(0, 12).map((job) => <JobRow key={job.id} job={job} onCancel={cancelJob} onRetry={retryJob} onForceClear={forceClearJob} onDelete={deleteJob} />)}
+            {sortJobsActiveFirst(jobs).slice(0, 12).map((job) => <JobRow key={job.id} job={job} onCancel={cancelJob} onRetry={retryJob} onForceClear={forceClearJob} onDelete={deleteJob} />)}
             {!jobs.length && <div className="jobs-empty">No remote operations have been requested.</div>}
           </div>
         </section>

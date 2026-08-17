@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
-from takt.registry.store.common import _Base, hash_secret, utc_iso, utc_now
+from takt.registry.store.common import _Base, device_is_online, hash_secret, utc_iso, utc_now
 
 
 class DevicesMixin(_Base):
@@ -173,19 +173,15 @@ class DevicesMixin(_Base):
             rows = conn.exec_driver_sql(
                 "SELECT * FROM devices ORDER BY name COLLATE NOCASE, enrolled_at"
             ).mappings().all()
-        now = utc_now()
         devices: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
             item["status"] = json.loads(item.pop("status_json"))
             item["health_checks"] = json.loads(item.pop("health_checks_json") or "{}")
-            last_seen = item.get("last_seen_at")
-            heartbeat_interval = float(item["status"].get("poll_seconds") or 10)
-            online_window = min(max(heartbeat_interval * 3 + 15, 30), 180)
-            item["online"] = bool(
-                last_seen
-                and not item.get("revoked_at")
-                and now - datetime.fromisoformat(last_seen) < timedelta(seconds=online_window)
+            item["online"] = device_is_online(
+                last_seen_at=item.get("last_seen_at"),
+                revoked_at=item.get("revoked_at"),
+                poll_seconds=item["status"].get("poll_seconds"),
             )
             item.pop("token_hash", None)
             recovery = item["status"].get("update_recovery")

@@ -170,6 +170,8 @@ export interface Job {
   updated_at?: string;
   current_version?: string | null;
   target_version?: string | null;
+  device_online?: boolean;
+  device_last_seen_at?: string | null;
 }
 export interface Deployment {
   id: string;
