@@ -9,6 +9,7 @@ export function usePortalRuns({ session, refreshSession }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [error, setError] = useState("");
+  const [pendingAction, setPendingAction] = useState(null);
 
   const loadDevices = useCallback(async () => {
     try {
@@ -48,10 +49,7 @@ export function usePortalRuns({ session, refreshSession }) {
     await refreshSession();
   };
 
-  const command = async (run, operation, desired) => {
-    if (!window.confirm(operation === "delete"
-      ? "Diesen gespeicherten Lauf endgültig löschen?"
-      : "Diese Korrektur übernehmen?")) return;
+  const execute = async (run, operation, desired) => {
     try {
       await request(
         "/api/portal/devices/" + deviceId + "/runs/" + run.id + "/commands",
@@ -73,6 +71,15 @@ export function usePortalRuns({ session, refreshSession }) {
     }
   };
 
+  const requestCommand = (run, operation, desired) => setPendingAction({ run, operation, desired });
+  const cancelPendingAction = () => setPendingAction(null);
+  const confirmPendingAction = async () => {
+    if (!pendingAction) return;
+    const { run, operation, desired } = pendingAction;
+    setPendingAction(null);
+    await execute(run, operation, desired);
+  };
+
   return {
     devices,
     deviceId,
@@ -85,6 +92,9 @@ export function usePortalRuns({ session, refreshSession }) {
     error,
     loadDevices,
     logout,
-    command,
+    pendingAction,
+    requestCommand,
+    cancelPendingAction,
+    confirmPendingAction,
   };
 }

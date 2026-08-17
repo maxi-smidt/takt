@@ -123,3 +123,120 @@ describe("Portal device selection", () => {
     expect(document.querySelector(".runs-table")?.textContent).toContain("2");
   });
 });
+
+describe("Portal run actions", () => {
+  let root: Root | null = null;
+  let container: HTMLDivElement | null = null;
+  let fetchMock: MockInstance<typeof fetch>;
+  let commandCalls: { url: string; body: Record<string, unknown> }[];
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    commandCalls = [];
+  });
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount();
+        await flush();
+      });
+      root = null;
+    }
+    container?.remove();
+    container = null;
+    fetchMock.mockRestore();
+  });
+
+  function findButton(text: string) {
+    const button = Array.from(document.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === text,
+    );
+    if (!button) throw new Error(`Button not found: ${text}`);
+    return button as HTMLButtonElement;
+  }
+
+  async function renderPortal() {
+    fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = (init?.method || "GET").toUpperCase();
+      if (url.endsWith("/api/session")) return jsonResponse(AUTHENTICATED_PORTAL_USER);
+      if (url.endsWith("/api/portal/devices")) {
+        return jsonResponse({
+          devices: [
+            { id: "d1", name: "Bahn 1", hostname: "d1.local", online: true, access: "write", run_count: 1, last_mirrored_at: "2026-08-10T10:00:00Z", mirror_state: "fresh" },
+          ],
+        });
+      }
+      if (url.endsWith("/commands") && method === "POST") {
+        commandCalls.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
+        return jsonResponse({});
+      }
+      if (/\/api\/portal\/devices\/d1\/runs/.test(url)) return jsonResponse(runsPayloadFor("d1"));
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(createElement(App));
+      await flush();
+    });
+  }
+
+  it("disables subtracting time once the added time reaches zero", async () => {
+    await renderPortal();
+    expect(findButton("-5 s").disabled).toBe(true);
+  });
+
+  it("only deletes a run once the confirm dialog is accepted", async () => {
+    await renderPortal();
+
+    await act(async () => {
+      findButton("LÖSCHEN").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    expect(document.body.textContent).toContain("LAUF LÖSCHEN");
+    expect(commandCalls).toHaveLength(0);
+
+    await act(async () => {
+      findButton("ABBRECHEN").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    expect(commandCalls).toHaveLength(0);
+    expect(document.body.textContent).not.toContain("LAUF LÖSCHEN");
+
+    await act(async () => {
+      findButton("LÖSCHEN").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    await act(async () => {
+      findButton("ENDGÜLTIG LÖSCHEN").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    expect(commandCalls).toHaveLength(1);
+    expect(commandCalls[0]!.body.operation).toBe("delete");
+  });
+
+  it("only applies an added-time correction once the confirm dialog is accepted", async () => {
+    await renderPortal();
+
+    await act(async () => {
+      findButton("+5 s").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    expect(document.body.textContent).toContain("FEHLERZEIT ÄNDERN");
+    expect(commandCalls).toHaveLength(0);
+
+    await act(async () => {
+      findButton("ÜBERNEHMEN").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    expect(commandCalls).toHaveLength(1);
+    expect(commandCalls[0]!.body.operation).toBe("adjust_added_time");
+    expect(commandCalls[0]!.body.desired_added_time_ms).toBe(5000);
+  });
+});

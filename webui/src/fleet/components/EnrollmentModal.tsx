@@ -163,7 +163,7 @@ export function EnrollmentModal({ csrf, onClose, releases, onDone }: EnrollmentM
   return (
     <Modal title="DEPLOY A RASPBERRY PI" eyebrow="GUIDED FIRST DEPLOYMENT" onClose={onClose} wide>
       {!deployment ? (
-        <form className="modal-body" onSubmit={create}>
+        <form className="modal-body enrollment-form" onSubmit={create}>
           <p>The registry checks, installs, enrolls, and verifies the Pi without a laptop checkout.</p>
           <div className="enrollment-fields">
             {TEXT_FIELDS.map(([key, label, placeholder]) => (

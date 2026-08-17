@@ -18,6 +18,12 @@ export interface PortalRunsPayload {
   runs: PortalRun[];
 }
 
+export interface PendingRunAction {
+  run: PortalRun;
+  operation: "adjust_added_time" | "delete";
+  desired?: number;
+}
+
 interface UsePortalRunsArgs {
   session: SessionResponse;
   refreshSession: () => Promise<void>;
@@ -35,5 +41,8 @@ export function usePortalRuns(args: UsePortalRunsArgs): {
   error: string;
   loadDevices: () => Promise<void>;
   logout: () => Promise<void>;
-  command: (run: PortalRun, operation: "adjust_added_time" | "delete", desired?: number) => Promise<void>;
+  pendingAction: PendingRunAction | null;
+  requestCommand: (run: PortalRun, operation: "adjust_added_time" | "delete", desired?: number) => void;
+  cancelPendingAction: () => void;
+  confirmPendingAction: () => Promise<void>;
 };
