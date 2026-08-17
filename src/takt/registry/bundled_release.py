@@ -265,7 +265,6 @@ def _stage_and_call(
             )
 
     if failure is not None:
-        error = failure
-        LOGGER.error("Failed to import bundled release %s: %s", version, error)
-        return {"status": "error", "reason": "import_failed", "detail": str(error)}
+        LOGGER.error("Failed to import bundled release %s: %s", version, failure)
+        return {"status": "error", "reason": "import_failed", "detail": str(failure)}
     return {"status": "imported", "version": version, "sha256": sha256}

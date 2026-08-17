@@ -297,7 +297,7 @@ class AudioService:
         )
 
     async def _run_discovery(self, first_poll_done: asyncio.Event) -> None:
-        scan_task = asyncio.create_task(self._scan_process_runner())
+        scan_task = asyncio.ensure_future(self._scan_process_runner())
         try:
             while not scan_task.done():
                 await self._poll_devices()
@@ -360,7 +360,7 @@ class AudioService:
 
     async def _rediscover_device(self, address: str) -> bool:
         """Run a short targeted discovery burst until `address` appears."""
-        scan_task = asyncio.create_task(self._scan_process_runner())
+        scan_task = asyncio.ensure_future(self._scan_process_runner())
         try:
             elapsed = 0.0
             while True:

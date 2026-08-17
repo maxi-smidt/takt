@@ -16,7 +16,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-from aiohttp import web
+from aiohttp import BodyPartReader, web
 
 from takt.fleet_actions import ALLOWED_ACTIONS
 from takt.protocol import PROTOCOL_VERSION
@@ -237,9 +237,12 @@ def _deployment_payload(
     release_id = body.get("release_id")
     port = body.get("port", 22)
     allow_insecure_http = body.get("allow_insecure_http", False)
-    if not all(
-        isinstance(value, str)
-        for value in (target, ssh_user, device_name, registry_url, release_id)
+    if (
+        not isinstance(target, str)
+        or not isinstance(ssh_user, str)
+        or not isinstance(device_name, str)
+        or not isinstance(registry_url, str)
+        or not isinstance(release_id, str)
     ):
         raise web.HTTPBadRequest(
             text="Target, SSH user, device name, registry URL, and release are required."
@@ -459,6 +462,8 @@ async def upload_release(request: web.Request) -> web.Response:
     artifact_seen = False
     try:
         async for field in reader:
+            if not isinstance(field, BodyPartReader):
+                raise web.HTTPBadRequest(text="Nested multipart parts are not supported.")
             if field.name == "version":
                 if version_seen:
                     raise web.HTTPBadRequest(text="Version field may only be supplied once.")
@@ -1103,17 +1108,17 @@ def _heartbeat_payload(body: dict[str, Any]) -> dict[str, Any]:
             if not math.isfinite(value) or not minimum <= value <= maximum:
                 raise web.HTTPBadRequest(text=f"Heartbeat field {key} is out of range.")
             payload[key] = value
-    for key, (minimum, maximum) in float_ranges.items():
+    for key, (min_float, max_float) in float_ranges.items():
         if key in payload and payload[key] is not None:
             if isinstance(payload[key], bool):
                 raise web.HTTPBadRequest(text=f"Heartbeat field {key} is invalid.")
             try:
-                value = float(payload[key])
+                float_value = float(payload[key])
             except (TypeError, ValueError) as error:
                 raise web.HTTPBadRequest(text=f"Heartbeat field {key} is invalid.") from error
-            if not minimum <= value <= maximum:
+            if not min_float <= float_value <= max_float:
                 raise web.HTTPBadRequest(text=f"Heartbeat field {key} is out of range.")
-            payload[key] = value
+            payload[key] = float_value
     return payload
 
 

@@ -468,6 +468,7 @@ class WebRuntime:
         run_id: int | None = None,
         delta_ms: int = 0,
     ) -> dict[str, object]:
+        details: dict[str, object]
         if operation == "shutdown":
             if not self.power_service.available:
                 raise ValueError("Herunterfahren ist nur auf einem Raspberry Pi verfügbar.")
@@ -549,10 +550,10 @@ class WebRuntime:
                 f"Gesamtzeit {run.total_time.format_stopwatch()}"
             )
         elif pending.operation == "delete" and pending.run_id is not None:
-            run = self.repository.get_run(pending.run_id)
-            if run is None or not self.curation.delete_run(pending.run_id):
+            deleted_run = self.repository.get_run(pending.run_id)
+            if deleted_run is None or not self.curation.delete_run(pending.run_id):
                 raise ValueError("Der Lauf existiert nicht mehr.")
-            message = f"Lauf {run.run_number} wurde gelöscht."
+            message = f"Lauf {deleted_run.run_number} wurde gelöscht."
         elif pending.operation == "shutdown":
             LOGGER.info("shutdown_confirmation_accepted")
             self.power_service.shutdown()

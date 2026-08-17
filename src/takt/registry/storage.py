@@ -208,6 +208,7 @@ class RegistryStore:
                 .get("stuck")
             )
             is_stuck = bool((payload.get("update_recovery") or {}).get("stuck"))
+            recovery_raised_at: str | None
             if is_stuck and not was_stuck:
                 # A fresh recovery episode always needs fresh attention, even if the
                 # previous one at this device was already acknowledged.
@@ -1422,7 +1423,9 @@ class RegistryStore:
                 """,
                 (deployment_id, now),
             )
-        return self.get_deployment(deployment_id)
+        deployment = self.get_deployment(deployment_id)
+        assert deployment is not None
+        return deployment
 
     def ensure_deployment_target_available(self, target: str, port: int) -> None:
         active = self.connection.execute(

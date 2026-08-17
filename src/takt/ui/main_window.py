@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from datetime import date
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -110,7 +111,7 @@ class MainWindow(QMainWindow):
         self.primary_press_requested.connect(self._handle_primary_press)
         self.physical_button_pressed.connect(self._handle_button_press)
         self.physical_button_released.connect(self._handle_button_release)
-        self.controller.subscribe(self.render)
+        self.controller.subscribe(self.render_snapshot)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(33)
         self._refresh_timer.timeout.connect(self.controller.refresh)
@@ -127,7 +128,7 @@ class MainWindow(QMainWindow):
         self._gesture_timer.timeout.connect(self._advance_gesture)
         self._update_clock()
         self.refresh_history()
-        self.render(self.controller.snapshot())
+        self.render_snapshot(self.controller.snapshot())
 
     def set_devices(self, button_input: ButtonInput, buzzer: Buzzer) -> None:
         self.button_input = button_input
@@ -148,15 +149,13 @@ class MainWindow(QMainWindow):
         self.buzzer_status.setText(f"● SUMMER-MOCK: {names.get(event, event.upper())}")
         self.buzzer_status.setStyleSheet("color: #f1a817; font-weight: 800;")
         QApplication.beep()
-        QTimer.singleShot(
-            650,
-            lambda: (
-                self.buzzer_status.setText("○ SUMMER-MOCK: bereit"),
-                self.buzzer_status.setStyleSheet("color: #91a1ad;"),
-            ),
-        )
+        QTimer.singleShot(650, self._reset_mock_buzzer_status)
 
-    def render(self, snapshot: TimerSnapshot) -> None:
+    def _reset_mock_buzzer_status(self) -> None:
+        self.buzzer_status.setText("○ SUMMER-MOCK: bereit")
+        self.buzzer_status.setStyleSheet("color: #91a1ad;")
+
+    def render_snapshot(self, snapshot: TimerSnapshot) -> None:
         state = snapshot.state
         state_changed = state is not self._last_state
         if state_changed:
@@ -737,7 +736,7 @@ class MainWindow(QMainWindow):
         self._set_rows(self.best_table, rows)
 
     @staticmethod
-    def _set_rows(table: QTableWidget, rows: list[tuple[str, ...]]) -> None:
+    def _set_rows(table: QTableWidget, rows: Sequence[tuple[str, ...]]) -> None:
         table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             for column_index, text in enumerate(row):

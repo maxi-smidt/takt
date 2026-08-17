@@ -302,17 +302,17 @@ def _normalize_heartbeat(value: Any) -> dict[str, Any]:
             if not math.isfinite(numeric) or not minimum <= numeric <= maximum:
                 raise ValueError(f"Heartbeat field {key} is out of range.")
             payload[key] = numeric
-    for key, (minimum, maximum) in float_ranges.items():
+    for key, (min_float, max_float) in float_ranges.items():
         if key in payload and payload[key] is not None:
             if isinstance(payload[key], bool):
                 raise ValueError(f"Heartbeat field {key} is invalid.")
             try:
-                numeric = float(payload[key])
+                numeric_float = float(payload[key])
             except (TypeError, ValueError) as error:
                 raise ValueError(f"Heartbeat field {key} is invalid.") from error
-            if not math.isfinite(numeric) or not minimum <= numeric <= maximum:
+            if not math.isfinite(numeric_float) or not min_float <= numeric_float <= max_float:
                 raise ValueError(f"Heartbeat field {key} is out of range.")
-            payload[key] = numeric
+            payload[key] = numeric_float
     return payload
 
 

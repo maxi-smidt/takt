@@ -25,6 +25,7 @@ Create Date: 2026-08-16
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -37,7 +38,7 @@ down_revision: str | None = "0003"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_JOBS_COLUMNS = [
+_JOBS_COLUMNS: list[sa.Column[Any]] = [
     sa.Column("stage", sa.Text(), nullable=False, server_default=sa.text("'queued'")),
     sa.Column("current_version", sa.Text()),
     sa.Column("target_version", sa.Text()),
