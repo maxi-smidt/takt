@@ -236,7 +236,10 @@
   background: var(--ui-surface-raised);
   color: var(--ui-text);
   box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
-  z-index: 60;
+  /* Above .takt-dialog (101) — a Select opened inside a Dialog is portaled to
+     document.body just like the dialog itself, so it needs a higher z-index
+     to actually land on top instead of behind the dialog surface. */
+  z-index: 110;
 }
 
 .takt-select-viewport {

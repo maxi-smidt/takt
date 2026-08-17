@@ -1,9 +1,9 @@
 // @ts-nocheck
 import {
+  Area,
+  AreaChart,
   CartesianGrid,
   Legend,
-  Line,
-  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -67,7 +67,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
   return (
     <div className="portal-chart">
       <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={points} margin={{ top: 10, right: 18, bottom: 0, left: 0 }}>
+        <AreaChart data={points} margin={{ top: 10, right: 18, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="var(--line)" vertical={false} />
           <XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={{ stroke: "var(--line)" }} tickLine={false} />
           <YAxis
@@ -85,8 +85,31 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
             iconType="circle"
             formatter={(value: string) => <span style={{ color: "var(--muted)" }}>{value}</span>}
           />
-          <Line type="monotone" dataKey="actualSeconds" name="Ist-Zeit" stroke="var(--green)" strokeWidth={2} dot={{ r: 3 }} />
-          <Line type="monotone" dataKey="addedSeconds" name="Fehler" stroke="var(--amber)" strokeWidth={2} dot={{ r: 3 }} />
+          {/* Stacked so "Fehler" sits on top of "Ist-Zeit" instead of being plotted
+              from zero — the amber band is then exactly the added time, not a
+              second series competing with the actual-time line. */}
+          <Area
+            type="monotone"
+            dataKey="actualSeconds"
+            name="Ist-Zeit"
+            stackId="run-time"
+            stroke="var(--green)"
+            fill="var(--green)"
+            fillOpacity={0.28}
+            strokeWidth={2}
+            dot={{ r: 3 }}
+          />
+          <Area
+            type="monotone"
+            dataKey="addedSeconds"
+            name="Fehler"
+            stackId="run-time"
+            stroke="var(--amber)"
+            fill="var(--amber)"
+            fillOpacity={0.35}
+            strokeWidth={2}
+            dot={{ r: 3 }}
+          />
           {bestTotalMs != null && (
             <ReferenceLine
               y={bestTotalMs / 1000}
@@ -95,7 +118,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
               label={{ value: `BESTZEIT ${formatStopwatch(bestTotalMs)}`, position: "insideTopRight", fill: "var(--green)", fontSize: 12 }}
             />
           )}
-        </LineChart>
+        </AreaChart>
       </ResponsiveContainer>
     </div>
   );

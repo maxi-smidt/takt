@@ -240,6 +240,11 @@ input:focus, select:focus { border-color: var(--green); }
 .wifi-fields { display: grid; gap: 18px; }
 .wifi-fields > p { margin-bottom: 3px; }
 .wifi-fields > p strong { color: #cfe1dc; }
+.enrollment-form { display: grid; gap: 20px; }
+.enrollment-form > p { margin-bottom: 0; }
+.release-form { display: grid; gap: 20px; }
+.release-form > p { margin-bottom: 0; }
+.release-form .file-drop { margin-top: 0; }
 .enrollment-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .user-create-button { align-self: end; }
 .enrollment-url { grid-column: 1 / -1; }

@@ -39,7 +39,7 @@ export function ReleaseModal({ csrf, releases, onClose, onUploaded, onUninstall 
   };
   return (
     <Modal title="RELEASE LIBRARY" eyebrow="VERSION LIBRARY" onClose={onClose} wide>
-      <form className="modal-body" onSubmit={upload}>
+      <form className="modal-body release-form" onSubmit={upload}>
         <p>Upload the Raspberry Pi package created by <code>package_for_raspberry_pi.sh</code>.</p>
         <Field label="VERSION">
           {(fieldProps) => (

@@ -6,6 +6,7 @@ import { formatDate, formatDateTime, formatStopwatch, mirrorStateLabel } from ".
 import { type PortalRun, usePortalRuns } from "../hooks/usePortalRuns";
 import { DateField } from "./DateField";
 import { PortalRunsChart } from "./PortalRunsChart";
+import { RunConfirmDialog } from "./RunConfirmDialog";
 
 const TIMEFRAMES = [
   { id: "day", label: "TAG" },
@@ -40,7 +41,10 @@ export function Portal({ session, refreshSession }: PortalProps) {
     error,
     loadDevices,
     logout,
-    command,
+    pendingAction,
+    requestCommand,
+    cancelPendingAction,
+    confirmPendingAction,
   } = usePortalRuns({ session, refreshSession });
 
   const applyTimeframe = (preset: string) => {
@@ -159,8 +163,16 @@ export function Portal({ session, refreshSession }: PortalProps) {
                       {canWrite && (
                         <td className="runs-actions">
                           <div className="runs-actions-buttons">
-                            <Button variant="secondary" size="sm" onClick={() => command(run, "adjust_added_time", Math.max(0, run.added_time_ms + 5000))}>+5 s</Button>
-                            <Button variant="secondary" size="sm" onClick={() => command(run, "delete")}>LÖSCHEN</Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              disabled={run.added_time_ms <= 0}
+                              onClick={() => requestCommand(run, "adjust_added_time", Math.max(0, run.added_time_ms - 5000))}
+                            >
+                              -5 s
+                            </Button>
+                            <Button variant="secondary" size="sm" onClick={() => requestCommand(run, "adjust_added_time", run.added_time_ms + 5000)}>+5 s</Button>
+                            <Button variant="secondary" size="sm" onClick={() => requestCommand(run, "delete")}>LÖSCHEN</Button>
                           </div>
                         </td>
                       )}
@@ -173,6 +185,9 @@ export function Portal({ session, refreshSession }: PortalProps) {
           </section>
         )}
       </main>
+      {pendingAction && (
+        <RunConfirmDialog action={pendingAction} onCancel={cancelPendingAction} onConfirm={confirmPendingAction} />
+      )}
     </div>
   );
 }
