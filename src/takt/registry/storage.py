@@ -8,9 +8,15 @@ lifecycle (`close`), since those touch every concern at once.
 
 from __future__ import annotations
 
+import contextvars
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Connection
 
 from takt.migrations_runtime import upgrade_to_head
 from takt.registry.accounts import AccountStore
@@ -80,36 +86,82 @@ class RegistryStore(
         if database_existed and previous_version < SCHEMA_VERSION:
             self.backup_database(label=f"pre-migration-v{previous_version}", retain=20)
         upgrade_to_head(MIGRATIONS_DIRECTORY, self.database_path)
-        self.connection = sqlite3.connect(
-            self.database_path,
-            timeout=10,
-            check_same_thread=not allow_thread_handoff,
+
+        # A single pooled Engine, shared across every mixin and AccountStore.
+        # FastAPI dispatches sync route/dependency code onto a threadpool, so
+        # unlike a single shared sqlite3.Connection (not safe for concurrent
+        # use even with check_same_thread=False), each `_transaction`/`_read`
+        # call below checks out its own connection from the pool. Nested
+        # calls on the same logical call stack (e.g. `create_job` ->
+        # `_audit`) rejoin that connection via `_active_connection` instead
+        # of checking out a second one, which would otherwise deadlock
+        # against SQLite's single writer.
+        self.engine = create_engine(
+            f"sqlite:///{self.database_path}",
+            future=True,
+            connect_args={"check_same_thread": not allow_thread_handoff, "timeout": 10},
         )
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA busy_timeout = 10000")
-        self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA synchronous = FULL")
-        self._rebuild_disruptive_index()
-        self.connection.execute(
-            """
-            UPDATE deployments SET status = 'interrupted', stage = 'interrupted',
-                message = 'Registry restarted while deployment was active', updated_at = ?
-            WHERE status IN ('pending', 'running')
-            """,
-            (utc_iso(),),
+
+        @event.listens_for(self.engine, "connect")
+        def _configure_connection(dbapi_connection: Any, connection_record: Any) -> None:
+            dbapi_connection.row_factory = sqlite3.Row
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA busy_timeout = 10000")
+            cursor.execute("PRAGMA journal_mode = WAL")
+            cursor.execute("PRAGMA synchronous = FULL")
+            cursor.close()
+
+        self._active_connection: contextvars.ContextVar[Connection | None] = (
+            contextvars.ContextVar("registry_active_connection", default=None)
         )
-        self.connection.execute(
-            """
-            UPDATE jobs SET status = 'queued', claimed_at = NULL,
-                message = 'Registry upgraded; retrying job safely'
-            WHERE status IN ('claimed', 'running') AND lease_expires_at IS NULL
-            """
-        )
-        self.accounts = AccountStore(self.connection)
-        self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        self.connection.commit()
+        self.accounts = AccountStore(self.engine)
+        with self._transaction() as conn:
+            self._rebuild_disruptive_index()
+            conn.exec_driver_sql(
+                """
+                UPDATE deployments SET status = 'interrupted', stage = 'interrupted',
+                    message = 'Registry restarted while deployment was active', updated_at = ?
+                WHERE status IN ('pending', 'running')
+                """,
+                (utc_iso(),),
+            )
+            conn.exec_driver_sql(
+                """
+                UPDATE jobs SET status = 'queued', claimed_at = NULL,
+                    message = 'Registry upgraded; retrying job safely'
+                WHERE status IN ('claimed', 'running') AND lease_expires_at IS NULL
+                """
+            )
+            conn.exec_driver_sql(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.prune()
 
+    @contextmanager
+    def _transaction(self) -> Iterator[Connection]:
+        current = self._active_connection.get()
+        if current is not None:
+            yield current
+            return
+        with self.engine.begin() as conn:
+            token = self._active_connection.set(conn)
+            try:
+                yield conn
+            finally:
+                self._active_connection.reset(token)
+
+    @contextmanager
+    def _read(self) -> Iterator[Connection]:
+        current = self._active_connection.get()
+        if current is not None:
+            yield current
+            return
+        with self.engine.connect() as conn:
+            token = self._active_connection.set(conn)
+            try:
+                yield conn
+            finally:
+                self._active_connection.reset(token)
+
     def close(self) -> None:
-        self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        self.connection.close()
+        with self._read() as conn:
+            conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.engine.dispose()

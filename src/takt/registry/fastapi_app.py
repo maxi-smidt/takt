@@ -28,6 +28,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from python_multipart.exceptions import MultipartParseError
+from sqlalchemy import exc as sa_exc
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException
@@ -1292,7 +1293,7 @@ def create_fastapi_app(
                     size=size,
                     source=temp_path,
                 )
-            except sqlite3.IntegrityError as error:
+            except sa_exc.IntegrityError as error:
                 raise HTTPException(
                     status_code=409, detail="That version already exists."
                 ) from error

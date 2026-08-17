@@ -11,10 +11,12 @@ used as a real base class at runtime.
 from __future__ import annotations
 
 import hashlib
-import sqlite3
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+
+from sqlalchemy.engine import Connection, Engine
 
 SCHEMA_VERSION = 13
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "rolled_back", "cancelled"}
@@ -38,7 +40,7 @@ if TYPE_CHECKING:
     class RegistryStoreState(Protocol):
         """The `RegistryStore` attributes/methods used across mixin files."""
 
-        connection: sqlite3.Connection
+        engine: Engine
         data_directory: Path
         database_path: Path
         release_directory: Path
@@ -46,6 +48,23 @@ if TYPE_CHECKING:
         backup_directory: Path
         bundled_release_status: dict[str, Any]
         job_secret_key_path: Path
+
+        def _transaction(self) -> AbstractContextManager[Connection]:
+            """A writable connection, reused if a call is already inside one.
+
+            `RegistryStore` shares one pooled `Engine` across FastAPI's
+            threadpool workers. A fresh top-level call checks out its own
+            connection and runs it as one real SQLite transaction (mirroring
+            the old `with self.connection:` blocks); a call nested inside
+            another (e.g. `create_job` -> `_audit`) rejoins that same
+            connection/transaction instead of checking out a second one,
+            which would otherwise deadlock against SQLite's single writer.
+            """
+            ...
+
+        def _read(self) -> AbstractContextManager[Connection]:
+            """A read connection, reused if a call is already inside one."""
+            ...
 
         def _audit(
             self,

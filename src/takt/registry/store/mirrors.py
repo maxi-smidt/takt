@@ -22,10 +22,11 @@ class MirrorDiagnosticsMixin(_Base):
         *,
         existing_blob_valid: bool | None = None,
     ) -> None:
-        existing = self.connection.execute(
-            "SELECT relative_path FROM mirror_snapshots WHERE device_id = ? AND sha256 = ?",
-            (device_id, sha256),
-        ).fetchone()
+        with self._read() as conn:
+            existing = conn.exec_driver_sql(
+                "SELECT relative_path FROM mirror_snapshots WHERE device_id = ? AND sha256 = ?",
+                (device_id, sha256),
+            ).mappings().fetchone()
         if existing is not None:
             existing_path = self.data_directory / existing["relative_path"]
             existing_valid = existing_blob_valid
@@ -41,8 +42,8 @@ class MirrorDiagnosticsMixin(_Base):
                 existing_path.parent.mkdir(parents=True, exist_ok=True)
                 source.replace(existing_path)
                 existing_path.chmod(0o600)
-            with self.connection:
-                self.connection.execute(
+            with self._transaction() as conn:
+                conn.exec_driver_sql(
                     """
                     UPDATE devices SET last_mirror_at = ?, mirror_sha256 = ?,
                         mirror_size = ?, run_count = ? WHERE id = ?
@@ -64,8 +65,8 @@ class MirrorDiagnosticsMixin(_Base):
         source.replace(target)
         target.chmod(0o600)
         try:
-            with self.connection:
-                self.connection.execute(
+            with self._transaction() as conn:
+                conn.exec_driver_sql(
                     """
                     INSERT INTO mirror_snapshots(
                         id, device_id, received_at, sha256, size, run_count, relative_path
@@ -81,7 +82,7 @@ class MirrorDiagnosticsMixin(_Base):
                         str(relative_path),
                     ),
                 )
-                self.connection.execute(
+                conn.exec_driver_sql(
                     """
                     UPDATE devices SET last_mirror_at = ?, mirror_sha256 = ?,
                         mirror_size = ?, run_count = ? WHERE id = ?
@@ -95,27 +96,29 @@ class MirrorDiagnosticsMixin(_Base):
         self._prune_mirror_snapshots(device_id, recent=48, daily=30)
 
     def mirror_blob_path(self, device_id: str, sha256: str) -> Path | None:
-        row = self.connection.execute(
-            """
-            SELECT relative_path FROM mirror_snapshots
-            WHERE device_id = ? AND sha256 = ?
-            """,
-            (device_id, sha256),
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                """
+                SELECT relative_path FROM mirror_snapshots
+                WHERE device_id = ? AND sha256 = ?
+                """,
+                (device_id, sha256),
+            ).mappings().fetchone()
         return self.data_directory / row["relative_path"] if row is not None else None
 
     def mirror_path(self, device_id: str) -> Path:
-        row = self.connection.execute(
-            """
-            SELECT snapshots.relative_path
-            FROM devices
-            JOIN mirror_snapshots AS snapshots
-              ON snapshots.device_id = devices.id
-             AND snapshots.sha256 = devices.mirror_sha256
-            WHERE devices.id = ?
-            """,
-            (device_id,),
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                """
+                SELECT snapshots.relative_path
+                FROM devices
+                JOIN mirror_snapshots AS snapshots
+                  ON snapshots.device_id = devices.id
+                 AND snapshots.sha256 = devices.mirror_sha256
+                WHERE devices.id = ?
+                """,
+                (device_id,),
+            ).mappings().fetchone()
         if row is not None:
             return self.data_directory / row["relative_path"]
         return self.mirror_directory / f"{device_id}.sqlite3"
@@ -135,8 +138,8 @@ class MirrorDiagnosticsMixin(_Base):
         source.replace(target)
         target.chmod(0o600)
         try:
-            with self.connection:
-                self.connection.execute(
+            with self._transaction() as conn:
+                conn.exec_driver_sql(
                     """
                     INSERT INTO diagnostics(
                         id, device_id, job_id, created_at, sha256, size, relative_path
@@ -164,26 +167,29 @@ class MirrorDiagnosticsMixin(_Base):
         return bundle
 
     def get_diagnostics(self, bundle_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM diagnostics WHERE id = ?", (bundle_id,)
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT * FROM diagnostics WHERE id = ?", (bundle_id,)
+            ).mappings().fetchone()
         return dict(row) if row else None
 
     def list_diagnostics(self, device_id: str) -> list[dict[str, Any]]:
-        return [
-            dict(row)
-            for row in self.connection.execute(
-                "SELECT id, device_id, job_id, created_at, sha256, size FROM diagnostics "
-                "WHERE device_id = ? ORDER BY created_at DESC",
-                (device_id,),
-            )
-        ]
+        with self._read() as conn:
+            return [
+                dict(row)
+                for row in conn.exec_driver_sql(
+                    "SELECT id, device_id, job_id, created_at, sha256, size FROM diagnostics "
+                    "WHERE device_id = ? ORDER BY created_at DESC",
+                    (device_id,),
+                ).mappings().all()
+            ]
 
     def diagnostics_for_job(self, job_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM diagnostics WHERE job_id = ? ORDER BY created_at DESC LIMIT 1",
-            (job_id,),
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT * FROM diagnostics WHERE job_id = ? ORDER BY created_at DESC LIMIT 1",
+                (job_id,),
+            ).mappings().fetchone()
         return dict(row) if row else None
 
     def diagnostics_path(self, bundle_id: str) -> Path | None:
@@ -191,23 +197,24 @@ class MirrorDiagnosticsMixin(_Base):
         return self.data_directory / bundle["relative_path"] if bundle else None
 
     def record_health_checks(self, device_id: str, report: dict[str, Any]) -> None:
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 "UPDATE devices SET health_checks_json = ? WHERE id = ?",
                 (json.dumps(report, separators=(",", ":")), device_id),
             )
 
     def _prune_diagnostics(self, device_id: str, *, keep: int = 5) -> None:
-        rows = self.connection.execute(
-            "SELECT id, relative_path FROM diagnostics WHERE device_id = ? "
-            "ORDER BY created_at DESC",
-            (device_id,),
-        ).fetchall()
+        with self._read() as conn:
+            rows = conn.exec_driver_sql(
+                "SELECT id, relative_path FROM diagnostics WHERE device_id = ? "
+                "ORDER BY created_at DESC",
+                (device_id,),
+            ).mappings().all()
         expired = rows[keep:]
         if not expired:
             return
-        with self.connection:
-            self.connection.executemany(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 "DELETE FROM diagnostics WHERE id = ?", [(row["id"],) for row in expired]
             )
         for row in expired:
@@ -222,13 +229,14 @@ class MirrorDiagnosticsMixin(_Base):
         return digest.hexdigest()
 
     def _prune_mirror_snapshots(self, device_id: str, *, recent: int, daily: int) -> None:
-        rows = self.connection.execute(
-            """
-            SELECT id, relative_path, received_at, size FROM mirror_snapshots
-            WHERE device_id = ? ORDER BY received_at DESC
-            """,
-            (device_id,),
-        ).fetchall()
+        with self._read() as conn:
+            rows = conn.exec_driver_sql(
+                """
+                SELECT id, relative_path, received_at, size FROM mirror_snapshots
+                WHERE device_id = ? ORDER BY received_at DESC
+                """,
+                (device_id,),
+            ).mappings().all()
         keep: set[str] = {row["id"] for row in rows[:recent]}
         daily_dates: set[str] = set()
         for row in rows[recent:]:
@@ -248,8 +256,8 @@ class MirrorDiagnosticsMixin(_Base):
         expired = [row for row in rows if row["id"] not in bounded_keep]
         if not expired:
             return
-        with self.connection:
-            self.connection.executemany(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 "DELETE FROM mirror_snapshots WHERE id = ?",
                 [(row["id"],) for row in expired],
             )

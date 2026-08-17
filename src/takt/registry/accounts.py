@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import hmac
 import json
 import logging
 import re
 import secrets
-import sqlite3
 import unicodedata
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from sqlalchemy import exc as sa_exc
+from sqlalchemy.engine import Connection, Engine
 
 LOGGER = logging.getLogger(__name__)
 
@@ -91,15 +96,52 @@ def verify_password(password: str, encoded: str) -> bool:
 class AccountStore:
     """Persistent Registry accounts, sessions, and device ACLs."""
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, engine: Engine) -> None:
         # Schema is established by the Registry's Alembic migrations (see
         # `takt.registry.migrations`) before a RegistryStore ever constructs
         # an AccountStore, so there is no schema setup to do here.
-        self.connection = connection
+        #
+        # `engine` is the same pooled Engine RegistryStore's mixins use, so
+        # a fresh top-level call here checks out its own connection; a call
+        # nested inside a RegistryStore transaction would deadlock against a
+        # second checkout, but nothing in RegistryStore ever calls into
+        # AccountStore (only `fastapi_app.py` route handlers do), so that
+        # case cannot occur.
+        self.engine = engine
+        self._active_connection: contextvars.ContextVar[Connection | None] = (
+            contextvars.ContextVar("accounts_active_connection", default=None)
+        )
         self._dummy_password_hash = hash_password(secrets.token_urlsafe(24))
 
+    @contextmanager
+    def _transaction(self) -> Iterator[Connection]:
+        current = self._active_connection.get()
+        if current is not None:
+            yield current
+            return
+        with self.engine.begin() as conn:
+            token = self._active_connection.set(conn)
+            try:
+                yield conn
+            finally:
+                self._active_connection.reset(token)
+
+    @contextmanager
+    def _read(self) -> Iterator[Connection]:
+        current = self._active_connection.get()
+        if current is not None:
+            yield current
+            return
+        with self.engine.connect() as conn:
+            token = self._active_connection.set(conn)
+            try:
+                yield conn
+            finally:
+                self._active_connection.reset(token)
+
     def has_users(self) -> bool:
-        return self.connection.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+        with self._read() as conn:
+            return conn.exec_driver_sql("SELECT 1 FROM users LIMIT 1").fetchone() is not None
 
     def bootstrap_admin(self, username: str, password: str) -> dict[str, Any]:
         if self.has_users():
@@ -121,8 +163,8 @@ class AccountStore:
         user_id = secrets.token_hex(16)
         now = utc_iso()
         try:
-            with self.connection:
-                self.connection.execute(
+            with self._transaction() as conn:
+                conn.exec_driver_sql(
                     """
                     INSERT INTO users(
                         id, username, username_key, password_hash, is_admin,
@@ -147,7 +189,7 @@ class AccountStore:
                     target_user_id=user_id,
                     details={"username": display_name, "is_admin": bool(is_admin)},
                 )
-        except sqlite3.IntegrityError as error:
+        except sa_exc.IntegrityError as error:
             raise ValueError("That username already exists.") from error
         return self.public_user(user_id)
 
@@ -156,9 +198,10 @@ class AccountStore:
             key = normalize_username(username)
         except ValueError:
             key = ""
-        row = self.connection.execute(
-            "SELECT * FROM users WHERE username_key = ?", (key,)
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT * FROM users WHERE username_key = ?", (key,)
+            ).mappings().fetchone()
         encoded = row["password_hash"] if row is not None else self._dummy_password_hash
         valid = verify_password(password, encoded)
         if row is None or not valid or row["disabled_at"] is not None:
@@ -166,25 +209,33 @@ class AccountStore:
         return self.public_user_row(row)
 
     def get_user(self, user_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).mappings().fetchone()
         return self.public_user_row(row) if row else None
 
     def list_users(self) -> list[dict[str, Any]]:
-        rows = self.connection.execute("SELECT * FROM users ORDER BY username_key").fetchall()
-        users = []
-        for row in rows:
-            user = self.public_user_row(row)
-            user["access"] = [
-                dict(access)
-                for access in self.connection.execute(
-                    """
-                    SELECT device_id, access_level, granted_at, granted_by
-                    FROM device_access WHERE user_id = ? ORDER BY device_id
-                    """,
-                    (row["id"],),
-                ).fetchall()
-            ]
-            users.append(user)
+        with self._read() as conn:
+            rows = (
+                conn.exec_driver_sql("SELECT * FROM users ORDER BY username_key")
+                .mappings()
+                .all()
+            )
+            users = []
+            for row in rows:
+                user = self.public_user_row(row)
+                user["access"] = [
+                    dict(access)
+                    for access in conn.exec_driver_sql(
+                        """
+                        SELECT device_id, access_level, granted_at, granted_by
+                        FROM device_access WHERE user_id = ? ORDER BY device_id
+                        """,
+                        (row["id"],),
+                    ).mappings().all()
+                ]
+                users.append(user)
         return users
 
     def set_user_state(
@@ -216,9 +267,9 @@ class AccountStore:
             return user
         assignments = [f"{key} = ?" for key in changes]
         now = utc_iso()
-        values = [*changes.values(), now, user_id]
-        with self.connection:
-            self.connection.execute(
+        values = (*changes.values(), now, user_id)
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 f"UPDATE users SET {', '.join(assignments)}, updated_at = ? WHERE id = ?",
                 values,
             )
@@ -238,8 +289,8 @@ class AccountStore:
         if self.get_user(user_id) is None:
             raise LookupError("User does not exist.")
         now = utc_iso()
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 """
                 UPDATE users SET password_hash = ?, must_change_password = 1,
                     password_changed_at = ?, updated_at = ? WHERE id = ?
@@ -255,14 +306,15 @@ class AccountStore:
         return self.get_user(user_id)  # type: ignore[return-value]
 
     def change_password(self, user_id: str, current: str, new: str) -> None:
-        row = self.connection.execute(
-            "SELECT password_hash FROM users WHERE id = ? AND disabled_at IS NULL", (user_id,)
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT password_hash FROM users WHERE id = ? AND disabled_at IS NULL", (user_id,)
+            ).mappings().fetchone()
         if row is None or not verify_password(current, row["password_hash"]):
             raise ValueError("Current password is incorrect.")
         now = utc_iso()
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 """
                 UPDATE users SET password_hash = ?, must_change_password = 0,
                     password_changed_at = ?, updated_at = ? WHERE id = ?
@@ -283,13 +335,15 @@ class AccountStore:
             raise ValueError("Access must be read or write.")
         if self.get_user(user_id) is None:
             raise LookupError("User does not exist.")
-        if (
-            self.connection.execute("SELECT 1 FROM devices WHERE id = ?", (device_id,)).fetchone()
-            is None
-        ):
-            raise LookupError("Device does not exist.")
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            if (
+                conn.exec_driver_sql(
+                    "SELECT 1 FROM devices WHERE id = ?", (device_id,)
+                ).fetchone()
+                is None
+            ):
+                raise LookupError("Device does not exist.")
+            conn.exec_driver_sql(
                 """
                 INSERT INTO device_access(user_id, device_id, access_level, granted_at, granted_by)
                 VALUES (?, ?, ?, ?, ?)
@@ -312,8 +366,8 @@ class AccountStore:
     def revoke_access(
         self, user_id: str, device_id: str, *, actor_user_id: str | None = None
     ) -> bool:
-        with self.connection:
-            cursor = self.connection.execute(
+        with self._transaction() as conn:
+            cursor = conn.exec_driver_sql(
                 "DELETE FROM device_access WHERE user_id = ? AND device_id = ?",
                 (user_id, device_id),
             )
@@ -327,10 +381,11 @@ class AccountStore:
         return bool(cursor.rowcount)
 
     def access_level(self, user_id: str, device_id: str) -> str | None:
-        row = self.connection.execute(
-            "SELECT access_level FROM device_access WHERE user_id = ? AND device_id = ?",
-            (user_id, device_id),
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT access_level FROM device_access WHERE user_id = ? AND device_id = ?",
+                (user_id, device_id),
+            ).mappings().fetchone()
         return str(row["access_level"]) if row else None
 
     def create_session(self, user_id: str) -> tuple[str, dict[str, Any]]:
@@ -342,8 +397,8 @@ class AccountStore:
         token = secrets.token_urlsafe(48)
         csrf = secrets.token_urlsafe(24)
         now = datetime.now(UTC)
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 """
                 INSERT INTO user_sessions(
                     token_hash, user_id, csrf_token, created_at, expires_at, last_seen_at
@@ -365,16 +420,17 @@ class AccountStore:
         if not token:
             LOGGER.info("session_verify_failed reason=missing_cookie")
             return None
-        row = self.connection.execute(
-            """
-            SELECT sessions.*, users.username, users.is_admin,
-                   users.disabled_at, users.must_change_password
-            FROM user_sessions AS sessions
-            JOIN users ON users.id = sessions.user_id
-            WHERE sessions.token_hash = ?
-            """,
-            (hashlib.sha256(token.encode()).hexdigest(),),
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                """
+                SELECT sessions.*, users.username, users.is_admin,
+                       users.disabled_at, users.must_change_password
+                FROM user_sessions AS sessions
+                JOIN users ON users.id = sessions.user_id
+                WHERE sessions.token_hash = ?
+                """,
+                (hashlib.sha256(token.encode()).hexdigest(),),
+            ).mappings().fetchone()
         if row is None:
             LOGGER.info("session_verify_failed reason=unknown_token")
             return None
@@ -391,8 +447,8 @@ class AccountStore:
                 row["expires_at"],
             )
             return None
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 "UPDATE user_sessions SET last_seen_at = ? WHERE token_hash = ?",
                 (utc_iso(), row["token_hash"]),
             )
@@ -408,12 +464,12 @@ class AccountStore:
     def revoke_session(self, token: str, *, actor_user_id: str | None = None) -> None:
         if not token:
             return
-        with self.connection:
-            row = self.connection.execute(
+        with self._transaction() as conn:
+            row = conn.exec_driver_sql(
                 "SELECT user_id FROM user_sessions WHERE token_hash = ?",
                 (hashlib.sha256(token.encode()).hexdigest(),),
-            ).fetchone()
-            self.connection.execute(
+            ).mappings().fetchone()
+            conn.exec_driver_sql(
                 "UPDATE user_sessions SET revoked_at = ? WHERE token_hash = ?",
                 (utc_iso(), hashlib.sha256(token.encode()).hexdigest()),
             )
@@ -422,20 +478,23 @@ class AccountStore:
             )
 
     def revoke_user_sessions(self, user_id: str) -> None:
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 "UPDATE user_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
                 (utc_iso(), user_id),
             )
 
     def public_user(self, user_id: str) -> dict[str, Any]:
-        row = self.connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).mappings().fetchone()
         if row is None:
             raise LookupError("User does not exist.")
         return self.public_user_row(row)
 
     @staticmethod
-    def public_user_row(row: sqlite3.Row) -> dict[str, Any]:
+    def public_user_row(row: Mapping[Any, Any]) -> dict[str, Any]:
         return {
             "id": row["id"],
             "username": row["username"],
@@ -447,16 +506,18 @@ class AccountStore:
         }
 
     def _enabled_admin_count(self, *, exclude_user_id: str | None = None) -> int:
-        if exclude_user_id is None:
-            row = self.connection.execute(
-                "SELECT COUNT(*) FROM users WHERE is_admin = 1 AND disabled_at IS NULL"
-            ).fetchone()
-        else:
-            row = self.connection.execute(
-                "SELECT COUNT(*) FROM users "
-                "WHERE is_admin = 1 AND disabled_at IS NULL AND id != ?",
-                (exclude_user_id,),
-            ).fetchone()
+        with self._read() as conn:
+            if exclude_user_id is None:
+                row = conn.exec_driver_sql(
+                    "SELECT COUNT(*) FROM users WHERE is_admin = 1 AND disabled_at IS NULL"
+                ).fetchone()
+            else:
+                row = conn.exec_driver_sql(
+                    "SELECT COUNT(*) FROM users "
+                    "WHERE is_admin = 1 AND disabled_at IS NULL AND id != ?",
+                    (exclude_user_id,),
+                ).fetchone()
+        assert row is not None  # COUNT(*) always returns exactly one row
         return int(row[0])
 
     def _audit(
@@ -468,8 +529,8 @@ class AccountStore:
         device_id: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 """
             INSERT INTO audit_events(
                 created_at, event, device_id, details_json, actor_user_id, target_user_id
