@@ -36,7 +36,9 @@ class AccountStoreTests(unittest.TestCase):
                 token, metadata = accounts.create_session(admin["id"])
                 self.assertEqual(accounts.verify_session(token)["csrf"], metadata["csrf"])
                 accounts.revoke_session(token)
-                self.assertIsNone(accounts.verify_session(token))
+                with self.assertLogs("takt.registry.accounts", level="INFO") as logs:
+                    self.assertIsNone(accounts.verify_session(token))
+                self.assertIn("reason=revoked", logs.output[0])
                 user = accounts.create_user("runner", "another-correct-password")
                 device_id = "12345678-1234-1234-1234-123456789abc"
                 code = store.create_enrollment_code()
@@ -72,9 +74,40 @@ class AccountStoreTests(unittest.TestCase):
                 user = accounts.create_user("runner", "another-correct-password")
                 token, _ = accounts.create_session(user["id"])
                 accounts.set_user_state(user["id"], disabled=True)
-                self.assertIsNone(accounts.verify_session(token))
+                with self.assertLogs("takt.registry.accounts", level="INFO") as logs:
+                    self.assertIsNone(accounts.verify_session(token))
+                # Disabling a user also revokes their sessions, so the still-live
+                # cookie is caught by the revocation check first.
+                self.assertIn("reason=revoked", logs.output[0])
                 with self.assertRaises(ValueError):
                     accounts.create_session(user["id"])
+            finally:
+                store.close()
+
+    def test_verify_session_logs_a_specific_reason_for_each_kind_of_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RegistryStore(Path(directory))
+            try:
+                accounts = store.accounts
+                admin = accounts.bootstrap_admin("admin", "correct-horse-battery")
+
+                with self.assertLogs("takt.registry.accounts", level="INFO") as logs:
+                    self.assertIsNone(accounts.verify_session(""))
+                self.assertIn("reason=missing_cookie", logs.output[0])
+
+                with self.assertLogs("takt.registry.accounts", level="INFO") as logs:
+                    self.assertIsNone(accounts.verify_session("not-a-real-session-token"))
+                self.assertIn("reason=unknown_token", logs.output[0])
+
+                token, _ = accounts.create_session(admin["id"])
+                with store.connection:
+                    store.connection.execute(
+                        "UPDATE user_sessions SET expires_at = ? WHERE token_hash = ?",
+                        ("2000-01-01T00:00:00+00:00", hashlib.sha256(token.encode()).hexdigest()),
+                    )
+                with self.assertLogs("takt.registry.accounts", level="INFO") as logs:
+                    self.assertIsNone(accounts.verify_session(token))
+                self.assertIn("reason=expired", logs.output[0])
             finally:
                 store.close()
 

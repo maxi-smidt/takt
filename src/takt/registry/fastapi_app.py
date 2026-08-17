@@ -111,12 +111,24 @@ def _auth(request: Request) -> AdminAuth:
     return request.app.state.auth
 
 
+def _log_session_401(request: Request, *, cookie_present: bool) -> None:
+    client = request.client.host if request.client else "unknown"
+    LOGGER.warning(
+        "session_verify_401 path=%s method=%s client=%s cookie_present=%s",
+        request.url.path,
+        request.method,
+        client,
+        cookie_present,
+    )
+
+
 def _verify_session(request: Request, *, csrf: bool) -> dict[str, object]:
     token = request.cookies.get(COOKIE_NAME, "")
     accounts = getattr(request.app.state, "accounts", None)
     if accounts is not None and accounts.has_users():
         session = accounts.verify_session(token)
         if session is None:
+            _log_session_401(request, cookie_present=bool(token))
             raise HTTPException(status_code=401, detail="Login required.")
         if bool(session.get("must_change_password")) and request.url.path not in {
             "/api/session",
@@ -137,6 +149,7 @@ def _verify_session(request: Request, *, csrf: bool) -> dict[str, object]:
     except CsrfError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     except SessionError as error:
+        _log_session_401(request, cookie_present=bool(token))
         raise HTTPException(status_code=401, detail=str(error)) from error
 
 

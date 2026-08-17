@@ -4,9 +4,12 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import time
 from pathlib import Path
+
+LOGGER = logging.getLogger(__name__)
 
 COOKIE_NAME = "takt_registry_session"
 
@@ -53,6 +56,9 @@ class AdminAuth:
         csrf_token: str | None = None,
         require_csrf: bool = False,
     ) -> dict[str, object]:
+        if not token:
+            LOGGER.info("session_verify_failed reason=missing_cookie")
+            raise SessionError("Login required.")
         try:
             encoded_payload, encoded_signature = token.split(".", 1)
             payload = encoded_payload.encode("ascii")
@@ -62,7 +68,8 @@ class AdminAuth:
                 raise ValueError
             data = json.loads(self._decode(encoded_payload))
             if int(data["exp"]) < int(time.time()):
-                raise SessionError
+                LOGGER.info("session_verify_failed reason=expired")
+                raise SessionError("Login required.")
             if require_csrf and not hmac.compare_digest(
                 str(data["csrf"]), csrf_token or ""
             ):
@@ -70,7 +77,10 @@ class AdminAuth:
             return data
         except CsrfError:
             raise
+        except SessionError:
+            raise
         except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            LOGGER.info("session_verify_failed reason=malformed_or_invalid_token")
             raise SessionError("Login required.") from None
 
     @staticmethod
