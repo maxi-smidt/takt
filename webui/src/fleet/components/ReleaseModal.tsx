@@ -1,11 +1,11 @@
 // @ts-nocheck
 import { useState } from "react";
-import { Upload } from "lucide-react";
+import { Trash2, Upload } from "lucide-react";
 import { request } from "../services/fleetService";
-import { bytes } from "../formatters";
+import { bytes, timeAgo } from "../formatters";
 import { Modal } from "./Modal";
 
-export function ReleaseModal({ csrf, onClose, onUploaded }) {
+export function ReleaseModal({ csrf, releases, onClose, onUploaded, onUninstall }) {
   const [version, setVersion] = useState("");
   const [file, setFile] = useState(null);
   const [error, setError] = useState("");
@@ -20,7 +20,8 @@ export function ReleaseModal({ csrf, onClose, onUploaded }) {
     try {
       await request("/api/releases", { method: "POST", body: data }, csrf);
       await onUploaded();
-      onClose();
+      setVersion("");
+      setFile(null);
     } catch (failure) {
       setError(failure.message);
     } finally {
@@ -28,7 +29,7 @@ export function ReleaseModal({ csrf, onClose, onUploaded }) {
     }
   };
   return (
-    <Modal title="ADD A TAKT RELEASE" eyebrow="VERSION LIBRARY" onClose={onClose}>
+    <Modal title="RELEASE LIBRARY" eyebrow="VERSION LIBRARY" onClose={onClose} wide>
       <form className="modal-body" onSubmit={upload}>
         <p>Upload the Raspberry Pi package created by <code>package_for_raspberry_pi.sh</code>.</p>
         <label className="field-label">VERSION
@@ -45,6 +46,29 @@ export function ReleaseModal({ csrf, onClose, onUploaded }) {
           {busy ? "UPLOADING …" : "STORE RELEASE"}
         </button>
       </form>
+      <div className="release-list">
+        {!releases.length && <p className="release-list-empty">No releases uploaded yet.</p>}
+        {releases.map((release) => (
+          <div className="release-row" key={release.id}>
+            <div>
+              <strong>{release.version}</strong>
+              <small>
+                {release.source === "bundled" ? "VERIFIED · " : ""}
+                {bytes(release.size)} · {timeAgo(release.created_at)}
+              </small>
+            </div>
+            <span className={`release-status ${release.installed ? "is-cached" : "is-uninstalled"}`}>
+              {release.installed ? "CACHED" : "NOT CACHED · REDOWNLOADS ON INSTALL"}
+            </span>
+            <button
+              className="icon-button danger-action"
+              title={`Uninstall ${release.version}`}
+              disabled={!release.installed}
+              onClick={() => onUninstall(release)}
+            ><Trash2 size={15} /></button>
+          </div>
+        ))}
+      </div>
     </Modal>
   );
 }

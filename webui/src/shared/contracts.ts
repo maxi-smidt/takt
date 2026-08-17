@@ -142,6 +142,7 @@ export interface Release {
   id: string;
   version: string;
   source: string;
+  installed: boolean;
   filename?: string;
   sha256?: string;
   size?: number;
@@ -475,6 +476,7 @@ function parseRelease(value: unknown): Release {
     id: text(item.id, "release.id"),
     version: text(item.version, "release.version"),
     source: text(item.source, "release.source"),
+    installed: flag(item.installed, "release.installed"),
     ...(typeof item.filename === "string" ? { filename: item.filename } : {}),
     ...(typeof item.sha256 === "string" ? { sha256: item.sha256 } : {}),
     ...(typeof item.size === "number" ? { size: item.size } : {}),

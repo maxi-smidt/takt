@@ -42,6 +42,7 @@ export function Dashboard({ session, refreshSession }) {
     forceClearJob,
     acknowledgeRecovery,
     revokeDevice,
+    uninstallRelease,
     logout,
   } = useFleetDashboard({ session, refreshSession });
   const [modal, setModal] = useState(null);
@@ -94,7 +95,7 @@ export function Dashboard({ session, refreshSession }) {
         <UserAdminPanel csrf={session.csrf_token} devices={devices} />
       </main>
       {modal === "enroll" && <EnrollmentModal csrf={session.csrf_token} releases={releases} onDone={load} onClose={() => setModal(null)} />}
-      {modal === "release" && <ReleaseModal csrf={session.csrf_token} onClose={() => setModal(null)} onUploaded={load} />}
+      {modal === "release" && <ReleaseModal csrf={session.csrf_token} releases={releases} onClose={() => setModal(null)} onUploaded={load} onUninstall={uninstallRelease} />}
       {wifiDevice && <WifiModal device={wifiDevice} csrf={session.csrf_token} onClose={() => setWifiDevice(null)} onCreated={load} />}
       {confirmation && (
         <ConfirmModal

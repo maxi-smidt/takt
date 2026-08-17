@@ -193,6 +193,126 @@ class FastApiRegistryTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_uninstalling_a_release_keeps_its_row_and_blocks_a_download_that_cannot_repair(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_directory = Path(temporary_directory)
+            store = RegistryStore(data_directory, allow_thread_handoff=True)
+            auth = AdminAuth("correct-horse-battery", data_directory)
+            try:
+                with TestClient(create_fastapi_app(store, auth)) as client:
+                    client.post("/api/session", json={"password": "correct-horse-battery"})
+                    csrf = client.get("/api/session").json()["csrf_token"]
+
+                    release_archive = io.BytesIO()
+                    with tarfile.open(fileobj=release_archive, mode="w:gz") as archive:
+                        for name, content in (
+                            ("takt/pyproject.toml", b"[project]\nversion='0.2.0'\n"),
+                            ("takt/src/takt/web/static/index.html", b"<!doctype html>"),
+                        ):
+                            info = tarfile.TarInfo(name)
+                            info.size = len(content)
+                            archive.addfile(info, io.BytesIO(content))
+                    uploaded = client.post(
+                        "/api/releases",
+                        data={"version": "0.2.0"},
+                        files={
+                            "artifact": (
+                                "takt-0.2.0.tar.gz",
+                                release_archive.getvalue(),
+                                "application/gzip",
+                            )
+                        },
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    release_id = uploaded.json()["release"]["id"]
+                    self.assertTrue(uploaded.json()["release"]["installed"])
+
+                    missing_csrf = client.post(f"/api/releases/{release_id}/uninstall")
+                    self.assertEqual(missing_csrf.status_code, 403)
+
+                    unknown = client.post(
+                        "/api/releases/does-not-exist/uninstall",
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(unknown.status_code, 404)
+
+                    uninstalled = client.post(
+                        f"/api/releases/{release_id}/uninstall",
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(uninstalled.status_code, 200)
+                    self.assertFalse(uninstalled.json()["release"]["installed"])
+
+                    listed = client.get("/api/releases").json()["releases"]
+                    self.assertFalse(next(r for r in listed if r["id"] == release_id)["installed"])
+
+                    device_id = "12345678-1234-1234-1234-123456789abc"
+                    token = "a" * 64
+                    code = client.post(
+                        "/api/enrollment-codes",
+                        json={"label": "Lane 1"},
+                        headers={"X-CSRF-Token": csrf},
+                    ).json()["code"]
+                    client.post(
+                        "/agent/enroll",
+                        json={
+                            "enrollment_code": code,
+                            "device_id": device_id,
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "device_token": token,
+                        },
+                    )
+                    agent_headers = {
+                        "X-Device-ID": device_id,
+                        "Authorization": f"Bearer {token}",
+                    }
+                    client.post(
+                        "/agent/heartbeat",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "protocol_version": 1,
+                            "poll_seconds": 10,
+                            "app_version": "0.1.0",
+                        },
+                        headers=agent_headers,
+                    )
+                    client.post(
+                        f"/api/devices/{device_id}/jobs",
+                        json={
+                            "action": "install_release",
+                            "payload": {"release_id": release_id},
+                            "override": False,
+                        },
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    claimed = client.post(
+                        "/agent/heartbeat",
+                        json={
+                            "name": "Lane 1",
+                            "hostname": "takt-01",
+                            "protocol_version": 1,
+                            "poll_seconds": 10,
+                            "app_version": "0.1.0",
+                        },
+                        headers=agent_headers,
+                    ).json()["job"]
+                    self.assertIsNotNone(claimed)
+
+                    # This registry image has no bundled artifact to repair the
+                    # uninstalled release from, so the download fails clearly
+                    # instead of serving a missing file.
+                    artifact_response = client.get(
+                        f"/agent/jobs/{claimed['id']}/artifact",
+                        headers={**agent_headers, "X-Job-Lease": claimed["lease_id"]},
+                    )
+                    self.assertEqual(artifact_response.status_code, 409)
+            finally:
+                store.close()
+
     def test_acknowledge_recovery_endpoint_clears_and_reraises_the_alert(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_directory = Path(temporary_directory)

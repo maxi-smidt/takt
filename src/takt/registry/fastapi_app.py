@@ -56,7 +56,12 @@ from takt.registry.api_models import (
     WifiNetworkRequest,
 )
 from takt.registry.auth import COOKIE_NAME, AdminAuth, CsrfError, SessionError
-from takt.registry.bundled_release import ReleaseValidationError, validate_release_archive
+from takt.registry.bundled_release import (
+    ReleaseUnavailableError,
+    ReleaseValidationError,
+    ensure_release_cached,
+    validate_release_archive,
+)
 from takt.registry.deployment import DeploymentCredentials, DeploymentManager
 from takt.registry.storage import RegistryStore, utc_iso
 from takt.static_assets import require_static_assets
@@ -1303,6 +1308,17 @@ def create_fastapi_app(
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
 
+    @app.post("/api/releases/{release_id}/uninstall")
+    async def uninstall_release(
+        release_id: str,
+        _: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
+    ) -> dict[str, Any]:
+        try:
+            release = store.uninstall_release(release_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {"release": release}
+
     @app.get("/api/jobs")
     async def jobs(_: dict[str, object] = _ADMIN_DEPENDENCY) -> dict[str, Any]:
         return {"jobs": store.list_jobs()}
@@ -1555,8 +1571,12 @@ def create_fastapi_app(
         release = store.get_release(job["payload"]["release_id"])
         if release is None:
             raise HTTPException(status_code=404, detail="Release does not exist.")
+        try:
+            release_path = await asyncio.to_thread(ensure_release_cached, store, release)
+        except ReleaseUnavailableError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         return FileResponse(
-            store.release_path(release["id"]),
+            release_path,
             headers={
                 "Content-Disposition": f'attachment; filename="takt-{release["version"]}.tar.gz"',
                 "X-TAKT-SHA256": release["sha256"],

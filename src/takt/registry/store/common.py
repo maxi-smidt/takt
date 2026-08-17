@@ -47,6 +47,7 @@ if TYPE_CHECKING:
         mirror_directory: Path
         backup_directory: Path
         bundled_release_status: dict[str, Any]
+        bundled_release_directory: Path | None
         job_secret_key_path: Path
 
         def _transaction(self) -> AbstractContextManager[Connection]:

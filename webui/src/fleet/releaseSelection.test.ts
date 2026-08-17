@@ -10,17 +10,17 @@ it("compares dotted version segments numerically", () => {
 
 it("prefers the newest bundled release over uploads", () => {
   const releases = [
-    { id: "upload-newer", version: "0.3.0", source: "upload" },
-    { id: "bundled-older", version: "0.1.0", source: "bundled" },
-    { id: "bundled-newest", version: "0.2.5", source: "bundled" },
+    { id: "upload-newer", version: "0.3.0", source: "upload", installed: true },
+    { id: "bundled-older", version: "0.1.0", source: "bundled", installed: true },
+    { id: "bundled-newest", version: "0.2.5", source: "bundled", installed: true },
   ];
   expect(preferredReleaseId(releases)).toBe("bundled-newest");
 });
 
 it("falls back to the first release when nothing is bundled", () => {
   const releases = [
-    { id: "upload-a", version: "0.3.0", source: "upload" },
-    { id: "upload-b", version: "0.1.0", source: "upload" },
+    { id: "upload-a", version: "0.3.0", source: "upload", installed: true },
+    { id: "upload-b", version: "0.1.0", source: "upload", installed: true },
   ];
   expect(preferredReleaseId(releases)).toBe("upload-a");
 });
@@ -40,8 +40,8 @@ it("compares prerelease identifiers left to right per semver precedence", () => 
 });
 it("preselects the final release over a same-core prerelease", () => {
   const releases = [
-    { id: "bundled-rc", version: "1.0.0-rc.1", source: "bundled" },
-    { id: "bundled-final", version: "1.0.0", source: "bundled" },
+    { id: "bundled-rc", version: "1.0.0-rc.1", source: "bundled", installed: true },
+    { id: "bundled-final", version: "1.0.0", source: "bundled", installed: true },
   ];
   expect(preferredReleaseId(releases)).toBe("bundled-final");
 });

@@ -286,6 +286,18 @@ input:focus, select:focus { border-color: var(--green); }
 .file-drop small { color: var(--muted); font-size: var(--fs-small); }
 .file-drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
+.release-list { border-top: 1px solid var(--line); padding: 6px 24px 20px; display: grid; }
+.release-list-empty { margin: 14px 0; color: var(--muted); font-size: var(--fs-small); }
+.release-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.release-row:last-child { border: 0; }
+.release-row > div { display: grid; gap: 3px; text-align: left; }
+.release-row strong { font-size: var(--fs-label); letter-spacing: var(--ls-caps); }
+.release-row small { color: var(--muted); font-size: var(--fs-small); }
+.release-status { flex: 0 0 auto; color: var(--green); font-size: var(--fs-small); font-weight: 700; letter-spacing: var(--ls-caps); text-align: right; }
+.release-status.is-uninstalled { color: var(--muted); }
+.release-row .danger-action { color: #ffb0a2; background: #241512; border-color: #63382f; }
+.release-row .icon-button:disabled { opacity: .42; cursor: not-allowed; }
+
 /* Maintenance panel: grouped, capability-gated device actions. */
 .maintenance-panel { display: grid; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--line); background: #0b1513; }
 .maintenance-group { display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 10px; }
