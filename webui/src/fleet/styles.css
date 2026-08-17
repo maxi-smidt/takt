@@ -214,6 +214,23 @@ input:focus, select:focus { border-color: var(--green); }
 /* Portal: run-time chart. */
 .portal-chart-panel { margin-top: 20px; padding: 18px; border: 1px solid var(--line); background: #0e1716; }
 .chart-empty { padding: 30px; color: var(--muted); text-align: center; font-size: var(--fs-base); }
+.portal-chart-tooltip {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  background: #101918;
+  color: var(--text);
+  font-size: var(--fs-small);
+  line-height: 1.6;
+}
+.portal-chart-tooltip-label { color: var(--muted); margin-bottom: 2px; }
+.portal-chart-tooltip-total { margin-top: 2px; border-top: 1px solid var(--line); padding-top: 4px; }
+.portal-chart-tooltip-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+}
 
 /* Portal: runs table. */
 .runs-table-wrap { margin-top: 20px; overflow-x: auto; border: 1px solid var(--line); background: #0e1716; }
