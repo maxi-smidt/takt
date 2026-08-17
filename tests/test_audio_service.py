@@ -329,9 +329,8 @@ class AudioServiceTests(unittest.TestCase):
         with self.assertLogs(
             "takt.application.audio_service",
             level="WARNING",
-        ) as captured:
-            with self.assertRaisesRegex(RuntimeError, "Pairing-Modus"):
-                asyncio.run(service.connect_bluetooth("AA:BB:CC:DD:EE:FF"))
+        ) as captured, self.assertRaisesRegex(RuntimeError, "Pairing-Modus"):
+            asyncio.run(service.connect_bluetooth("AA:BB:CC:DD:EE:FF"))
 
         self.assertTrue(
             any(
@@ -369,9 +368,11 @@ class AudioServiceTests(unittest.TestCase):
         runner = ScriptedRunner(connect_failures=99)
         service = self._make_service(runner)
 
-        with self.assertLogs("takt.application.audio_service", level="WARNING") as captured:
-            with self.assertRaisesRegex(RuntimeError, "Reichweite"):
-                asyncio.run(service.connect_bluetooth("AA:BB:CC:DD:EE:FF"))
+        with (
+            self.assertLogs("takt.application.audio_service", level="WARNING") as captured,
+            self.assertRaisesRegex(RuntimeError, "Reichweite"),
+        ):
+            asyncio.run(service.connect_bluetooth("AA:BB:CC:DD:EE:FF"))
 
         self.assertTrue(any("bluetooth_connect_failed" in line for line in captured.output))
         self.assertTrue(any("br-connection-page-timeout" in line for line in captured.output))

@@ -366,7 +366,7 @@ def _health_report_payload(value: Any) -> dict[str, Any] | None:
         )
     if not checks:
         return None
-    counts = {status: 0 for status in ("ok", "warn", "fail", "skipped")}
+    counts = dict.fromkeys(("ok", "warn", "fail", "skipped"), 0)
     for check in checks:
         counts[str(check["status"])] += 1
     return {
@@ -543,7 +543,8 @@ def _portal_run(row: sqlite3.Row) -> dict[str, Any]:
         "actual_time_ms": int(row["actual_time_ms"]),
         "added_time_ms": int(row["added_time_ms"]),
         "total_time_ms": int(row["total_time_ms"]),
-        "note": row["note"] if "note" in row.keys() else None,
+        # sqlite3.Row's `in` checks values, not column names -- `.keys()` is required.
+        "note": row["note"] if "note" in row.keys() else None,  # noqa: SIM118
         "updated_at": row["updated_at"],
     }
 
@@ -744,7 +745,7 @@ def create_fastapi_app(
                 if user is None:
                     limiter.failed(address)
                     raise HTTPException(status_code=401, detail="Incorrect username or password.")
-                token, session = await asyncio.to_thread(accounts.create_session, user["id"])
+                token, _session = await asyncio.to_thread(accounts.create_session, user["id"])
                 response_body = {"ok": True, "user": user}
             else:
                 token = await asyncio.to_thread(auth.authenticate, body.password.get_secret_value())

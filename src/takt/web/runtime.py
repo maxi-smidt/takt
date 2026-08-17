@@ -5,7 +5,7 @@ import json
 import logging
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -101,6 +101,7 @@ class WebRuntime:
         self._refresh_task: asyncio.Task[None] | None = None
         self._start_task: asyncio.Task[None] | None = None
         self._sound_task: asyncio.Task[None] | None = None
+        self._broadcast_tasks: set[asyncio.Task[None]] = set()
         self._gesture_deadline_handle: asyncio.TimerHandle | None = None
         self._gesture_monotonic = gesture_monotonic
         self._gestures = ButtonGestureRecognizer(
@@ -132,6 +133,8 @@ class WebRuntime:
         if self._sound_task is not None:
             self._sound_task.cancel()
             await asyncio.gather(self._sound_task, return_exceptions=True)
+        if self._broadcast_tasks:
+            await asyncio.gather(*self._broadcast_tasks, return_exceptions=True)
         if self._gesture_deadline_handle is not None:
             self._gesture_deadline_handle.cancel()
             self._gesture_deadline_handle = None
@@ -793,17 +796,17 @@ class WebRuntime:
     def _schedule_state_broadcast(self) -> None:
         if not self._clients or self._closed:
             return
-        asyncio.create_task(self._broadcast({"type": "state", "data": self.state_payload()}))
+        self._spawn_broadcast(self._broadcast({"type": "state", "data": self.state_payload()}))
 
     def _schedule_system_broadcast(self) -> None:
         if not self._clients or self._closed:
             return
-        asyncio.create_task(self._broadcast({"type": "system", "data": self.system_payload()}))
+        self._spawn_broadcast(self._broadcast({"type": "system", "data": self.system_payload()}))
 
     def _schedule_history_broadcast(self) -> None:
         if not self._clients or self._closed:
             return
-        asyncio.create_task(
+        self._spawn_broadcast(
             self._broadcast(
                 {
                     "type": "history_changed",
@@ -811,6 +814,13 @@ class WebRuntime:
                 }
             )
         )
+
+    def _spawn_broadcast(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        # A task referenced only by the event loop can be garbage-collected
+        # before it completes; keep a strong reference until it's done.
+        task = asyncio.create_task(coroutine)
+        self._broadcast_tasks.add(task)
+        task.add_done_callback(self._broadcast_tasks.discard)
 
     async def _broadcast(self, payload: dict[str, object]) -> None:
         stale: list[web.WebSocketResponse] = []

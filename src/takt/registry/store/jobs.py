@@ -320,13 +320,16 @@ class JobsMixin(_Base):
                 raise ValueError("A job lease is required for this operation.")
             if not secrets.compare_digest(lease_id, current["lease_id"]):
                 raise ValueError("Job lease no longer belongs to this agent operation.")
-        if status == "succeeded" and current["action"] == "install_release":
-            if not self._install_success_is_confirmed(
+        if (
+            status == "succeeded"
+            and current["action"] == "install_release"
+            and not self._install_success_is_confirmed(
                 device_id, str(current["target_version"] or "")
-            ):
-                raise ValueError(
-                    "Expected version and healthy agent status have not been confirmed."
-                )
+            )
+        ):
+            raise ValueError(
+                "Expected version and healthy agent status have not been confirmed."
+            )
         completed_at = utc_iso() if status in JOB_TERMINAL_STATUSES else None
         lease_expires_at = (
             utc_iso(utc_now() + timedelta(seconds=JOB_LEASE_SECONDS))

@@ -656,10 +656,12 @@ class MainWindow(QMainWindow):
             elif event.gesture is ButtonGesture.LONG:
                 if self.controller.state is TimerState.STOPPED:
                     self.controller.save()
-            elif event.gesture is ButtonGesture.DOUBLE:
-                if self.controller.state is TimerState.STOPPED:
-                    self.controller.discard_immediately(event.source)
-                    self.controller.start(event.source)
+            elif (
+                event.gesture is ButtonGesture.DOUBLE
+                and self.controller.state is TimerState.STOPPED
+            ):
+                self.controller.discard_immediately(event.source)
+                self.controller.start(event.source)
 
     def _schedule_gesture_deadline(self) -> None:
         self._gesture_timer.stop()

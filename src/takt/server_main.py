@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -141,10 +142,8 @@ async def _serve(args: argparse.Namespace) -> None:
     site = web.TCPSite(runner, host, port)
     stop_event = asyncio.Event()
     for signal_number in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(signal_number, stop_event.set)
-        except NotImplementedError:
-            pass
     try:
         await site.start()
         LOGGER.info("server_ready url=http://%s:%s", host, port)

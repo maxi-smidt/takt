@@ -577,10 +577,7 @@ class DeploymentManager:
             f"--bootstrap-config {shlex.quote(remote_dir + '/bootstrap.json')} --non-interactive"
         )
         sudo_password = credentials.sudo_password or credentials.ssh_password
-        if sudo_password:
-            command = installer + " --sudo-password-stdin"
-        else:
-            command = installer
+        command = installer + " --sudo-password-stdin" if sudo_password else installer
         self._event(
             deployment_id,
             "authorizing",

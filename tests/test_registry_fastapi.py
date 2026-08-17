@@ -375,9 +375,8 @@ class FastApiRegistryTests(unittest.TestCase):
                 with patch(
                     "takt.registry.fastapi_app.STATIC_ROOT",
                     data_directory / "missing",
-                ):
-                    with TestClient(create_fastapi_app(store, auth)) as client:
-                        response = client.get("/")
+                ), TestClient(create_fastapi_app(store, auth)) as client:
+                    response = client.get("/")
                 self.assertEqual(response.status_code, 500)
                 self.assertIn("scripts/build_registry_ui.sh", response.text)
             finally:

@@ -113,16 +113,16 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        LOGGER.error("Bundled release manifest %s is unreadable: %s", manifest_path, error)
+        LOGGER.error("bundled_release_manifest_unreadable path=%s error=%s", manifest_path, error)
         return {"status": "error", "reason": "corrupt", "detail": f"manifest unreadable: {error}"}
 
     if not isinstance(manifest, dict):
-        LOGGER.error("Bundled release manifest %s is not a JSON object.", manifest_path)
+        LOGGER.error("bundled_release_manifest_invalid path=%s", manifest_path)
         return {"status": "error", "reason": "corrupt", "detail": "manifest is not a JSON object"}
 
     if manifest.get("schema_version") != 1:
         LOGGER.error(
-            "Bundled release manifest has unsupported schema_version: %r",
+            "bundled_release_manifest_schema_unsupported schema_version=%r",
             manifest.get("schema_version"),
         )
         return {
@@ -136,7 +136,7 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
         return {"status": "error", "reason": "corrupt", "detail": "manifest version is invalid"}
     if version != registry_version:
         detail = f"bundled package {version} does not match registry version {registry_version}"
-        LOGGER.error("Bundled release version mismatch: %s", detail)
+        LOGGER.error("bundled_release_version_mismatch detail=%s", detail)
         return {"status": "error", "reason": "version_mismatch", "detail": detail}
 
     artifact_name = str(manifest.get("artifact", ""))
@@ -145,19 +145,19 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
     expected_size = manifest.get("size")
     if not archive_path or not archive_path.is_file():
         detail = f"artifact {artifact_name!r} referenced by manifest is missing"
-        LOGGER.error("Bundled release archive missing: %s", detail)
+        LOGGER.error("bundled_release_archive_missing detail=%s", detail)
         return {"status": "error", "reason": "missing", "detail": detail}
 
     actual_size = archive_path.stat().st_size
     if expected_size is not None and actual_size != expected_size:
         detail = f"size {actual_size} does not match manifest size {expected_size}"
-        LOGGER.error("Bundled release size mismatch: %s", detail)
+        LOGGER.error("bundled_release_size_mismatch detail=%s", detail)
         return {"status": "error", "reason": "corrupt", "detail": detail}
 
     actual_sha256 = RegistryStore._sha256_file(archive_path)
     if not expected_sha256 or actual_sha256 != expected_sha256:
         detail = "sha256 does not match manifest"
-        LOGGER.error("Bundled release checksum mismatch: %s", detail)
+        LOGGER.error("bundled_release_checksum_mismatch detail=%s", detail)
         return {"status": "error", "reason": "corrupt", "detail": detail}
 
     sidecar = archive_path.with_name(archive_path.name + ".sha256")
@@ -165,13 +165,13 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
         sidecar_text = sidecar.read_text(encoding="utf-8").strip().split()
         if sidecar_text and sidecar_text[0] != expected_sha256:
             detail = "sha256 sidecar does not match manifest"
-            LOGGER.error("Bundled release checksum sidecar mismatch: %s", detail)
+            LOGGER.error("bundled_release_checksum_sidecar_mismatch detail=%s", detail)
             return {"status": "error", "reason": "corrupt", "detail": detail}
 
     try:
         validate_release_archive(archive_path, version)
     except ReleaseValidationError as error:
-        LOGGER.error("Bundled release archive failed validation: %s", error)
+        LOGGER.error("bundled_release_validation_failed error=%s", error)
         return {"status": "error", "reason": "corrupt", "detail": str(error)}
 
     commit_sha = str(manifest.get("commit") or "") or None
@@ -191,7 +191,7 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
             # changed without a version bump — or the database row is correct but the
             # persisted artifact is missing/damaged (e.g. a database-only restore).
             # Either way, the verified bundle we just validated is authoritative.
-            LOGGER.info("Refreshing bundled release %s from the verified bundle.", version)
+            LOGGER.info("bundled_release_refreshing version=%s", version)
             return _stage_and_call(
                 archive_path,
                 store.data_directory,
@@ -210,7 +210,7 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
             f"an existing release {version} (sha256 {existing['sha256'][:12]}...) "
             f"does not match the bundled package (sha256 {actual_sha256[:12]}...)"
         )
-        LOGGER.error("Bundled release collides with an existing upload: %s", detail)
+        LOGGER.error("bundled_release_collision detail=%s", detail)
         return {"status": "error", "reason": "collision", "detail": detail}
 
     return _stage_and_call(
@@ -259,12 +259,12 @@ def _stage_and_call(
             staged.unlink(missing_ok=True)
         except Exception as cleanup_error:
             LOGGER.error(
-                "Failed to clean up staged bundled release %s: %s",
+                "bundled_release_cleanup_failed version=%s error=%s",
                 version,
                 cleanup_error,
             )
 
     if failure is not None:
-        LOGGER.error("Failed to import bundled release %s: %s", version, failure)
+        LOGGER.error("bundled_release_import_failed version=%s error=%s", version, failure)
         return {"status": "error", "reason": "import_failed", "detail": str(failure)}
     return {"status": "imported", "version": version, "sha256": sha256}

@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     store.bundled_release_status = import_bundled_release(
         store, Path(bundled_release_directory) if bundled_release_directory else None
     )
-    LOGGER.info("Bundled release import: %s", store.bundled_release_status)
+    LOGGER.info("bundled_release_import status=%s", store.bundled_release_status)
     if args.admin_username and len(password) < PASSWORD_MIN_LENGTH:
         store.close()
         lock_handle.close()
