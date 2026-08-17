@@ -14,14 +14,16 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  bump-and-tag:
+  release:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,15 +84,70 @@ jobs:
               f.write(f"version={new_version}\n")
           PY
 
-      - name: Commit, tag, and push
+      - name: Commit bump to a release branch
         env:
           NEW_VERSION: ${{ steps.bump.outputs.version }}
         run: |
           set -Eeuo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "release/v${NEW_VERSION}"
           git add pyproject.toml src/takt/__init__.py
           git commit -m "Prepare release ${NEW_VERSION}"
-          git tag "v${NEW_VERSION}"
-          git push origin HEAD:main
+          git push origin "release/v${NEW_VERSION}"
+
+      # main is protected and requires the "quality" check to pass, so we
+      # can't push the bump commit directly — go through a PR instead.
+      - name: Open the release PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          gh pr create \
+            --base main \
+            --head "release/v${NEW_VERSION}" \
+            --title "Prepare release ${NEW_VERSION}" \
+            --body "Automated version bump. Merges once the \`quality\` check passes; merging tags \`v${NEW_VERSION}\`, which triggers the release pipeline."
+          pr_number="$(gh pr view "release/v${NEW_VERSION}" --json number --jq .number)"
+          printf 'number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the required check, then squash-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -Eeuo pipefail
+          elapsed=0
+          timeout_seconds=1800
+          interval=15
+          while true; do
+            conclusion="$(gh pr view "$PR_NUMBER" --json statusCheckRollup \
+              --jq '[.statusCheckRollup[] | select(.name == "quality")][0].conclusion // "PENDING"')"
+            case "$conclusion" in
+              SUCCESS)
+                break
+                ;;
+              FAILURE | CANCELLED | TIMED_OUT | STARTUP_FAILURE | ACTION_REQUIRED)
+                printf 'Required "quality" check finished with conclusion: %s\n' "$conclusion" >&2
+                exit 1
+                ;;
+            esac
+            if (( elapsed >= timeout_seconds )); then
+              printf 'Timed out waiting for the "quality" check to complete\n' >&2
+              exit 1
+            fi
+            sleep "$interval"
+            elapsed=$(( elapsed + interval ))
+          done
+          gh pr merge "$PR_NUMBER" --squash --delete-branch
+
+      - name: Tag the merged release commit
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          git tag "v${NEW_VERSION}" origin/main
           git push origin "v${NEW_VERSION}"
