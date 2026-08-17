@@ -48,6 +48,7 @@ export function Dashboard({ session, refreshSession }: DashboardProps) {
     jobs,
     diagnostics,
     error,
+    refreshing,
     online,
     mirroredRuns,
     insecureLan,
@@ -106,7 +107,7 @@ export function Dashboard({ session, refreshSession }: DashboardProps) {
           </Callout>
         )}
         {error && <Callout tone="danger">{error}</Callout>}
-        <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><Button variant="secondary" onClick={load}><RefreshCw size={14} /> REFRESH</Button></section>
+        <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><Button variant="secondary" onClick={load}><RefreshCw size={14} className={refreshing ? "is-spinning" : undefined} /> REFRESH</Button></section>
         <section className="device-grid">
           {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release")} diagnostics={diagnostics[device.id]} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onForceClear={forceClearJob} onDelete={deleteJob} onRevoke={revokeDevice} onWifi={setWifiDevice} onMaintenance={(target, action) => setConfirmation({ device: target, action })} onAcknowledgeRecovery={acknowledgeRecovery} />)}
           {!devices.length && (

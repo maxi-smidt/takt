@@ -5,12 +5,16 @@ export function useUserAdmin({ csrf }) {
   const [users, setUsers] = useState([]);
   const [error, setError] = useState("");
   const [temporaryPassword, setTemporaryPassword] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
+    setRefreshing(true);
     try {
       setUsers((await request("/api/admin/users")).users || []);
     } catch (failure) {
       setError(failure.message);
+    } finally {
+      setRefreshing(false);
     }
   }, []);
   useEffect(() => {
@@ -59,5 +63,5 @@ export function useUserAdmin({ csrf }) {
     }
   };
 
-  return { users, error, temporaryPassword, load, create, changeState, reset };
+  return { users, error, temporaryPassword, refreshing, load, create, changeState, reset };
 }

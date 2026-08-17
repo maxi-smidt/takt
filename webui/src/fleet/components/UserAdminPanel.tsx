@@ -11,7 +11,7 @@ interface UserAdminPanelProps {
 }
 
 export function UserAdminPanel({ csrf, devices }: UserAdminPanelProps) {
-  const { users, error, temporaryPassword, load, create, changeState, reset } = useUserAdmin({ csrf });
+  const { users, error, temporaryPassword, refreshing, load, create, changeState, reset } = useUserAdmin({ csrf });
   const [username, setUsername] = useState("");
   const [accessUserId, setAccessUserId] = useState<string | null>(null);
 
@@ -27,7 +27,9 @@ export function UserAdminPanel({ csrf, devices }: UserAdminPanelProps) {
     <section className="operations">
       <div className="section-heading">
         <div><span>03 · ACCESS</span><h2>USERS AND DEVICE ACCESS</h2></div>
-        <Button variant="secondary" onClick={load}><RefreshCw size={14} /> REFRESH</Button>
+        <Button variant="secondary" onClick={load}>
+          <RefreshCw size={14} className={refreshing ? "is-spinning" : undefined} /> REFRESH
+        </Button>
       </div>
       <form className="enrollment-fields" onSubmit={submitCreate}>
         <Field label="USERNAME">
