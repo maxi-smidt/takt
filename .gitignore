@@ -22,3 +22,6 @@ identifier.sqlite
 bundled-release/*.tar.gz
 bundled-release/*.tar.gz.sha256
 bundled-release/*.manifest.json
+.worktrees/
+.claude/
+uv.lock
