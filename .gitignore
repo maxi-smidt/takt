@@ -17,6 +17,11 @@ runs.dev.db
 registry.dev.db
 .registry-preview/
 registry-data/
+artifacts/
+identifier.sqlite
 bundled-release/*.tar.gz
 bundled-release/*.tar.gz.sha256
 bundled-release/*.manifest.json
+.worktrees/
+.claude/
+uv.lock
