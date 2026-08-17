@@ -90,6 +90,26 @@ class FastApiRegistryTests(unittest.TestCase):
                     self.assertEqual(retried_job.status_code, 201)
                     self.assertTrue(retry_job.call_args.kwargs["override"])
 
+                    with patch.object(
+                        store, "force_clear_job", return_value={"id": "job-1", "status": "failed"}
+                    ) as force_clear_job:
+                        force_cleared_job = client.post(
+                            "/api/jobs/job-1/force-clear",
+                            headers={"X-CSRF-Token": csrf},
+                        )
+                    self.assertEqual(force_cleared_job.status_code, 200)
+                    self.assertEqual(force_clear_job.call_args.args[0], "job-1")
+                    self.assertEqual(force_clear_job.call_args.kwargs["actor"], "admin")
+
+                    with patch.object(
+                        store, "force_clear_job", side_effect=LookupError("Job does not exist.")
+                    ):
+                        missing_force_clear = client.post(
+                            "/api/jobs/missing/force-clear",
+                            headers={"X-CSRF-Token": csrf},
+                        )
+                    self.assertEqual(missing_force_clear.status_code, 404)
+
                     release_archive = io.BytesIO()
                     with tarfile.open(fileobj=release_archive, mode="w:gz") as archive:
                         for name, content in (

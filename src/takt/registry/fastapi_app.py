@@ -1383,6 +1383,18 @@ def create_fastapi_app(
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"job": job}
 
+    @app.post("/api/jobs/{job_id}/force-clear")
+    async def force_clear_job(
+        job_id: str,
+        session: dict[str, object] = _ADMIN_CSRF_DEPENDENCY,
+    ) -> dict[str, Any]:
+        actor = str(session.get("username") or "admin")
+        try:
+            job = store.force_clear_job(job_id, actor=actor)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {"job": job}
+
     @app.post("/api/jobs/{job_id}/retry", status_code=201)
     async def retry_job(
         job_id: str,

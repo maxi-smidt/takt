@@ -19,7 +19,7 @@ import { bytes, timeAgo } from "../formatters";
 import { HealthChecks } from "./HealthChecks";
 import { MaintenancePanel } from "./MaintenancePanel";
 
-export function DeviceCard({ device, releases, job, diagnostics, onJob, onCancel, onRetry, onRevoke, onWifi, onMaintenance, onAcknowledgeRecovery }) {
+export function DeviceCard({ device, releases, job, diagnostics, onJob, onCancel, onRetry, onForceClear, onRevoke, onWifi, onMaintenance, onAcknowledgeRecovery }) {
   const [releaseId, setReleaseId] = useState(preferredReleaseId(releases));
   const effectiveReleaseId = releaseId || preferredReleaseId(releases);
   const status = device.status || {};
@@ -93,6 +93,7 @@ export function DeviceCard({ device, releases, job, diagnostics, onJob, onCancel
           </span>
           <div>
             {canCancel && <button className="secondary-button" onClick={() => onCancel(job)}>CANCEL</button>}
+            {installActive && <button className="secondary-button danger-action" onClick={() => onForceClear(job)}>FORCE CLEAR</button>}
             {installRetryable && <button className="secondary-button" onClick={() => onRetry(job)}><RotateCcw size={14} /> RETRY</button>}
           </div>
         </div>

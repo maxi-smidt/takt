@@ -91,6 +91,19 @@ export function useFleetDashboard({ session, refreshSession }) {
       setError(failure.message);
     }
   };
+  const forceClearJob = async (job) => {
+    if (!window.confirm(
+      `Force-clear ${job.action.replaceAll("_", " ")} on ${job.device_name}? `
+      + "This marks the job as failed and unblocks the device's queue, even if the "
+      + "outcome on the device is unknown.",
+    )) return;
+    try {
+      await request(`/api/jobs/${job.id}/force-clear`, { method: "POST", body: JSON.stringify({}) }, session.csrf_token);
+      await load();
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
 
   const acknowledgeRecovery = async (device) => {
     if (!window.confirm(`${device.name}: acknowledge the update recovery alert?`)) return;
@@ -144,6 +157,7 @@ export function useFleetDashboard({ session, refreshSession }) {
     createJob,
     cancelJob,
     retryJob,
+    forceClearJob,
     acknowledgeRecovery,
     revokeDevice,
     logout,

@@ -435,6 +435,43 @@ class JobsMixin(_Base):
         assert cancelled is not None
         return cancelled
 
+    def force_clear_job(self, job_id: str, *, actor: str) -> dict[str, Any]:
+        """Force a wedged, non-terminal job to 'failed' so the device's queue unblocks.
+
+        Unlike cancel_job, this works from any stage (including
+        activating/restarting/health_checking) and doesn't wait for the agent to
+        observe a checkpoint; it's an escape hatch for when the agent itself is
+        unresponsive, so the true outcome on the device is left unknown.
+        """
+        job = self.get_job(job_id)
+        if job is None:
+            raise LookupError("Job does not exist.")
+        if job["status"] in JOB_TERMINAL_STATUSES:
+            return job
+        now = utc_iso()
+        message = f"Force-cleared by {actor}; outcome on the device is unknown"
+        # Mirrors update_job's stage mapping for a 'failed' status so the stage stays
+        # one the action actually declares (install_release has no 'failed' stage).
+        stage = "intervention_required" if job["action"] == "install_release" else "failed"
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE jobs SET status = 'failed', stage = ?, message = ?,
+                    cancel_requested = 0, updated_at = ?, completed_at = ?,
+                    lease_id = NULL, lease_expires_at = NULL, lease_owner_session = NULL
+                WHERE id = ?
+                """,
+                (stage, message, now, now, job_id),
+            )
+            self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
+            self._record_job_event(job_id, "failed", stage, message)
+            self._audit(
+                "job_force_cleared", job["device_id"], {"job_id": job_id, "actor": actor}
+            )
+        cleared = self.get_job(job_id)
+        assert cleared is not None
+        return cleared
+
     def retry_job(self, job_id: str, *, override: bool = False) -> dict[str, Any]:
         previous = self.get_job(job_id)
         if previous is None:
