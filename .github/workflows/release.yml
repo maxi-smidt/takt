@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version part to bump"
+        required: true
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  bump-and-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bump version in pyproject.toml and src/takt/__init__.py
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          bump = os.environ["BUMP"]
+
+          with open("pyproject.toml", "rb") as f:
+              current = tomllib.load(f)["project"]["version"]
+
+          major, minor, patch = (int(part) for part in current.split("."))
+          if bump == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif bump == "minor":
+              minor, patch = minor + 1, 0
+          elif bump == "patch":
+              patch = patch + 1
+          else:
+              raise SystemExit(f"unknown bump kind: {bump!r}")
+          new_version = f"{major}.{minor}.{patch}"
+
+          def bump_file(path: str, old_line: str, new_line: str) -> None:
+              text = Path(path).read_text(encoding="utf-8")
+              if text.count(old_line) != 1:
+                  raise SystemExit(
+                      f"expected exactly one occurrence of {old_line!r} in {path}"
+                  )
+              Path(path).write_text(text.replace(old_line, new_line), encoding="utf-8")
+
+          bump_file(
+              "pyproject.toml",
+              f'version = "{current}"',
+              f'version = "{new_version}"',
+          )
+          bump_file(
+              "src/takt/__init__.py",
+              f'__version__ = "{current}"',
+              f'__version__ = "{new_version}"',
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"version={new_version}\n")
+          PY
+
+      - name: Commit, tag, and push
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml src/takt/__init__.py
+          git commit -m "Prepare release ${NEW_VERSION}"
+          git tag "v${NEW_VERSION}"
+          git push origin HEAD:main
+          git push origin "v${NEW_VERSION}"
