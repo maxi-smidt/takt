@@ -4,6 +4,7 @@ import hashlib
 import shutil
 import sqlite3
 import tempfile
+import threading
 import unittest
 from datetime import timedelta
 from pathlib import Path
@@ -13,6 +14,49 @@ from takt.registry.storage import SCHEMA_VERSION, RegistryStore, utc_iso, utc_no
 
 
 class RegistryStorageTests(unittest.TestCase):
+    def test_concurrent_requests_do_not_corrupt_the_shared_connection(self) -> None:
+        # Regression test for #99: RegistryStore used to hand one raw
+        # sqlite3.Connection to every FastAPI threadpool worker, which
+        # corrupted its cursor/transaction state under real concurrency
+        # (TypeError/InterfaceError/OperationalError, and spurious 401s).
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = RegistryStore(Path(temporary_directory), allow_thread_handoff=True)
+            try:
+                user = store.accounts.create_user(
+                    "admin", "supersecretpassword", is_admin=True
+                )
+                token, _ = store.accounts.create_session(user["id"])
+                device_id = "12345678-1234-1234-1234-123456789abc"
+                code = store.create_enrollment_code()
+                store.enroll_device(
+                    code=code, device_id=device_id, name="Lane 1", hostname="takt-01"
+                )
+                store.update_heartbeat(
+                    device_id,
+                    {"protocol_version": 1, "poll_seconds": 10, "capabilities": ["leased-jobs"]},
+                )
+
+                errors: list[BaseException] = []
+
+                def hammer() -> None:
+                    try:
+                        for _ in range(100):
+                            self.assertIsNotNone(store.accounts.verify_session(token))
+                            store.list_devices()
+                            store.list_jobs()
+                            store.accounts.has_users()
+                    except BaseException as error:
+                        errors.append(error)
+
+                threads = [threading.Thread(target=hammer) for _ in range(12)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+                self.assertEqual(errors, [])
+            finally:
+                store.close()
+
     def test_never_seen_device_cannot_receive_a_job(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             store = RegistryStore(Path(temporary_directory))
@@ -56,12 +100,15 @@ class RegistryStorageTests(unittest.TestCase):
             connection.close()
             store = RegistryStore(root)
             try:
-                columns = {row[1] for row in store.connection.execute("PRAGMA table_info(jobs)")}
-                self.assertTrue({"stage", "target_version", "cancel_requested"} <= columns)
-                index = store.connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'index' "
-                    "AND name = 'idx_jobs_one_active_disruptive_operation'"
-                ).fetchone()
+                with store.engine.connect() as conn:
+                    columns = {
+                        row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobs)")
+                    }
+                    self.assertTrue({"stage", "target_version", "cancel_requested"} <= columns)
+                    index = conn.exec_driver_sql(
+                        "SELECT name FROM sqlite_master WHERE type = 'index' "
+                        "AND name = 'idx_jobs_one_active_disruptive_operation'"
+                    ).fetchone()
                 self.assertIsNotNone(index)
             finally:
                 store.close()
@@ -124,15 +171,17 @@ class RegistryStorageTests(unittest.TestCase):
                 store.update_job(
                     job["id"], device_id, "succeeded", 100, "saved", lease_id=lease_id
                 )
-                secret_count = store.connection.execute(
-                    "SELECT COUNT(*) FROM job_secrets"
-                ).fetchone()[0]
+                with store.engine.connect() as conn:
+                    secret_count = conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM job_secrets"
+                    ).fetchone()[0]
                 self.assertEqual(secret_count, 0)
                 queued = store.create_wifi_job(device_id, "Timing Hall", password)
                 store.cancel_job(queued["id"])
-                secret_count = store.connection.execute(
-                    "SELECT COUNT(*) FROM job_secrets"
-                ).fetchone()[0]
+                with store.engine.connect() as conn:
+                    secret_count = conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM job_secrets"
+                    ).fetchone()[0]
                 self.assertEqual(secret_count, 0)
                 with self.assertRaisesRegex(ValueError, "cannot be retried"):
                     store.retry_job(queued["id"])
@@ -178,9 +227,10 @@ class RegistryStorageTests(unittest.TestCase):
                 assert failed is not None
                 self.assertEqual(failed["status"], "failed")
                 self.assertEqual(failed["message"], "Stored Wi-Fi credential is unavailable")
-                secret_count = restored_store.connection.execute(
-                    "SELECT COUNT(*) FROM job_secrets"
-                ).fetchone()[0]
+                with restored_store.engine.connect() as conn:
+                    secret_count = conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM job_secrets"
+                    ).fetchone()[0]
                 self.assertEqual(secret_count, 0)
             finally:
                 restored_store.close()
@@ -255,17 +305,19 @@ class RegistryStorageTests(unittest.TestCase):
                             str(relative_path),
                         )
                     )
-                store.connection.executemany(
-                    "INSERT INTO mirror_snapshots "
-                    "(id, device_id, received_at, sha256, size, run_count, relative_path) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    rows,
-                )
+                with store.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "INSERT INTO mirror_snapshots "
+                        "(id, device_id, received_at, sha256, size, run_count, relative_path) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        rows,
+                    )
                 store._prune_mirror_snapshots(device_id, recent=0, daily=0)
-                self.assertEqual(
-                    store.connection.execute("SELECT COUNT(*) FROM mirror_snapshots").fetchone()[0],
-                    0,
-                )
+                with store.engine.connect() as conn:
+                    count = conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM mirror_snapshots"
+                    ).fetchone()[0]
+                self.assertEqual(count, 0)
                 self.assertFalse((root / rows[0][-1]).exists())
                 self.assertFalse((root / rows[1][-1]).exists())
             finally:
@@ -449,26 +501,29 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
             connection.close()
             store = RegistryStore(root)
             try:
-                self.assertEqual(
-                    int(store.connection.execute("PRAGMA user_version").fetchone()[0]),
-                    SCHEMA_VERSION,
-                )
-                self.assertTrue(list((root / "backups").glob("*pre-migration-v8.sqlite3")))
-                index_sql = str(
-                    store.connection.execute(
-                        "SELECT sql FROM sqlite_master WHERE type = 'index' "
-                        "AND name = 'idx_jobs_one_active_disruptive_operation'"
-                    ).fetchone()[0]
-                )
-                for action in DISRUPTIVE_ACTIONS:
-                    self.assertIn(f"'{action}'", index_sql)
-                columns = {row[1] for row in store.connection.execute("PRAGMA table_info(devices)")}
-                self.assertIn("health_checks_json", columns)
-                self.assertIsNotNone(
-                    store.connection.execute(
-                        "SELECT name FROM sqlite_master WHERE name = 'diagnostics'"
-                    ).fetchone()
-                )
+                with store.engine.connect() as conn:
+                    self.assertEqual(
+                        int(conn.exec_driver_sql("PRAGMA user_version").fetchone()[0]),
+                        SCHEMA_VERSION,
+                    )
+                    self.assertTrue(list((root / "backups").glob("*pre-migration-v8.sqlite3")))
+                    index_sql = str(
+                        conn.exec_driver_sql(
+                            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                            "AND name = 'idx_jobs_one_active_disruptive_operation'"
+                        ).fetchone()[0]
+                    )
+                    for action in DISRUPTIVE_ACTIONS:
+                        self.assertIn(f"'{action}'", index_sql)
+                    columns = {
+                        row[1] for row in conn.exec_driver_sql("PRAGMA table_info(devices)")
+                    }
+                    self.assertIn("health_checks_json", columns)
+                    self.assertIsNotNone(
+                        conn.exec_driver_sql(
+                            "SELECT name FROM sqlite_master WHERE name = 'diagnostics'"
+                        ).fetchone()
+                    )
             finally:
                 store.close()
 
@@ -499,9 +554,10 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
                 self.assertTrue(job["payload"]["override"])
                 untrusted = store.create_job(self.DEVICE_ID, "mirror_now", {"override": True})
                 self.assertNotIn("override", untrusted["payload"])
-                audited = store.connection.execute(
-                    "SELECT COUNT(*) FROM audit_events WHERE event = 'job_created'"
-                ).fetchone()[0]
+                with store.engine.connect() as conn:
+                    audited = conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM audit_events WHERE event = 'job_created'"
+                    ).fetchone()[0]
                 self.assertGreaterEqual(audited, 1, "job creation should be audited")
                 with self.assertRaises(ValueError):
                     store.create_job(self.DEVICE_ID, "run_health_checks", override=True)
@@ -567,11 +623,11 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
                 assert claimed is not None
                 self.assertEqual(claimed["id"], job["id"])
                 # Simulate the agent dying mid-reboot without renewing its lease.
-                store.connection.execute(
-                    "UPDATE jobs SET lease_expires_at = ? WHERE id = ?",
-                    (utc_iso(utc_now() - timedelta(seconds=1)), job["id"]),
-                )
-                store.connection.commit()
+                with store.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "UPDATE jobs SET lease_expires_at = ? WHERE id = ?",
+                        (utc_iso(utc_now() - timedelta(seconds=1)), job["id"]),
+                    )
                 following = store.claim_next_job(self.DEVICE_ID, "session-b")
                 self.assertIsNone(following, "a reboot must never be requeued and re-fired")
                 final = store.get_job(job["id"])
@@ -587,11 +643,11 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
             try:
                 job = store.create_job(self.DEVICE_ID, "mirror_now")
                 store.claim_next_job(self.DEVICE_ID, "session-a")
-                store.connection.execute(
-                    "UPDATE jobs SET lease_expires_at = ? WHERE id = ?",
-                    (utc_iso(utc_now() - timedelta(seconds=1)), job["id"]),
-                )
-                store.connection.commit()
+                with store.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "UPDATE jobs SET lease_expires_at = ? WHERE id = ?",
+                        (utc_iso(utc_now() - timedelta(seconds=1)), job["id"]),
+                    )
                 reclaimed = store.claim_next_job(self.DEVICE_ID, "session-b")
                 assert reclaimed is not None
                 self.assertEqual(reclaimed["id"], job["id"])
@@ -685,12 +741,14 @@ class FleetMaintenanceStorageTests(unittest.TestCase):
                 assert device is not None
                 self.assertFalse(device["status"]["update_recovery"]["stuck"])
 
-                events = [
-                    row["event"]
-                    for row in store.connection.execute(
-                        "SELECT event FROM audit_events WHERE device_id = ?", (self.DEVICE_ID,)
-                    )
-                ]
+                with store.engine.connect() as conn:
+                    events = [
+                        row["event"]
+                        for row in conn.exec_driver_sql(
+                            "SELECT event FROM audit_events WHERE device_id = ?",
+                            (self.DEVICE_ID,),
+                        ).mappings()
+                    ]
                 self.assertIn("update_recovery_acknowledged", events)
 
                 # Once recovery clears and a *new* failure is reported, the alert

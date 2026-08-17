@@ -25,9 +25,10 @@ class AccountStoreTests(unittest.TestCase):
             try:
                 accounts = store.accounts
                 admin = accounts.bootstrap_admin("Admin.User", "correct-horse-battery")
-                row = store.connection.execute(
-                    "SELECT password_hash FROM users WHERE id = ?", (admin["id"],)
-                ).fetchone()
+                with store.engine.connect() as conn:
+                    row = conn.exec_driver_sql(
+                        "SELECT password_hash FROM users WHERE id = ?", (admin["id"],)
+                    ).mappings().fetchone()
                 self.assertNotIn("correct-horse-battery", row["password_hash"])
                 self.assertEqual(
                     accounts.authenticate("admin.user", "correct-horse-battery")["id"], admin["id"]
@@ -100,8 +101,8 @@ class AccountStoreTests(unittest.TestCase):
                 self.assertIn("reason=unknown_token", logs.output[0])
 
                 token, _ = accounts.create_session(admin["id"])
-                with store.connection:
-                    store.connection.execute(
+                with store.engine.begin() as conn:
+                    conn.exec_driver_sql(
                         "UPDATE user_sessions SET expires_at = ? WHERE token_hash = ?",
                         ("2000-01-01T00:00:00+00:00", hashlib.sha256(token.encode()).hexdigest()),
                     )
@@ -250,12 +251,14 @@ class AccountStoreTests(unittest.TestCase):
                     )
                     self.assertEqual(missing_revoke.status_code, 404)
 
-                    events = {
-                        row["event"]
-                        for row in store.connection.execute(
-                            "SELECT event FROM audit_events WHERE target_user_id = ?", (user_id,)
-                        ).fetchall()
-                    }
+                    with store.engine.connect() as conn:
+                        events = {
+                            row["event"]
+                            for row in conn.exec_driver_sql(
+                                "SELECT event FROM audit_events WHERE target_user_id = ?",
+                                (user_id,),
+                            ).mappings().all()
+                        }
                     self.assertIn("device_access_changed", events)
                     self.assertIn("device_access_revoked", events)
             finally:

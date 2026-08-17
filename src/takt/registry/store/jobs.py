@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
-import sqlite3
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 
@@ -77,14 +77,15 @@ class JobsMixin(_Base):
             raise ValueError("Device must be online to queue a job.")
         self._authorize_action(device, action)
         placeholders = ",".join("?" for _ in DISRUPTIVE_ACTIONS)
-        active = self.connection.execute(
-            f"""
-            SELECT id, action FROM jobs WHERE device_id = ?
-                AND status IN ('queued', 'claimed', 'running')
-                AND action IN ({placeholders})
-            """,
-            (device_id, *DISRUPTIVE_ACTIONS),
-        ).fetchone()
+        with self._read() as conn:
+            active = conn.exec_driver_sql(
+                f"""
+                SELECT id, action FROM jobs WHERE device_id = ?
+                    AND status IN ('queued', 'claimed', 'running')
+                    AND action IN ({placeholders})
+                """,
+                (device_id, *DISRUPTIVE_ACTIONS),
+            ).mappings().fetchone()
         if active is not None and action in DISRUPTIVE_ACTIONS:
             existing = self.get_job(str(active["id"]))
             if (
@@ -104,8 +105,8 @@ class JobsMixin(_Base):
                 raise ValueError("Release does not exist.")
         job_id = secrets.token_hex(12)
         now = utc_iso()
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 """
                 INSERT INTO jobs(
                     id, device_id, action, payload_json, status, stage, requested_by_user_id,
@@ -152,8 +153,8 @@ class JobsMixin(_Base):
             password,
             associated_data=self._job_secret_aad(job_id, device_id, action),
         )
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 """
                 INSERT INTO jobs(
                     id, device_id, action, payload_json, status, created_at, updated_at
@@ -168,7 +169,7 @@ class JobsMixin(_Base):
                     now,
                 ),
             )
-            self.connection.execute(
+            conn.exec_driver_sql(
                 """
                 INSERT INTO job_secrets(job_id, nonce, ciphertext, created_at)
                 VALUES (?, ?, ?, ?)
@@ -184,27 +185,27 @@ class JobsMixin(_Base):
     def claim_next_job(self, device_id: str, agent_session_id: str = "") -> dict[str, Any] | None:
         now_value = utc_now()
         now = utc_iso(now_value)
-        with self.connection:
+        with self._transaction() as conn:
             # Power actions kill the agent before it can renew its lease; requeuing
             # them like any other expired lease would make the device reboot or
             # power off again as soon as it reconnects. Fail them instead — the
             # operator can see what happened and re-issue deliberately.
             no_requeue_placeholders = ",".join("?" for _ in NO_REQUEUE_ON_LEASE_EXPIRY)
-            expired_no_requeue = self.connection.execute(
+            expired_no_requeue = conn.exec_driver_sql(
                 f"""
                 SELECT id FROM jobs WHERE device_id = ? AND status IN ('claimed', 'running')
                     AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
                     AND action IN ({no_requeue_placeholders})
                 """,
                 (device_id, now, *NO_REQUEUE_ON_LEASE_EXPIRY),
-            ).fetchall()
+            ).mappings().all()
             for expired in expired_no_requeue:
                 job_id = str(expired["id"])
                 message = (
                     "Device did not confirm before its lease expired; the action may or "
                     "may not have applied. Check the device and retry if needed."
                 )
-                self.connection.execute(
+                conn.exec_driver_sql(
                     """
                     UPDATE jobs SET status = 'failed', stage = 'failed', progress = 100,
                         message = ?, updated_at = ?, completed_at = ?,
@@ -213,10 +214,10 @@ class JobsMixin(_Base):
                     """,
                     (message, now, now, job_id),
                 )
-                self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
+                conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
                 self._record_job_event(job_id, "failed", "failed", message)
                 self._audit("job_lease_expired_unconfirmed", device_id, {"job_id": job_id})
-            self.connection.execute(
+            conn.exec_driver_sql(
                 """
                 UPDATE jobs SET status = 'queued', claimed_at = NULL, lease_id = NULL,
                     lease_expires_at = NULL, lease_owner_session = NULL,
@@ -226,34 +227,36 @@ class JobsMixin(_Base):
                 """,
                 (now, device_id, now),
             )
-        active = self.connection.execute(
-            """
-            SELECT id FROM jobs
-            WHERE device_id = ? AND status IN ('claimed', 'running')
-                AND lease_expires_at >= ?
-            ORDER BY created_at LIMIT 1
-            """,
-            (device_id, now),
-        ).fetchone()
+        with self._read() as conn:
+            active = conn.exec_driver_sql(
+                """
+                SELECT id FROM jobs
+                WHERE device_id = ? AND status IN ('claimed', 'running')
+                    AND lease_expires_at >= ?
+                ORDER BY created_at LIMIT 1
+                """,
+                (device_id, now),
+            ).mappings().fetchone()
         if active is not None:
             active_job = self.get_job(active["id"])
             if active_job and active_job.get("lease_owner_session") == agent_session_id:
                 return self._attach_job_secret(active_job)
             return None
-        row = self.connection.execute(
-            """
-            SELECT id FROM jobs
-            WHERE device_id = ? AND status = 'queued'
-            ORDER BY created_at LIMIT 1
-            """,
-            (device_id,),
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                """
+                SELECT id FROM jobs
+                WHERE device_id = ? AND status = 'queued'
+                ORDER BY created_at LIMIT 1
+                """,
+                (device_id,),
+            ).mappings().fetchone()
         if row is None:
             return None
         lease_id = secrets.token_urlsafe(18)
         lease_expires_at = utc_iso(now_value + timedelta(seconds=JOB_LEASE_SECONDS))
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 """
                 UPDATE jobs SET status = 'claimed', claimed_at = ?, updated_at = ?,
                     attempt = attempt + 1, lease_id = ?, lease_expires_at = ?,
@@ -282,13 +285,15 @@ class JobsMixin(_Base):
         allowed = {"queued", "claimed", "running", *JOB_TERMINAL_STATUSES}
         if status not in allowed:
             raise ValueError("Invalid job status.")
-        current = self.connection.execute(
-            """
-            SELECT status, lease_id, stage, action, target_version, bytes_downloaded, bytes_total
-            FROM jobs WHERE id = ? AND device_id = ?
-            """,
-            (job_id, device_id),
-        ).fetchone()
+        with self._read() as conn:
+            current = conn.exec_driver_sql(
+                """
+                SELECT status, lease_id, stage, action, target_version,
+                    bytes_downloaded, bytes_total
+                FROM jobs WHERE id = ? AND device_id = ?
+                """,
+                (job_id, device_id),
+            ).mappings().fetchone()
         if current is None:
             raise LookupError("Job does not exist.")
         if current["status"] in JOB_TERMINAL_STATUSES:
@@ -349,8 +354,8 @@ class JobsMixin(_Base):
         result_json = json.dumps(result, separators=(",", ":")) if result is not None else None
         if downloaded is not None and total is not None and downloaded > total:
             raise ValueError("Downloaded bytes exceed release size.")
-        with self.connection:
-            cursor = self.connection.execute(
+        with self._transaction() as conn:
+            cursor = conn.exec_driver_sql(
                 """
                 UPDATE jobs SET status = ?, stage = ?, progress = ?, message = ?, updated_at = ?,
                     bytes_downloaded = ?, bytes_total = ?,
@@ -390,8 +395,8 @@ class JobsMixin(_Base):
                 self._record_job_event(job_id, status, stage, message[:2000])
             if completed_at:
                 self._audit("job_completed", device_id, {"job_id": job_id, "status": status})
-                self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
-            self.connection.execute(
+                conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
+            conn.exec_driver_sql(
                 "UPDATE devices SET last_seen_at = ? WHERE id = ?", (utc_iso(), device_id)
             )
         job = self.get_job(job_id)
@@ -407,9 +412,9 @@ class JobsMixin(_Base):
         if job["stage"] in {"activating", "restarting", "health_checking"}:
             raise ValueError("This install is past its cancellation checkpoint.")
         now = utc_iso()
-        with self.connection:
+        with self._transaction() as conn:
             if job["status"] in {"queued", "claimed"}:
-                self.connection.execute(
+                conn.exec_driver_sql(
                     """
                     UPDATE jobs SET status = 'cancelled', stage = 'cancelled', progress = 100,
                         message = 'Cancelled before activation', updated_at = ?, completed_at = ?,
@@ -418,13 +423,13 @@ class JobsMixin(_Base):
                     """,
                     (now, now, job_id),
                 )
-                self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
+                conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
                 self._record_job_event(
                     job_id, "cancelled", "cancelled", "Cancelled before activation"
                 )
             else:
                 message = "Cancellation requested; stopping at the next safe checkpoint"
-                self.connection.execute(
+                conn.exec_driver_sql(
                     "UPDATE jobs SET cancel_requested = 1, message = ?, updated_at = ? "
                     "WHERE id = ?",
                     (message, now, job_id),
@@ -453,8 +458,8 @@ class JobsMixin(_Base):
         # Mirrors update_job's stage mapping for a 'failed' status so the stage stays
         # one the action actually declares (install_release has no 'failed' stage).
         stage = "intervention_required" if job["action"] == "install_release" else "failed"
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 """
                 UPDATE jobs SET status = 'failed', stage = ?, message = ?,
                     cancel_requested = 0, updated_at = ?, completed_at = ?,
@@ -463,7 +468,7 @@ class JobsMixin(_Base):
                 """,
                 (stage, message, now, now, job_id),
             )
-            self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
+            conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job_id,))
             self._record_job_event(job_id, "failed", stage, message)
             self._audit(
                 "job_force_cleared", job["device_id"], {"job_id": job_id, "actor": actor}
@@ -487,8 +492,8 @@ class JobsMixin(_Base):
         )
         if replacement.get("reused"):
             return replacement
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 "UPDATE jobs SET retry_of = ? WHERE id = ?", (job_id, replacement["id"])
             )
             self._record_job_event(replacement["id"], "queued", "queued", f"Retry of {job_id}")
@@ -502,12 +507,13 @@ class JobsMixin(_Base):
         return retried
 
     def list_job_events(self, job_id: str) -> list[dict[str, Any]]:
-        return [
-            dict(row)
-            for row in self.connection.execute(
-                "SELECT * FROM job_events WHERE job_id = ? ORDER BY id", (job_id,)
-            ).fetchall()
-        ]
+        with self._read() as conn:
+            return [
+                dict(row)
+                for row in conn.exec_driver_sql(
+                    "SELECT * FROM job_events WHERE job_id = ? ORDER BY id", (job_id,)
+                ).mappings().all()
+            ]
 
     def _install_success_is_confirmed(self, device_id: str, target_version: str) -> bool:
         device = self.get_device(device_id)
@@ -524,37 +530,40 @@ class JobsMixin(_Base):
         )
 
     def _record_job_event(self, job_id: str, status: str, stage: str, message: str) -> None:
-        self.connection.execute(
-            """
-            INSERT INTO job_events(job_id, created_at, status, stage, message)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (job_id, utc_iso(), status, stage, message[:2000]),
-        )
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
+                """
+                INSERT INTO job_events(job_id, created_at, status, stage, message)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (job_id, utc_iso(), status, stage, message[:2000]),
+            )
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).mappings().fetchone()
         return self._job(row) if row else None
 
     def list_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
-        return [
-            self._job(row)
-            for row in self.connection.execute(
+        with self._read() as conn:
+            rows = conn.exec_driver_sql(
                 """
                 SELECT jobs.*, devices.name AS device_name
                 FROM jobs JOIN devices ON devices.id = jobs.device_id
                 ORDER BY jobs.created_at DESC LIMIT ?
                 """,
                 (limit,),
-            ).fetchall()
-        ]
+            ).mappings().all()
+        return [self._job(row) for row in rows]
 
     def job_for_device(self, job_id: str, device_id: str) -> dict[str, Any] | None:
         job = self.get_job(job_id)
         return job if job and job["device_id"] == device_id else None
 
     @staticmethod
-    def _job(row: sqlite3.Row) -> dict[str, Any]:
+    def _job(row: Mapping[Any, Any]) -> dict[str, Any]:
         item = dict(row)
         item["payload"] = json.loads(item.pop("payload_json"))
         result_json = item.pop("result_json", None)
@@ -564,9 +573,10 @@ class JobsMixin(_Base):
     def _attach_job_secret(self, job: dict[str, Any]) -> dict[str, Any] | None:
         if job["action"] != "add_wifi_network":
             return job
-        secret = self.connection.execute(
-            "SELECT nonce, ciphertext FROM job_secrets WHERE job_id = ?", (job["id"],)
-        ).fetchone()
+        with self._read() as conn:
+            secret = conn.exec_driver_sql(
+                "SELECT nonce, ciphertext FROM job_secrets WHERE job_id = ?", (job["id"],)
+            ).mappings().fetchone()
         try:
             if secret is None:
                 raise JobSecretError("Stored job secret is missing.")
@@ -580,8 +590,8 @@ class JobsMixin(_Base):
             )
         except JobSecretError:
             now = utc_iso()
-            with self.connection:
-                self.connection.execute(
+            with self._transaction() as conn:
+                conn.exec_driver_sql(
                     """
                     UPDATE jobs SET status = 'failed', progress = 100,
                         message = 'Stored Wi-Fi credential is unavailable', updated_at = ?,
@@ -591,7 +601,7 @@ class JobsMixin(_Base):
                     """,
                     (now, now, job["id"]),
                 )
-                self.connection.execute("DELETE FROM job_secrets WHERE job_id = ?", (job["id"],))
+                conn.exec_driver_sql("DELETE FROM job_secrets WHERE job_id = ?", (job["id"],))
                 self._audit(
                     "job_completed",
                     str(job["device_id"]),

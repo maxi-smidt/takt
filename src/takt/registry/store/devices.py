@@ -16,15 +16,15 @@ class DevicesMixin(_Base):
     ) -> str:
         code = f"TAKT-{secrets.token_urlsafe(18)}"
         now = utc_now()
-        with self.connection:
+        with self._transaction() as conn:
             if deployment_id:
-                self.connection.execute(
+                conn.exec_driver_sql(
                     "UPDATE enrollment_codes SET used_at = ? "
                     "WHERE deployment_id = ? AND used_at IS NULL AND expires_at > ?",
                     (utc_iso(now), deployment_id, utc_iso(now)),
                 )
 
-            self.connection.execute(
+            conn.exec_driver_sql(
                 """
                 INSERT INTO enrollment_codes(
                     code_hash, created_at, expires_at, label, deployment_id
@@ -51,15 +51,16 @@ class DevicesMixin(_Base):
         token: str | None = None,
     ) -> str:
         now = utc_now()
-        existing = self.connection.execute(
-            "SELECT token_hash, revoked_at FROM devices WHERE id = ?", (device_id,)
-        ).fetchone()
+        with self._read() as conn:
+            existing = conn.exec_driver_sql(
+                "SELECT token_hash, revoked_at FROM devices WHERE id = ?", (device_id,)
+            ).mappings().fetchone()
         if existing is not None:
             if existing["revoked_at"]:
                 raise ValueError("This device has been revoked by the registry administrator.")
             if token and secrets.compare_digest(existing["token_hash"], hash_secret(token)):
-                with self.connection:
-                    consumed = self.connection.execute(
+                with self._transaction() as conn:
+                    consumed = conn.exec_driver_sql(
                         """
                         UPDATE enrollment_codes SET used_at = ?
                         WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?
@@ -73,8 +74,8 @@ class DevicesMixin(_Base):
             raise ValueError("This device ID is already enrolled with another secret.")
         code_hash = hash_secret(code)
         token = token or secrets.token_urlsafe(36)
-        with self.connection:
-            consumed = self.connection.execute(
+        with self._transaction() as conn:
+            consumed_row = conn.exec_driver_sql(
                 """
                 UPDATE enrollment_codes SET used_at = ?
                 WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?
@@ -82,9 +83,9 @@ class DevicesMixin(_Base):
                 """,
                 (utc_iso(now), code_hash, utc_iso(now)),
             ).fetchone()
-            if consumed is None:
+            if consumed_row is None:
                 raise ValueError("Enrollment code is invalid, expired, or already used.")
-            self.connection.execute(
+            conn.exec_driver_sql(
                 """
                 INSERT INTO devices(id, name, hostname, token_hash, enrolled_at)
                 VALUES (?, ?, ?, ?, ?)
@@ -96,17 +97,18 @@ class DevicesMixin(_Base):
         return token
 
     def authenticate_device(self, device_id: str, token: str) -> bool:
-        row = self.connection.execute(
-            "SELECT token_hash FROM devices WHERE id = ? AND revoked_at IS NULL", (device_id,)
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT token_hash FROM devices WHERE id = ? AND revoked_at IS NULL", (device_id,)
+            ).mappings().fetchone()
         return row is not None and secrets.compare_digest(row["token_hash"], hash_secret(token))
 
     def update_heartbeat(self, device_id: str, payload: dict[str, Any]) -> None:
-        with self.connection:
-            previous = self.connection.execute(
+        with self._transaction() as conn:
+            previous = conn.exec_driver_sql(
                 "SELECT status_json, recovery_raised_at FROM devices WHERE id = ?",
                 (device_id,),
-            ).fetchone()
+            ).mappings().fetchone()
             was_stuck = bool(
                 previous
                 and json.loads(previous["status_json"] or "{}")
@@ -123,7 +125,7 @@ class DevicesMixin(_Base):
                 recovery_raised_at = previous["recovery_raised_at"] if previous else None
             else:
                 recovery_raised_at = None
-            self.connection.execute(
+            conn.exec_driver_sql(
                 """
                 UPDATE devices
                 SET name = ?, hostname = ?, last_seen_at = ?, app_version = ?,
@@ -143,17 +145,17 @@ class DevicesMixin(_Base):
             )
 
     def acknowledge_update_recovery(self, device_id: str, *, actor: str) -> dict[str, Any]:
-        with self.connection:
-            row = self.connection.execute(
+        with self._transaction() as conn:
+            row = conn.exec_driver_sql(
                 "SELECT status_json FROM devices WHERE id = ?", (device_id,)
-            ).fetchone()
+            ).mappings().fetchone()
             if row is None:
                 raise LookupError("Device does not exist.")
             recovery = json.loads(row["status_json"] or "{}").get("update_recovery") or {}
             if not recovery.get("stuck"):
                 raise ValueError("This device has no active update recovery alert.")
             now = utc_iso()
-            self.connection.execute(
+            conn.exec_driver_sql(
                 "UPDATE devices SET recovery_ack_at = ?, recovery_ack_by = ? WHERE id = ?",
                 (now, actor, device_id),
             )
@@ -167,9 +169,10 @@ class DevicesMixin(_Base):
         return device
 
     def list_devices(self) -> list[dict[str, Any]]:
-        rows = self.connection.execute(
-            "SELECT * FROM devices ORDER BY name COLLATE NOCASE, enrolled_at"
-        ).fetchall()
+        with self._read() as conn:
+            rows = conn.exec_driver_sql(
+                "SELECT * FROM devices ORDER BY name COLLATE NOCASE, enrolled_at"
+            ).mappings().all()
         now = utc_now()
         devices: list[dict[str, Any]] = []
         for row in rows:
@@ -208,8 +211,8 @@ class DevicesMixin(_Base):
 
     def revoke_device(self, device_id: str) -> dict[str, Any]:
         now = utc_iso()
-        with self.connection:
-            cursor = self.connection.execute(
+        with self._transaction() as conn:
+            cursor = conn.exec_driver_sql(
                 "UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
                 (now, device_id),
             )
@@ -218,7 +221,7 @@ class DevicesMixin(_Base):
                 if device is None:
                     raise LookupError("Device does not exist.")
                 return device
-            self.connection.execute(
+            conn.exec_driver_sql(
                 """
                 DELETE FROM job_secrets WHERE job_id IN (
                     SELECT id FROM jobs
@@ -227,7 +230,7 @@ class DevicesMixin(_Base):
                 """,
                 (device_id,),
             )
-            self.connection.execute(
+            conn.exec_driver_sql(
                 """
                 UPDATE jobs SET status = 'failed', progress = 100,
                     message = 'Device access was revoked', updated_at = ?, completed_at = ?,

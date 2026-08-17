@@ -9,6 +9,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import exc as sa_exc
+
 from takt import __version__
 from takt.fleet_actions import DISRUPTIVE_ACTIONS
 from takt.registry.store.common import SCHEMA_VERSION, _Base, utc_iso, utc_now
@@ -17,10 +19,13 @@ from takt.registry.store.common import SCHEMA_VERSION, _Base, utc_iso, utc_now
 class MaintenanceMixin(_Base):
     def health(self) -> dict[str, Any]:
         try:
-            self.connection.execute("SELECT 1").fetchone()
-            schema_version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
+            with self._read() as conn:
+                conn.exec_driver_sql("SELECT 1").fetchone()
+                version_row = conn.exec_driver_sql("PRAGMA user_version").fetchone()
+                assert version_row is not None  # PRAGMA user_version always returns one row
+                schema_version = int(version_row[0])
             database_ok = schema_version == SCHEMA_VERSION
-        except sqlite3.Error:
+        except sa_exc.DBAPIError:
             schema_version = -1
             database_ok = False
         latest_backup = self.latest_backup()
@@ -82,15 +87,15 @@ class MaintenanceMixin(_Base):
         now = utc_iso()
         audit_before = utc_iso(utc_now() - timedelta(days=180))
         job_before = utc_iso(utc_now() - timedelta(days=90))
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 "DELETE FROM enrollment_codes WHERE expires_at < ? OR used_at IS NOT NULL",
                 (now,),
             )
-            self.connection.execute(
+            conn.exec_driver_sql(
                 "DELETE FROM audit_events WHERE created_at < ?", (audit_before,)
             )
-            self.connection.execute(
+            conn.exec_driver_sql(
                 """
                 DELETE FROM jobs WHERE completed_at IS NOT NULL AND completed_at < ?
                 """,
@@ -106,7 +111,7 @@ class MaintenanceMixin(_Base):
         event: str = "hostname_changed",
     ) -> None:
         deployment = self.get_deployment(deployment_id)
-        with self.connection:
+        with self._transaction():
             self._audit(
                 event,
                 deployment.get("device_id") if deployment else None,
@@ -123,13 +128,14 @@ class MaintenanceMixin(_Base):
         device_id: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        self.connection.execute(
-            """
-            INSERT INTO audit_events(created_at, event, device_id, details_json)
-            VALUES (?, ?, ?, ?)
-            """,
-            (utc_iso(), event, device_id, json.dumps(details or {})),
-        )
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
+                """
+                INSERT INTO audit_events(created_at, event, device_id, details_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (utc_iso(), event, device_id, json.dumps(details or {})),
+            )
 
     def _rebuild_disruptive_index(self) -> None:
         # Derived from the fleet action table rather than hardcoded, so adding a
@@ -140,11 +146,14 @@ class MaintenanceMixin(_Base):
             "CREATE UNIQUE INDEX idx_jobs_one_active_disruptive_operation ON jobs(device_id) "
             f"WHERE action IN ({actions}) AND status IN ('queued', 'claimed', 'running')"
         )
-        existing = self.connection.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'index' "
-            "AND name = 'idx_jobs_one_active_disruptive_operation'"
-        ).fetchone()
-        if existing is not None and existing["sql"] == index_sql:
-            return
-        self.connection.execute("DROP INDEX IF EXISTS idx_jobs_one_active_disruptive_operation")
-        self.connection.execute(index_sql)
+        with self._transaction() as conn:
+            existing = conn.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'idx_jobs_one_active_disruptive_operation'"
+            ).mappings().fetchone()
+            if existing is not None and existing["sql"] == index_sql:
+                return
+            conn.exec_driver_sql(
+                "DROP INDEX IF EXISTS idx_jobs_one_active_disruptive_operation"
+            )
+            conn.exec_driver_sql(index_sql)

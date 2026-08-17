@@ -41,9 +41,11 @@ class DeploymentStorageTests(unittest.TestCase):
                 store.record_hostname_change(
                     deployment["id"], old_hostname="raspberrypi", new_hostname="takt-01"
                 )
-                audit = store.connection.execute(
-                    "SELECT event, details_json FROM audit_events WHERE event = 'hostname_changed'"
-                ).fetchone()
+                with store.engine.connect() as conn:
+                    audit = conn.exec_driver_sql(
+                        "SELECT event, details_json FROM audit_events "
+                        "WHERE event = 'hostname_changed'"
+                    ).mappings().fetchone()
                 self.assertIsNotNone(audit)
                 self.assertIn("takt-01", audit["details_json"])
             finally:

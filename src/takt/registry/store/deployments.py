@@ -22,16 +22,16 @@ class DeploymentsMixin(_Base):
         allow_insecure_http: bool,
         release_id: str,
     ) -> dict[str, Any]:
-        release = self.connection.execute(
-            "SELECT id FROM releases WHERE id = ?", (release_id,)
-        ).fetchone()
-        if release is None:
-            raise ValueError("Release not found.")
-        self.ensure_deployment_target_available(target, port)
-        deployment_id = secrets.token_hex(12)
-        now = utc_iso()
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            release = conn.exec_driver_sql(
+                "SELECT id FROM releases WHERE id = ?", (release_id,)
+            ).fetchone()
+            if release is None:
+                raise ValueError("Release not found.")
+            self.ensure_deployment_target_available(target, port)
+            deployment_id = secrets.token_hex(12)
+            now = utc_iso()
+            conn.exec_driver_sql(
                 """
                 INSERT INTO deployments(
                     id, target, port, ssh_user, device_name, requested_hostname,
@@ -56,7 +56,7 @@ class DeploymentsMixin(_Base):
                 ),
             )
             self._audit("deployment_created", deployment_id, {"target": target})
-            self.connection.execute(
+            conn.exec_driver_sql(
                 """
                 INSERT INTO deployment_events(
                     deployment_id, created_at, stage, level, message
@@ -64,46 +64,49 @@ class DeploymentsMixin(_Base):
                 """,
                 (deployment_id, now),
             )
-        deployment = self.get_deployment(deployment_id)
+            deployment = self.get_deployment(deployment_id)
         assert deployment is not None
         return deployment
 
     def ensure_deployment_target_available(self, target: str, port: int) -> None:
-        active = self.connection.execute(
-            """
-            SELECT 1 FROM deployments
-            WHERE target = ? AND port = ?
-              AND status NOT IN ('succeeded', 'failed', 'cancelled', 'interrupted')
-            LIMIT 1
-            """,
-            (target, port),
-        ).fetchone()
+        with self._read() as conn:
+            active = conn.exec_driver_sql(
+                """
+                SELECT 1 FROM deployments
+                WHERE target = ? AND port = ?
+                  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'interrupted')
+                LIMIT 1
+                """,
+                (target, port),
+            ).fetchone()
         if active is not None:
             raise ValueError("A deployment for this target is already active.")
 
     def get_deployment(self, deployment_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            """
-            SELECT deployments.*, releases.version AS release_version
-            FROM deployments
-            LEFT JOIN releases ON releases.id = deployments.release_id
-            WHERE deployments.id = ?
-            """,
-            (deployment_id,),
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                """
+                SELECT deployments.*, releases.version AS release_version
+                FROM deployments
+                LEFT JOIN releases ON releases.id = deployments.release_id
+                WHERE deployments.id = ?
+                """,
+                (deployment_id,),
+            ).mappings().fetchone()
         return dict(row) if row else None
 
     def list_deployments(self, limit: int = 100) -> list[dict[str, Any]]:
-        rows = self.connection.execute(
-            """
-            SELECT deployments.*, releases.version AS release_version
-            FROM deployments
-            LEFT JOIN releases ON releases.id = deployments.release_id
-            ORDER BY deployments.created_at DESC
-            LIMIT ?
-            """,
-            (max(1, min(limit, 500)),),
-        ).fetchall()
+        with self._read() as conn:
+            rows = conn.exec_driver_sql(
+                """
+                SELECT deployments.*, releases.version AS release_version
+                FROM deployments
+                LEFT JOIN releases ON releases.id = deployments.release_id
+                ORDER BY deployments.created_at DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            ).mappings().all()
         return [dict(row) for row in rows]
 
     def update_deployment(self, deployment_id: str, **changes: Any) -> dict[str, Any]:
@@ -124,9 +127,9 @@ class DeploymentsMixin(_Base):
             if result is None:
                 raise KeyError(deployment_id)
             return result
-        with self.connection:
+        with self._transaction():
             self._set_deployment_fields(deployment_id, changes)
-        result = self.get_deployment(deployment_id)
+            result = self.get_deployment(deployment_id)
         assert result is not None
         return result
 
@@ -140,8 +143,8 @@ class DeploymentsMixin(_Base):
         status: str | None = None,
     ) -> dict[str, Any]:
         now = utc_iso()
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 """
                 INSERT INTO deployment_events(
                     deployment_id, created_at, stage, level, message
@@ -155,7 +158,8 @@ class DeploymentsMixin(_Base):
                 if status in {"succeeded", "failed", "cancelled", "interrupted"}:
                     changes["completed_at"] = now
             self._set_deployment_fields(deployment_id, changes, now)
-        return self.get_deployment(deployment_id) or {}
+            result = self.get_deployment(deployment_id) or {}
+        return result
 
     def _set_deployment_fields(
         self, deployment_id: str, changes: dict[str, Any], now: str | None = None
@@ -166,31 +170,34 @@ class DeploymentsMixin(_Base):
             assignments.append(f"{key} = ?")
             values.append(value)
         values.append(deployment_id)
-        updated = self.connection.execute(
-            f"UPDATE deployments SET {', '.join(assignments)} WHERE id = ?",
-            values,
-        )
+        with self._transaction() as conn:
+            updated = conn.exec_driver_sql(
+                f"UPDATE deployments SET {', '.join(assignments)} WHERE id = ?",
+                tuple(values),
+            )
         if not updated.rowcount:
             raise KeyError(deployment_id)
 
     def list_deployment_events(
         self, deployment_id: str, after: int = 0
     ) -> list[dict[str, Any]]:
-        rows = self.connection.execute(
-            """
-            SELECT id, deployment_id, created_at, stage, level, message
-            FROM deployment_events
-            WHERE deployment_id = ? AND id > ?
-            ORDER BY id
-            """,
-            (deployment_id, max(0, after)),
-        ).fetchall()
+        with self._read() as conn:
+            rows = conn.exec_driver_sql(
+                """
+                SELECT id, deployment_id, created_at, stage, level, message
+                FROM deployment_events
+                WHERE deployment_id = ? AND id > ?
+                ORDER BY id
+                """,
+                (deployment_id, max(0, after)),
+            ).mappings().all()
         return [dict(row) for row in rows]
 
     def get_trusted_ssh_host(self, target_key: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM trusted_ssh_hosts WHERE target_key = ?", (target_key,)
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT * FROM trusted_ssh_hosts WHERE target_key = ?", (target_key,)
+            ).mappings().fetchone()
         return dict(row) if row else None
 
     def trust_ssh_host(
@@ -201,11 +208,11 @@ class DeploymentsMixin(_Base):
         *,
         replace: bool = False,
     ) -> None:
-        existing = self.get_trusted_ssh_host(target_key)
-        if existing and existing["host_key"] != host_key and not replace:
-            raise ValueError("SSH host key changed; explicit replacement is required.")
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            existing = self.get_trusted_ssh_host(target_key)
+            if existing and existing["host_key"] != host_key and not replace:
+                raise ValueError("SSH host key changed; explicit replacement is required.")
+            conn.exec_driver_sql(
                 """
                 INSERT INTO trusted_ssh_hosts(target_key, host_key, fingerprint, trusted_at)
                 VALUES (?, ?, ?, ?)
@@ -222,14 +229,15 @@ class DeploymentsMixin(_Base):
         return f"{target}:{port}"
 
     def _link_deployment_for_code(self, code_hash: str, device_id: str) -> None:
-        row = self.connection.execute(
-            "SELECT deployment_id FROM enrollment_codes WHERE code_hash = ?", (code_hash,)
-        ).fetchone()
-        if row is None or row["deployment_id"] is None:
-            return
-        linked = self.connection.execute(
-            "UPDATE deployments SET device_id = ?, updated_at = ? WHERE id = ?",
-            (device_id, utc_iso(), row["deployment_id"]),
-        )
-        if linked.rowcount != 1:
-            raise RuntimeError("Enrollment code refers to a missing deployment.")
+        with self._transaction() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT deployment_id FROM enrollment_codes WHERE code_hash = ?", (code_hash,)
+            ).mappings().fetchone()
+            if row is None or row["deployment_id"] is None:
+                return
+            linked = conn.exec_driver_sql(
+                "UPDATE deployments SET device_id = ?, updated_at = ? WHERE id = ?",
+                (device_id, utc_iso(), row["deployment_id"]),
+            )
+            if linked.rowcount != 1:
+                raise RuntimeError("Enrollment code refers to a missing deployment.")

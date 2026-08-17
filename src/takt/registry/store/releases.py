@@ -25,8 +25,8 @@ class ReleasesMixin(_Base):
         target = self.release_path(release_id)
         source.replace(target)
         try:
-            with self.connection:
-                self.connection.execute(
+            with self._transaction() as conn:
+                conn.exec_driver_sql(
                     """
                     INSERT INTO releases(
                         id, version, filename, sha256, size, created_at, source, commit_sha
@@ -55,28 +55,31 @@ class ReleasesMixin(_Base):
         return release
 
     def list_releases(self) -> list[dict[str, Any]]:
-        return [
-            dict(row)
-            for row in self.connection.execute(
-                "SELECT * FROM releases ORDER BY created_at DESC"
-            ).fetchall()
-        ]
+        with self._read() as conn:
+            return [
+                dict(row)
+                for row in conn.exec_driver_sql(
+                    "SELECT * FROM releases ORDER BY created_at DESC"
+                ).mappings().all()
+            ]
 
     def get_release(self, release_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM releases WHERE id = ?", (release_id,)
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT * FROM releases WHERE id = ?", (release_id,)
+            ).mappings().fetchone()
         return dict(row) if row else None
 
     def get_release_by_version(self, version: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM releases WHERE version = ?", (version,)
-        ).fetchone()
+        with self._read() as conn:
+            row = conn.exec_driver_sql(
+                "SELECT * FROM releases WHERE version = ?", (version,)
+            ).mappings().fetchone()
         return dict(row) if row else None
 
     def mark_release_bundled(self, release_id: str, *, commit_sha: str | None) -> None:
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 "UPDATE releases SET source = 'bundled', "
                 "commit_sha = COALESCE(commit_sha, ?) WHERE id = ?",
                 (commit_sha, release_id),
@@ -102,8 +105,8 @@ class ReleasesMixin(_Base):
         previous = self.get_release(release_id)
         target = self.release_path(release_id)
         source.replace(target)
-        with self.connection:
-            self.connection.execute(
+        with self._transaction() as conn:
+            conn.exec_driver_sql(
                 "UPDATE releases SET filename = ?, sha256 = ?, size = ?, "
                 "source = 'bundled', commit_sha = ? WHERE id = ?",
                 (filename, sha256, size, commit_sha, release_id),
