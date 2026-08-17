@@ -1,16 +1,39 @@
-// @ts-nocheck
 import { useState } from "react";
+import type { Device } from "../../shared/contracts";
+import { Callout, Select, type SelectOption } from "../../shared/ui";
 import { request } from "../services/fleetService";
 import { Modal } from "./Modal";
 
-export function AccessModal({ user, devices, csrf, onClose, onChanged }) {
-  const [error, setError] = useState("");
-  const [busyDeviceId, setBusyDeviceId] = useState(null);
+export interface AdminUser {
+  id: string;
+  username: string;
+  is_admin?: boolean;
+  disabled?: boolean;
+  access?: { device_id: string; access_level: string }[];
+}
 
-  const accessFor = (deviceId) =>
+interface AccessModalProps {
+  user: AdminUser;
+  devices: Device[];
+  csrf: string;
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+}
+
+const ACCESS_OPTIONS: SelectOption[] = [
+  { value: "none", label: "NO ACCESS" },
+  { value: "read", label: "READ" },
+  { value: "write", label: "WRITE" },
+];
+
+export function AccessModal({ user, devices, csrf, onClose, onChanged }: AccessModalProps) {
+  const [error, setError] = useState("");
+  const [busyDeviceId, setBusyDeviceId] = useState<string | null>(null);
+
+  const accessFor = (deviceId: string) =>
     (user.access || []).find((item) => item.device_id === deviceId)?.access_level || "none";
 
-  const setAccess = async (deviceId, level) => {
+  const setAccess = async (deviceId: string, level: string) => {
     setError("");
     setBusyDeviceId(deviceId);
     try {
@@ -25,7 +48,7 @@ export function AccessModal({ user, devices, csrf, onClose, onChanged }) {
       }
       await onChanged();
     } catch (failure) {
-      setError(failure.message);
+      setError((failure as Error).message);
     } finally {
       setBusyDeviceId(null);
     }
@@ -35,20 +58,18 @@ export function AccessModal({ user, devices, csrf, onClose, onChanged }) {
     <Modal title={`DEVICE ACCESS · ${user.username}`} eyebrow="ACCESS CONTROL" onClose={onClose} wide>
       <div className="modal-body access-fields">
         <p>Grant or revoke access per device. Changes apply immediately and are audited.</p>
-        {error && <div className="form-error">{error}</div>}
+        {error && <Callout tone="danger">{error}</Callout>}
         <div className="access-list">
           {devices.map((device) => (
             <div className="access-row" key={device.id}>
               <span className="access-device-name">{device.name}</span>
-              <select
+              <Select
+                className="access-select"
                 value={accessFor(device.id)}
                 disabled={busyDeviceId === device.id}
-                onChange={(event) => setAccess(device.id, event.target.value)}
-              >
-                <option value="none">NO ACCESS</option>
-                <option value="read">READ</option>
-                <option value="write">WRITE</option>
-              </select>
+                onValueChange={(value) => setAccess(device.id, value)}
+                options={ACCESS_OPTIONS}
+              />
             </div>
           ))}
           {!devices.length && <p>No devices enrolled yet.</p>}

@@ -1,6 +1,6 @@
 // @ts-nocheck
-import "./styles.css";
 import "../shared/ui/ui.css";
+import "./styles.css";
 import { Zap } from "lucide-react";
 import { useSession } from "./hooks/useSession";
 import { Login } from "./components/Login";

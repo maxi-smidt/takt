@@ -1,13 +1,18 @@
-// @ts-nocheck
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
+import { Button, Callout, Field, TextInput } from "../../shared/ui";
 import { request } from "../services/fleetService";
 
-export function PasswordChange({ session, refreshSession }) {
+interface PasswordChangeProps {
+  session: { csrf_token: string };
+  refreshSession: () => Promise<void>;
+}
+
+export function PasswordChange({ session, refreshSession }: PasswordChangeProps) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const submit = async (event) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError("");
@@ -25,7 +30,7 @@ export function PasswordChange({ session, refreshSession }) {
       );
       await refreshSession();
     } catch (failure) {
-      setError(failure.message);
+      setError((failure as Error).message);
     } finally {
       setBusy(false);
     }
@@ -41,30 +46,33 @@ export function PasswordChange({ session, refreshSession }) {
           </div>
         </section>
         <form className="enrollment-fields" onSubmit={submit}>
-          <label className="field-label">CURRENT PASSWORD
-            <input
-              type="password"
-              value={currentPassword}
-              onChange={(event) => setCurrentPassword(event.target.value)}
-              autoComplete="current-password"
-            />
-          </label>
-          <label className="field-label">NEW PASSWORD
-            <input
-              type="password"
-              minLength={12}
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              autoComplete="new-password"
-            />
-          </label>
-          {error && <div className="form-error">{error}</div>}
-          <button
-            className="primary-button"
-            disabled={busy || !currentPassword || newPassword.length < 12}
-          >
+          <Field label="CURRENT PASSWORD">
+            {(fieldProps) => (
+              <TextInput
+                {...fieldProps}
+                type="password"
+                value={currentPassword}
+                onChange={(event) => setCurrentPassword(event.target.value)}
+                autoComplete="current-password"
+              />
+            )}
+          </Field>
+          <Field label="NEW PASSWORD">
+            {(fieldProps) => (
+              <TextInput
+                {...fieldProps}
+                type="password"
+                minLength={12}
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                autoComplete="new-password"
+              />
+            )}
+          </Field>
+          {error && <Callout tone="danger">{error}</Callout>}
+          <Button type="submit" variant="primary" disabled={busy || !currentPassword || newPassword.length < 12}>
             {busy ? "SAVING …" : "SET PASSWORD"}
-          </button>
+          </Button>
         </form>
       </main>
     </div>

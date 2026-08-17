@@ -1,14 +1,18 @@
-// @ts-nocheck
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { KeyRound, Zap } from "lucide-react";
+import { Button, Callout, Field, TextInput } from "../../shared/ui";
 import { request } from "../services/fleetService";
 
-export function Login({ onLogin }) {
+interface LoginProps {
+  onLogin: () => Promise<void>;
+}
+
+export function Login({ onLogin }: LoginProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const submit = async (event) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError("");
@@ -19,7 +23,7 @@ export function Login({ onLogin }) {
       });
       await onLogin();
     } catch (failure) {
-      setError(failure.message);
+      setError((failure as Error).message);
     } finally {
       setBusy(false);
     }
@@ -31,26 +35,37 @@ export function Login({ onLogin }) {
         <span className="eyebrow">DEVICE CONTROL PLANE</span>
         <h1>TAKT <em>FLEET</em></h1>
         <p>Manage every timing unit from one secure registry.</p>
-        <form onSubmit={submit}>
-          <label>
-            <span>USERNAME</span>
-            <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Username" autoComplete="username" />
-            <span>PASSWORD</span>
-            <div className="password-field">
-              <KeyRound size={16} />
-              <input
-                type="password"
-                autoFocus
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="Enter registry password"
+        <form className="login-form" onSubmit={submit}>
+          <Field label="USERNAME">
+            {(fieldProps) => (
+              <TextInput
+                {...fieldProps}
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="Username"
+                autoComplete="username"
               />
-            </div>
-          </label>
-          {error && <div className="form-error">{error}</div>}
-          <button className="primary-button full-width" disabled={busy || !password || !username}>
+            )}
+          </Field>
+          <Field label="PASSWORD">
+            {(fieldProps) => (
+              <div className="password-field">
+                <KeyRound size={16} />
+                <input
+                  {...fieldProps}
+                  type="password"
+                  autoFocus
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="Enter registry password"
+                />
+              </div>
+            )}
+          </Field>
+          {error && <Callout tone="danger">{error}</Callout>}
+          <Button type="submit" variant="primary" className="full-width" disabled={busy || !password || !username}>
             {busy ? "CONNECTING …" : "OPEN REGISTRY"}
-          </button>
+          </Button>
         </form>
       </section>
     </main>

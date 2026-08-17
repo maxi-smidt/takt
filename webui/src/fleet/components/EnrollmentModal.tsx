@@ -1,14 +1,51 @@
-// @ts-nocheck
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Activity, Check, KeyRound, Plus, RotateCcw, X } from "lucide-react";
-import { openDeploymentEvents, request } from "../services/fleetService";
+import type { Deployment, DeploymentEvent, Release } from "../../shared/contracts";
+import { parseDeploymentResponse } from "../../shared/contracts";
+import { Button, Callout, Field, Select, TextInput } from "../../shared/ui";
 import { deploymentTargetError, hostnameChangeError } from "../deploymentValidation.js";
-import { preferredReleaseId } from "../releaseSelection.js";
 import { insecureRemoteHttp } from "../formatters";
+import { preferredReleaseId } from "../releaseSelection.js";
+import { openDeploymentEvents, request } from "../services/fleetService";
 import { Modal } from "./Modal";
 
-export function EnrollmentModal({ csrf, onClose, releases, onDone }) {
-  const [fields, setFields] = useState({
+interface EnrollmentFields {
+  device_name: string;
+  hostname: string;
+  confirm_hostname_change: boolean;
+  ssh_user: string;
+  target: string;
+  registry_url: string;
+  release_id: string;
+  allow_insecure_http: boolean;
+}
+
+interface Credentials {
+  ssh_password: string;
+  ssh_private_key: string;
+  ssh_key_passphrase: string;
+  sudo_password: string;
+}
+
+type TextFieldKey = "device_name" | "hostname" | "ssh_user" | "target" | "registry_url";
+
+const TEXT_FIELDS: [TextFieldKey, string, string][] = [
+  ["device_name", "DEVICE DISPLAY NAME", "Bahn 1"],
+  ["hostname", "NEW SYSTEM HOSTNAME (OPTIONAL)", "Leave empty to preserve the Pi hostname"],
+  ["ssh_user", "SSH USER", "pi"],
+  ["target", "SSH ADDRESS / CURRENT HOSTNAME", "raspberrypi.local"],
+  ["registry_url", "REGISTRY URL REACHABLE BY THE PI", "https://registry.example"],
+];
+
+interface EnrollmentModalProps {
+  csrf: string;
+  onClose: () => void;
+  releases: Release[];
+  onDone: () => void;
+}
+
+export function EnrollmentModal({ csrf, onClose, releases, onDone }: EnrollmentModalProps) {
+  const [fields, setFields] = useState<EnrollmentFields>({
     device_name: "Bahn 1",
     hostname: "",
     confirm_hostname_change: false,
@@ -18,9 +55,9 @@ export function EnrollmentModal({ csrf, onClose, releases, onDone }) {
     release_id: preferredReleaseId(releases),
     allow_insecure_http: false,
   });
-  const [deployment, setDeployment] = useState(null);
-  const [events, setEvents] = useState([]);
-  const [credentials, setCredentials] = useState({
+  const [deployment, setDeployment] = useState<Deployment | null>(null);
+  const [events, setEvents] = useState<DeploymentEvent[]>([]);
+  const [credentials, setCredentials] = useState<Credentials>({
     ssh_password: "", ssh_private_key: "", ssh_key_passphrase: "", sudo_password: "",
   });
   const [replaceHostKey, setReplaceHostKey] = useState(false);
@@ -28,7 +65,8 @@ export function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   const [busy, setBusy] = useState(false);
 
   const [streamAfter, setStreamAfter] = useState(0);
-  const update = (key, value) => setFields((current) => ({ ...current, [key]: value, ...(key === "hostname" ? { confirm_hostname_change: false } : {}) }));
+  const update = <K extends keyof EnrollmentFields>(key: K, value: EnrollmentFields[K]) =>
+    setFields((current) => ({ ...current, [key]: value, ...(key === "hostname" ? { confirm_hostname_change: false } : {}) }));
   const validate = () => {
     if (!/^[A-Za-z0-9ÄÖÜäöüß._ -]{1,80}$/.test(fields.device_name.trim())) return "Device name is invalid.";
     const hostnameError = hostnameChangeError(fields.hostname, fields.confirm_hostname_change);
@@ -46,22 +84,22 @@ export function EnrollmentModal({ csrf, onClose, releases, onDone }) {
     return "";
   };
 
-  const post = async (path, body) => {
+  const post = async (path: string, body: unknown) => {
     setBusy(true);
     setError("");
     try {
-      const result = await request(path, { method: "POST", body: JSON.stringify(body) }, csrf);
+      const result = parseDeploymentResponse(await request(path, { method: "POST", body: JSON.stringify(body) }, csrf));
       setDeployment(result.deployment);
       return true;
     } catch (failure) {
-      setError(failure.message);
+      setError((failure as Error).message);
       return false;
     } finally {
       setBusy(false);
     }
   };
 
-  const create = async (event) => {
+  const create = async (event: FormEvent) => {
     event.preventDefault();
     const validationError = validate();
     if (validationError) return setError(validationError);
@@ -74,15 +112,16 @@ export function EnrollmentModal({ csrf, onClose, releases, onDone }) {
     let active = true;
     const path = "/api/deployments/" + deployment.id;
     const load = () => request(path)
-      .then((result) => {
+      .then((raw) => {
         if (!active) return;
+        const result = parseDeploymentResponse(raw);
         setDeployment(result.deployment);
         setError("");
         if (["succeeded", "failed", "cancelled", "interrupted"].includes(result.deployment.status)) {
           source?.close();
         }
       })
-      .catch((failure) => active && setError(failure.message));
+      .catch((failure) => active && setError((failure as Error).message));
     const source = openDeploymentEvents(
       deployment.id,
       streamAfter,
@@ -103,19 +142,19 @@ export function EnrollmentModal({ csrf, onClose, releases, onDone }) {
   }, [deployment?.id, streamAfter]);
 
   const confirmHostKey = () => post(
-    "/api/deployments/" + deployment.id + "/host-key",
-    { fingerprint: deployment.host_key_fingerprint, replace: replaceHostKey },
+    "/api/deployments/" + deployment!.id + "/host-key",
+    { fingerprint: deployment!.host_key_fingerprint, replace: replaceHostKey },
   );
-  const submitCredentials = async (event) => {
+  const submitCredentials = async (event: FormEvent) => {
     event.preventDefault();
     if (!credentials.ssh_password && !credentials.ssh_private_key) return setError("SSH password or private key is required.");
-    const accepted = await post("/api/deployments/" + deployment.id + "/credentials", credentials);
+    const accepted = await post("/api/deployments/" + deployment!.id + "/credentials", credentials);
     if (accepted) setCredentials({ ssh_password: "", ssh_private_key: "", ssh_key_passphrase: "", sudo_password: "" });
   };
-  const cancel = () => post("/api/deployments/" + deployment.id + "/cancel", {});
+  const cancel = () => post("/api/deployments/" + deployment!.id + "/cancel", {});
   const retry = async () => {
     const after = events.at(-1)?.id || 0;
-    if (await post("/api/deployments/" + deployment.id + "/retry", {})) {
+    if (await post("/api/deployments/" + deployment!.id + "/retry", {})) {
       setEvents([]);
       setStreamAfter(after);
     }
@@ -127,16 +166,18 @@ export function EnrollmentModal({ csrf, onClose, releases, onDone }) {
         <form className="modal-body" onSubmit={create}>
           <p>The registry checks, installs, enrolls, and verifies the Pi without a laptop checkout.</p>
           <div className="enrollment-fields">
-            {[
-              ["device_name", "DEVICE DISPLAY NAME", "Bahn 1"],
-              ["hostname", "NEW SYSTEM HOSTNAME (OPTIONAL)", "Leave empty to preserve the Pi hostname"],
-              ["ssh_user", "SSH USER", "pi"],
-              ["target", "SSH ADDRESS / CURRENT HOSTNAME", "raspberrypi.local"],
-              ["registry_url", "REGISTRY URL REACHABLE BY THE PI", "https://registry.example"],
-            ].map(([key, label, placeholder]) => (
-              <label className="field-label" key={key}>{label}
-                <input value={fields[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} required={key !== "hostname"} />
-              </label>
+            {TEXT_FIELDS.map(([key, label, placeholder]) => (
+              <Field label={label} key={key}>
+                {(fieldProps) => (
+                  <TextInput
+                    {...fieldProps}
+                    value={fields[key]}
+                    placeholder={placeholder}
+                    onChange={(event) => update(key, event.target.value)}
+                    required={key !== "hostname"}
+                  />
+                )}
+              </Field>
             ))}
             {fields.hostname && (
               <label className="insecure-opt-in">
@@ -144,36 +185,115 @@ export function EnrollmentModal({ csrf, onClose, releases, onDone }) {
                 <span><strong>CONFIRM HOSTNAME CHANGE</strong> Preview: the Pi will move to <code>{fields.hostname}.local</code>; mDNS, DHCP, SSH host keys, and reconnect behavior can change.</span>
               </label>
             )}
-            <label className="field-label">RASPBERRY PI RELEASE
-              <select value={fields.release_id} onChange={(event) => update("release_id", event.target.value)} required>
-                <option value="">SELECT A RELEASE</option>
-                {releases.map((release) => <option value={release.id} key={release.id}>{release.version}{release.source === "bundled" ? " · VERIFIED" : ""}</option>)}
-              </select>
-            </label>
+            <Field label="RASPBERRY PI RELEASE">
+              {(fieldProps) => (
+                <Select
+                  {...fieldProps}
+                  value={fields.release_id}
+                  onValueChange={(value) => update("release_id", value)}
+                  placeholder="SELECT A RELEASE"
+                  options={releases.map((release) => ({
+                    value: release.id,
+                    label: release.version + (release.source === "bundled" ? " · VERIFIED" : ""),
+                  }))}
+                />
+              )}
+            </Field>
             {insecureRemoteHttp(fields.registry_url) && (
               <label className="insecure-opt-in"><input type="checkbox" checked={fields.allow_insecure_http} onChange={(event) => update("allow_insecure_http", event.target.checked)} /><span><strong>ALLOW HTTP TRANSPORT</strong> Use only on a protected VPN or isolated LAN.</span></label>
             )}
           </div>
-          {error && <div className="form-error">{error}</div>}
-          <button className="primary-button full-width" disabled={busy || !releases.length}><Plus size={15} /> {busy ? "STARTING …" : "START DEPLOYMENT"}</button>
+          {error && <Callout tone="danger">{error}</Callout>}
+          <Button type="submit" variant="primary" className="full-width" disabled={busy || !releases.length}>
+            <Plus size={15} /> {busy ? "STARTING …" : "START DEPLOYMENT"}
+          </Button>
         </form>
       ) : (
         <div className="modal-body deployment-panel">
           <div className="deployment-ready"><Activity size={22} /><div><strong>{deployment.status.replaceAll("_", " ").toUpperCase()}</strong><span>{deployment.message}</span></div></div>
           <div className="deployment-log" aria-live="polite">{events.map((item) => <div className={"deployment-log-line level-" + item.level} key={item.id}><span>{item.stage}</span>{item.message}</div>)}</div>
-          {deployment.status === "awaiting_host_key" && <div className="deployment-confirmation"><strong>VERIFY SSH HOST KEY</strong><code>{deployment.host_key_fingerprint}</code><label className="insecure-opt-in"><input type="checkbox" checked={replaceHostKey} onChange={(event) => setReplaceHostKey(event.target.checked)} /><span>Replace an existing trusted key only when expected.</span></label><button className="primary-button full-width" onClick={confirmHostKey} disabled={busy}><KeyRound size={15} /> TRUST HOST KEY</button></div>}
-          {deployment.status === "awaiting_credentials" && <form className="deployment-credentials" onSubmit={submitCredentials}>
-            <label className="field-label">SSH PASSWORD<input type="password" autoComplete="new-password" value={credentials.ssh_password} onChange={(event) => setCredentials({ ...credentials, ssh_password: event.target.value })} /></label>
-            <label className="field-label">OR PRIVATE KEY<textarea rows="4" value={credentials.ssh_private_key} onChange={(event) => setCredentials({ ...credentials, ssh_private_key: event.target.value })} /></label>
-            <label className="field-label">KEY PASSPHRASE<input type="password" autoComplete="off" value={credentials.ssh_key_passphrase} onChange={(event) => setCredentials({ ...credentials, ssh_key_passphrase: event.target.value })} /></label>
-            <label className="field-label">SUDO PASSWORD<input type="password" autoComplete="off" value={credentials.sudo_password} onChange={(event) => setCredentials({ ...credentials, sudo_password: event.target.value })} placeholder="Defaults to SSH password" /></label>
-            <button className="primary-button full-width" disabled={busy}><KeyRound size={15} /> CONTINUE</button>
-          </form>}
-          {error && <div className="form-error">{error}</div>}
+          {deployment.status === "awaiting_host_key" && (
+            <div className="deployment-confirmation">
+              <strong>VERIFY SSH HOST KEY</strong>
+              <code>{deployment.host_key_fingerprint}</code>
+              <label className="insecure-opt-in">
+                <input type="checkbox" checked={replaceHostKey} onChange={(event) => setReplaceHostKey(event.target.checked)} />
+                <span>Replace an existing trusted key only when expected.</span>
+              </label>
+              <Button variant="primary" className="full-width" onClick={confirmHostKey} disabled={busy}>
+                <KeyRound size={15} /> TRUST HOST KEY
+              </Button>
+            </div>
+          )}
+          {deployment.status === "awaiting_credentials" && (
+            <form className="deployment-credentials" onSubmit={submitCredentials}>
+              <Field label="SSH PASSWORD">
+                {(fieldProps) => (
+                  <TextInput
+                    {...fieldProps}
+                    type="password"
+                    autoComplete="new-password"
+                    value={credentials.ssh_password}
+                    onChange={(event) => setCredentials({ ...credentials, ssh_password: event.target.value })}
+                  />
+                )}
+              </Field>
+              <Field label="OR PRIVATE KEY">
+                {(fieldProps) => (
+                  <textarea
+                    {...fieldProps}
+                    className="takt-input"
+                    rows={4}
+                    value={credentials.ssh_private_key}
+                    onChange={(event) => setCredentials({ ...credentials, ssh_private_key: event.target.value })}
+                  />
+                )}
+              </Field>
+              <Field label="KEY PASSPHRASE">
+                {(fieldProps) => (
+                  <TextInput
+                    {...fieldProps}
+                    type="password"
+                    autoComplete="off"
+                    value={credentials.ssh_key_passphrase}
+                    onChange={(event) => setCredentials({ ...credentials, ssh_key_passphrase: event.target.value })}
+                  />
+                )}
+              </Field>
+              <Field label="SUDO PASSWORD">
+                {(fieldProps) => (
+                  <TextInput
+                    {...fieldProps}
+                    type="password"
+                    autoComplete="off"
+                    value={credentials.sudo_password}
+                    onChange={(event) => setCredentials({ ...credentials, sudo_password: event.target.value })}
+                    placeholder="Defaults to SSH password"
+                  />
+                )}
+              </Field>
+              <Button type="submit" variant="primary" className="full-width" disabled={busy}>
+                <KeyRound size={15} /> CONTINUE
+              </Button>
+            </form>
+          )}
+          {error && <Callout tone="danger">{error}</Callout>}
           <div className="deployment-actions">
-            {["pending", "running", "awaiting_host_key", "awaiting_credentials"].includes(deployment.status) && <button className="secondary-button" onClick={cancel} disabled={busy}><X size={15} /> CANCEL</button>}
-            {["failed", "cancelled", "interrupted"].includes(deployment.status) && <button className="secondary-button" onClick={retry} disabled={busy}><RotateCcw size={15} /> RETRY</button>}
-            {deployment.status === "succeeded" && <button className="primary-button" onClick={() => { onDone(); onClose(); }}><Check size={15} /> DONE</button>}
+            {["pending", "running", "awaiting_host_key", "awaiting_credentials"].includes(deployment.status) && (
+              <Button variant="secondary" onClick={cancel} disabled={busy}>
+                <X size={15} /> CANCEL
+              </Button>
+            )}
+            {["failed", "cancelled", "interrupted"].includes(deployment.status) && (
+              <Button variant="secondary" onClick={retry} disabled={busy}>
+                <RotateCcw size={15} /> RETRY
+              </Button>
+            )}
+            {deployment.status === "succeeded" && (
+              <Button variant="primary" onClick={() => { onDone(); onClose(); }}>
+                <Check size={15} /> DONE
+              </Button>
+            )}
           </div>
         </div>
       )}
