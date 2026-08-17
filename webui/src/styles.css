@@ -1111,7 +1111,7 @@ kbd {
 }
 
 .audio-mode-switch button,
-.bluetooth-device-row button,
+.bluetooth-device-row button:not(.bluetooth-select),
 .audio-settings-footer button {
   min-height: 34px;
   padding: 0 10px;
@@ -1157,7 +1157,7 @@ kbd {
 }
 
 .audio-delay input,
-.bluetooth-device-row select {
+.bluetooth-select {
   min-width: 0;
   height: 34px;
   border: 1px solid var(--line-strong);
@@ -1174,7 +1174,7 @@ kbd {
 }
 
 .audio-delay input:focus,
-.bluetooth-device-row select:focus {
+.bluetooth-select:focus {
   border-color: var(--blue);
 }
 
@@ -1228,7 +1228,7 @@ kbd {
   gap: 5px;
 }
 
-.bluetooth-device-row select {
+.bluetooth-select {
   width: 100%;
   padding: 0 9px;
 }
@@ -1258,9 +1258,9 @@ kbd {
 }
 
 .audio-mode-switch button:disabled,
-.bluetooth-device-row button:disabled,
+.bluetooth-device-row button:not(.bluetooth-select):disabled,
 .audio-settings-footer button:disabled,
-.bluetooth-device-row select:disabled {
+.bluetooth-select:disabled {
   opacity: .34;
   cursor: not-allowed;
 }
@@ -1683,7 +1683,7 @@ kbd {
     grid-template-columns: 1fr 1fr 1fr;
   }
 
-  .bluetooth-device-row select {
+  .bluetooth-select {
     grid-column: 1 / -1;
   }
 
@@ -1784,7 +1784,7 @@ button:active:not(:disabled),
   .run-select-button,
   .delete-control,
   .audio-mode-switch button,
-  .bluetooth-device-row button,
+  .bluetooth-device-row button:not(.bluetooth-select),
   .audio-settings-footer button,
   .confirmation-actions button {
     min-height: var(--touch-target);
@@ -1814,14 +1814,14 @@ button:active:not(:disabled),
   .system-tile button,
   .delete-control,
   .audio-mode-switch button,
-  .bluetooth-device-row button,
+  .bluetooth-device-row button:not(.bluetooth-select),
   .audio-settings-footer button,
   .confirmation-actions button {
     padding-inline: 12px;
   }
 
   .audio-delay input,
-  .bluetooth-device-row select {
+  .bluetooth-select {
     height: var(--touch-target);
   }
 
@@ -1855,7 +1855,7 @@ button:active:not(:disabled),
     gap: 8px;
   }
 
-  .bluetooth-device-row select {
+  .bluetooth-select {
     grid-column: 1 / -1;
   }
 
@@ -1877,7 +1877,7 @@ button:active:not(:disabled),
     grid-template-columns: 1fr 1fr 1fr;
   }
 
-  .bluetooth-device-row select {
+  .bluetooth-select {
     grid-column: 1 / -1;
   }
 }
