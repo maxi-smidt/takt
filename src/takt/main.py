@@ -5,9 +5,10 @@ import logging
 import sys
 
 from takt.application.timer_controller import TimerController
-from takt.buzzer import GpioBuzzer, MockBuzzer, NullBuzzer
+from takt.buzzer import Buzzer, GpioBuzzer, MockBuzzer, NullBuzzer
 from takt.clock import SystemClock
 from takt.config import load_config
+from takt.input.button_input import ButtonInput
 from takt.input.gpio_button_input import GpioButtonInput
 from takt.input.mock_button_input import MockButtonInput
 from takt.logging_config import configure_logging
@@ -89,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         show_mock_buzzer=args.mock_buzzer,
     )
 
+    button_input: ButtonInput
     if args.mock_gpio:
         button_input = MockButtonInput(
             window.physical_button_pressed.emit,
@@ -121,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         window.set_hardware_status("nur Tastatur/Maus", available=False)
 
+    buzzer: Buzzer
     if args.mock_buzzer:
         buzzer = MockBuzzer(window.show_mock_buzzer_signal)
     elif config.buzzer.enabled:

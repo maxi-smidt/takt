@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import io
 import json
 import re
 import shlex
@@ -233,6 +232,8 @@ class DeploymentManager:
                 asyncssh.get_server_host_key(deployment["target"], deployment["port"]),
                 timeout=HOST_KEY_TIMEOUT,
             )
+            if key is None:
+                raise RuntimeError("The SSH service did not present a host key.")
             public_key = key.export_public_key("openssh").decode("utf-8").strip()
             fingerprint = key.get_fingerprint("sha256")
             self.store.update_deployment(
@@ -539,7 +540,7 @@ class DeploymentManager:
                     timeout=TRANSFER_TIMEOUT,
                 )
                 await asyncio.wait_for(
-                    sftp.putfo(io.BytesIO(bootstrap), config),
+                    self._write_remote_file(sftp, config, bootstrap),
                     timeout=COMMAND_TIMEOUT,
                 )
         except TimeoutError as error:
@@ -556,6 +557,11 @@ class DeploymentManager:
         if exit_status:
             raise RuntimeError(stderr.strip() or stdout.strip() or "Package verification failed.")
         self._event(deployment_id, "transfer", "Package checksum verified and unpacked.")
+
+    @staticmethod
+    async def _write_remote_file(sftp: asyncssh.SFTPClient, path: str, data: bytes) -> None:
+        async with sftp.open(path, "wb") as handle:
+            await handle.write(data)
 
     async def _install(
         self,

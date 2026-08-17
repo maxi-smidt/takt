@@ -12,9 +12,10 @@ from aiohttp import web
 
 from takt.application.system_power_service import SystemPowerService
 from takt.application.timer_controller import TimerController
-from takt.buzzer import GpioBuzzer, MockBuzzer, NullBuzzer
+from takt.buzzer import Buzzer, GpioBuzzer, MockBuzzer, NullBuzzer
 from takt.clock import SystemClock
 from takt.config import load_config
+from takt.input.button_input import ButtonInput
 from takt.input.gpio_button_input import GpioButtonInput
 from takt.input.mock_button_input import MockButtonInput
 from takt.logging_config import configure_logging
@@ -64,6 +65,7 @@ async def _serve(args: argparse.Namespace) -> None:
     def on_mock_buzzer(event: str) -> None:
         LOGGER.info("browser_mock_buzzer event=%s", event)
 
+    buzzer: Buzzer
     if args.mock_buzzer:
         buzzer = MockBuzzer(on_mock_buzzer)
     elif config.buzzer.enabled:
@@ -109,6 +111,7 @@ async def _serve(args: argparse.Namespace) -> None:
     def physical_release() -> None:
         loop.call_soon_threadsafe(runtime.button_release)
 
+    button_input: ButtonInput
     if args.mock_gpio:
         button_input = MockButtonInput(physical_press, physical_release)
         runtime.set_hardware_status("Mock aktiv", True)

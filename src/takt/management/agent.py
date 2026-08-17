@@ -268,9 +268,16 @@ class AgentState:
                     str(key): dict(value)
                     for key, value in dict(raw.get("pending_results", {})).items()
                 },
-                last_mirror_signature=tuple(int(value) for value in signature)
-                if isinstance(signature, list) and len(signature) == 4
-                else None,
+                last_mirror_signature=(
+                    (
+                        int(signature[0]),
+                        int(signature[1]),
+                        int(signature[2]),
+                        int(signature[3]),
+                    )
+                    if isinstance(signature, list) and len(signature) == 4
+                    else None
+                ),
             )
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return cls()
@@ -342,7 +349,7 @@ class TaktAgent:
         self._active_health_report: dict[str, Any] | None = None
 
     async def run(self, *, once: bool = False, enroll_only: bool = False) -> None:
-        ssl_option: ssl.SSLContext | bool | None = None
+        ssl_option: ssl.SSLContext | bool = True
         if not self.config.verify_tls:
             ssl_option = False
         elif self.config.ca_bundle:
@@ -825,8 +832,8 @@ class TaktAgent:
                 for log_name in ("takt.log", "takt-agent.log"):
                     log_path = self.config.log_directory / log_name
                     if log_path.is_file():
-                        with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-                            add_text(f"logs/{log_name}", handle.read()[-MAX_LOG_CHARACTERS:])
+                        with log_path.open("r", encoding="utf-8", errors="replace") as log_handle:
+                            add_text(f"logs/{log_name}", log_handle.read()[-MAX_LOG_CHARACTERS:])
                 if "journal" in self._helper_verbs:
                     for unit in (self.config.service_name, self.config.agent_service_name):
                         try:
@@ -1233,9 +1240,10 @@ class TaktAgent:
             )
             download_complete = True
             await self._progress_job(session, job_id, 25, "Staging release", stage="staging")
-            project_directory, dependencies_changed = await asyncio.to_thread(
+            prepared_directory, dependencies_changed = await asyncio.to_thread(
                 self._prepare_release, artifact, version, job_id
             )
+            project_directory = prepared_directory
             self._assert_job_control()
             await self._progress_job(
                 session,

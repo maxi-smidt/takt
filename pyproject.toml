@@ -34,6 +34,7 @@ dev = [
   "httpx>=0.27,<1",
   "PySide6-Essentials>=6.6,<7",
   "python-multipart>=0.0.18,<1",
+  "mypy>=1.13,<3",
   "pytest>=8,<9",
   "pytest-qt>=4.4,<5",
   "ruff>=0.9,<1",
@@ -64,3 +65,15 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/takt"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = "gpiozero"
+ignore_missing_imports = true

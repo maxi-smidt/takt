@@ -523,7 +523,8 @@ def _mirror_connection(
             raise ValueError("incompatible runs table")
     except (OSError, sqlite3.Error, ValueError) as error:
         with contextlib.suppress(Exception):
-            connection.close()
+            if connection is not None:
+                connection.close()
         raise HTTPException(
             status_code=503, detail="Die gespiegelte Datenbank ist nicht verfügbar."
         ) from error
@@ -604,13 +605,15 @@ def create_fastapi_app(
     app.state.login_limiter = LoginLimiter()
     app.state.login_semaphore = asyncio.Semaphore(2)
     app.state.mirror_semaphore = asyncio.Semaphore(2)
-    app.state.mirror_active: set[str] = set()
-    app.state.mirror_last_attempt: dict[str, float] = {}
+    mirror_active: set[str] = set()
+    mirror_last_attempt: dict[str, float] = {}
+    app.state.mirror_active = mirror_active
+    app.state.mirror_last_attempt = mirror_last_attempt
 
     @app.middleware("http")
     async def registry_middleware(request: Request, call_next: Any) -> Any:
         route_path = _route_path(app, request.method, request.url.path)
-        if _requires_json_body(request.method, route_path):
+        if route_path is not None and _requires_json_body(request.method, route_path):
             if request.headers.get("content-type", "").split(";", 1)[0].lower() != (
                 "application/json"
             ):

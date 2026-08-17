@@ -83,8 +83,9 @@ class SQLiteRunRepository:
                     now_iso,
                 ),
             )
+        assert cursor.lastrowid is not None
         return Run(
-            id=int(cursor.lastrowid),
+            id=cursor.lastrowid,
             run_number=run_number,
             started_at=started_at,
             stopped_at=stopped_at,
@@ -239,6 +240,7 @@ class SQLiteRunRepository:
             if row is None or row["updated_at"] != expected_updated_at:
                 raise ValueError("Run changed or no longer exists on the authoritative device.")
             before = self._row_to_run(row)
+            result: dict[str, object]
             if operation == "adjust_added_time":
                 if (
                     desired_added_time_ms is None

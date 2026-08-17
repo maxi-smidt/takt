@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from takt.domain.run import Run
@@ -70,7 +70,7 @@ class PerformanceChart(QWidget):
 
         self._draw_legend(painter)
 
-    def mouseMoveEvent(self, event: object) -> None:
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         position = event.position()
         for point, run in self._points:
             if (position - point).manhattanLength() < 13:
