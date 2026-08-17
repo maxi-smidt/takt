@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Badge,
   Button,
@@ -140,8 +140,20 @@ function DialogSection() {
 export function Gallery() {
   const [theme, setTheme] = useState<Theme>("fleet");
 
+  // Radix portals (Dialog, Select) mount onto document.body, a sibling of
+  // this component's own tree — not a descendant of it. The theme class has
+  // to live on body itself so portaled content inherits the right --ui-*
+  // values and font-family too, instead of falling back to tokens.css's
+  // neutral defaults and the browser's serif default font.
+  useEffect(() => {
+    document.body.className = `theme-${theme}`;
+    return () => {
+      document.body.className = "";
+    };
+  }, [theme]);
+
   return (
-    <div className={`gallery theme-${theme}`}>
+    <div className="gallery">
       <header className="gallery-header">
         <h1>TAKT UI Gallery</h1>
         <div className="gallery-theme-toggle" role="group" aria-label="Preview palette">

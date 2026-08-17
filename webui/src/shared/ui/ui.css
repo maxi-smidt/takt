@@ -7,6 +7,14 @@
  * no raw hex, no --blue/--green/--panel/... references.
  */
 
+/* Both apps' own stylesheets reset box-sizing globally, but this file is
+   also linked standalone (design-system pages, the gallery) — don't rely
+   on an ambient reset that isn't there for width:100% + padding + border
+   controls like .takt-input to size correctly. */
+[class*="takt-"] {
+  box-sizing: border-box;
+}
+
 .takt-btn {
   min-height: var(--ui-control-height);
   padding: 0 20px;

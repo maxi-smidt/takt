@@ -1,13 +1,16 @@
+/* The active theme-timer/theme-fleet class lives on <body> (see Gallery.tsx)
+   so Radix's body-mounted dialog/select portals inherit it too — so the
+   colors and font here just read the --ui-* values body already carries. */
 body {
   margin: 0;
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font-family: var(--ui-font-ui);
 }
 
 .gallery {
   min-height: 100vh;
   padding: 32px 40px 80px;
-  background: var(--ui-bg);
-  color: var(--ui-text);
-  font-family: var(--ui-font-ui);
 }
 
 .gallery-header {
