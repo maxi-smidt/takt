@@ -13,6 +13,8 @@ webui/node_modules/
 src/takt/web/static/
 src/takt/registry/static/
 .env
+runs.dev.db
+registry.dev.db
 .registry-preview/
 registry-data/
 bundled-release/*.tar.gz
