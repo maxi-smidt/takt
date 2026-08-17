@@ -13,6 +13,7 @@ export function useFleetDashboard(args: UseFleetDashboardArgs): {
   jobs: Job[];
   diagnostics: Record<string, DiagnosticsBundle[]>;
   error: string;
+  refreshing: boolean;
   online: number;
   mirroredRuns: number;
   insecureLan: boolean;

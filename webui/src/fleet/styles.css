@@ -125,6 +125,7 @@ input:focus, select:focus { border-color: var(--green); }
 .recovery-row small { display: block; margin-top: 5px; color: #e0c68d; font-size: var(--fs-small); font-weight: 400; overflow-wrap: anywhere; letter-spacing: 0; line-height: 1.5; }
 .recovery-row strong { flex: none; margin-left: auto; font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-caps); }
 .recovery-row-action { flex: none; margin-left: auto; }
+.recovery-row-actions { flex: none; margin-left: auto; display: flex; gap: 9px; }
 .update-control { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 18px 20px; align-items: end; }
 /* Four actions do not fit across a card at a readable size, so they pair 2x2. */
 .device-card footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 0 20px 18px; }
@@ -145,6 +146,7 @@ input:focus, select:focus { border-color: var(--green); }
 .job-row.status-queued { border-left-color: var(--line-bright); }
 .job-status-badge { flex: none; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .job-status-badge.status-running svg, .job-status-badge.status-claimed svg { animation: spin 1.4s linear infinite; }
+.is-spinning { animation: spin 1.4s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .job-copy { min-width: 0; display: grid; gap: 2px; }
 .job-copy strong { font-size: var(--fs-base); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -226,7 +228,7 @@ input:focus, select:focus { border-color: var(--green); }
 .runs-actions-head, .runs-actions { text-align: right; }
 .runs-actions-buttons { display: flex; justify-content: flex-end; gap: 8px; }
 
-.user-list { border: 1px solid var(--line); background: #0e1716; }
+.user-list { margin-top: 18px; border: 1px solid var(--line); background: #0e1716; }
 .user-row { display: grid; gap: 12px; padding: 16px; border-bottom: 1px solid var(--line); }
 .user-row:last-child { border: 0; }
 .user-row-actions { display: flex; flex-wrap: wrap; gap: 9px; }

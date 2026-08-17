@@ -10,8 +10,10 @@ export function useFleetDashboard({ session, refreshSession }) {
   const diagnosticsSignature = useRef(null);
   const [diagnostics, setDiagnostics] = useState({});
   const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
+    setRefreshing(true);
     try {
       const [deviceData, releaseData, jobData] = await Promise.all([
         request("/api/devices"), request("/api/releases"), request("/api/jobs"),
@@ -45,6 +47,8 @@ export function useFleetDashboard({ session, refreshSession }) {
         return;
       }
       setError(failure.message);
+    } finally {
+      setRefreshing(false);
     }
   }, [refreshSession]);
   useEffect(() => {
@@ -176,6 +180,7 @@ export function useFleetDashboard({ session, refreshSession }) {
     jobs,
     diagnostics,
     error,
+    refreshing,
     online,
     mirroredRuns,
     insecureLan,

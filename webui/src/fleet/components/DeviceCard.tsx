@@ -126,7 +126,7 @@ export function DeviceCard({
             INSTALL {job.current_version || device.app_version || "—"} → {job.target_version || "—"}
             <small>{stageLabel} · {job.message || "Waiting for agent"}{transfer ? ` · ${transfer}` : ""} · updated {timeAgo(job.updated_at)}</small>
           </span>
-          <div>
+          <div className="recovery-row-actions">
             {canCancel && <Button variant="secondary" size="sm" onClick={() => onCancel(job)}>CANCEL</Button>}
             {installActive && <Button variant="danger" size="sm" onClick={() => onForceClear(job)}>FORCE CLEAR</Button>}
             {installRetryable && <Button variant="secondary" size="sm" onClick={() => onRetry(job)}><RotateCcw size={14} /> RETRY</Button>}
