@@ -41,12 +41,11 @@ export function formatDate(value) {
   if (!value) return null;
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   if (!match) return value;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  return new Intl.DateTimeFormat("de-DE", { dateStyle: "medium" }).format(date);
+  return `${match[3]}.${match[2]}.${match[1]}`;
 }
 
 const MIRROR_STATE_LABELS_DE = {
-  missing: "kein Spiegel",
+  missing: "noch keine Daten",
   offline: "offline",
   pending: "wird aktualisiert",
   fresh: "aktuell",
