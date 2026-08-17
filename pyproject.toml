@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "takt"
-version = "0.6.2"
+version = "0.7.0"
 description = "Offline Feuerwehr-Zeitnahme für Raspberry Pi und Laptop"
 readme = "README.md"
 requires-python = ">=3.11"
