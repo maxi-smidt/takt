@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from takt.domain.duration import Duration
@@ -13,8 +13,8 @@ class TimerSession:
     started_wall_clock: datetime | None = None
     started_monotonic_ns: int | None = None
     stopped_wall_clock: datetime | None = None
-    actual_time: Duration = Duration()
-    added_time: Duration = Duration()
+    actual_time: Duration = field(default_factory=Duration)
+    added_time: Duration = field(default_factory=Duration)
 
     @property
     def total_time(self) -> Duration:

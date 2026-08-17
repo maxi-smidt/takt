@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -101,7 +102,7 @@ def apply_wifi_profile(
         if previous is None:
             target.unlink(missing_ok=True)
             _fsync_directory(connection_directory)
-            try:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
                 subprocess.run(
                     [str(nmcli), "connection", "reload"],
                     stdin=subprocess.DEVNULL,
@@ -110,11 +111,9 @@ def apply_wifi_profile(
                     check=False,
                     timeout=15,
                 )
-            except (OSError, subprocess.SubprocessError):
-                pass
         else:
             _atomic_write(target, previous)
-            try:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
                 subprocess.run(
                     [str(nmcli), "connection", "load", str(target)],
                     stdin=subprocess.DEVNULL,
@@ -123,8 +122,6 @@ def apply_wifi_profile(
                     check=False,
                     timeout=15,
                 )
-            except (OSError, subprocess.SubprocessError):
-                pass
         raise WifiHelperError("NetworkManager rejected the profile.") from error
     return target
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
@@ -96,7 +98,7 @@ class PerformanceChart(QWidget):
     @staticmethod
     def _draw_line(painter: QPainter, points: list[QPointF], color: QColor) -> None:
         painter.setPen(QPen(color, 2))
-        for previous, current in zip(points, points[1:], strict=False):
+        for previous, current in itertools.pairwise(points):
             painter.drawLine(previous, current)
         painter.setBrush(color)
         painter.setPen(QPen(QColor("#07111a"), 1))

@@ -351,7 +351,7 @@ class AccountStoreTests(unittest.TestCase):
                         200,
                     )
 
-                    no_access_id, no_access_created = create_logged_in_user(
+                    _no_access_id, no_access_created = create_logged_in_user(
                         client, admin_csrf, "outsider"
                     )
                     no_access_password = no_access_created["temporary_password"]

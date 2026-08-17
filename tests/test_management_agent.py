@@ -236,15 +236,14 @@ class ManagementAgentTests(unittest.TestCase):
                 patch.object(agent, "_systemctl", AsyncMock()) as systemctl,
                 patch(
                     "takt.management.agent.subprocess.run", side_effect=pip_error
-                ),
+                ),self.assertRaises(RuntimeError) as failure
             ):
-                with self.assertRaises(RuntimeError) as failure:
-                    asyncio.run(
-                        agent._install_release(
-                            object(),  # type: ignore[arg-type]
-                            {"id": job_id, "release": release},
-                        )
+                asyncio.run(
+                    agent._install_release(
+                        object(),  # type: ignore[arg-type]
+                        {"id": job_id, "release": release},
                     )
+                )
             systemctl.assert_not_awaited()
             self.assertIn("Dependency installation failed", str(failure.exception))
             self.assertNotIn("s3cret", str(failure.exception))
@@ -419,9 +418,9 @@ class ManagementAgentTests(unittest.TestCase):
                     AsyncMock(side_effect=DeferredJob("timer is running")),
                 ),
                 patch.object(agent, "_systemctl", AsyncMock()) as systemctl,
+                self.assertRaises(DeferredJob),
             ):
-                with self.assertRaises(DeferredJob):
-                    asyncio.run(agent._recover_interrupted_update(object()))  # type: ignore[arg-type]
+                asyncio.run(agent._recover_interrupted_update(object()))  # type: ignore[arg-type]
             systemctl.assert_not_awaited()
             self.assertTrue(agent.update_journal_path.exists())
 
@@ -615,14 +614,14 @@ class ManagementAgentTests(unittest.TestCase):
                 ),
                 patch.object(agent, "_release_maintenance", AsyncMock()) as release_maintenance,
                 patch.object(agent, "_systemctl", AsyncMock()) as systemctl,
+                self.assertRaises(CancelledJob),
             ):
-                with self.assertRaises(CancelledJob):
-                    asyncio.run(
-                        agent._install_release(
-                            session,
-                            {"id": job_id, "release": release},  # type: ignore[arg-type]
-                        )
+                asyncio.run(
+                    agent._install_release(
+                        session,
+                        {"id": job_id, "release": release},  # type: ignore[arg-type]
                     )
+                )
             systemctl.assert_not_awaited()
             release_maintenance.assert_awaited_once_with(session, "maintenance-token")
             self.assertFalse(prepared.exists())
@@ -789,9 +788,9 @@ class FleetMaintenanceAgentTests(unittest.TestCase):
                 ),
                 patch.object(TaktAgent, "_progress_job", AsyncMock()),
                 patch.object(TaktAgent, "_service_is_active", AsyncMock(return_value=False)),
+                self.assertRaisesRegex(RuntimeError, "helper refused"),
             ):
-                with self.assertRaisesRegex(RuntimeError, "helper refused"):
-                    asyncio.run(agent._power_action(AsyncMock(), job))
+                asyncio.run(agent._power_action(AsyncMock(), job))
 
 
     def test_reboot_result_stays_durable_when_reporting_fails(self) -> None:

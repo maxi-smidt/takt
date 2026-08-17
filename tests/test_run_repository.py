@@ -104,25 +104,24 @@ class RunRepositoryTests(unittest.TestCase):
         )
 
     def test_database_rejects_inconsistent_total(self) -> None:
-        with self.assertRaises(IntegrityError):
-            with self.repository.connection:
-                self.repository.connection.execute(
-                    """
+        with self.assertRaises(IntegrityError), self.repository.connection:
+            self.repository.connection.execute(
+                """
                     INSERT INTO runs (
                         run_number, started_at, stopped_at, saved_at,
                         actual_time_ms, added_time_ms, total_time_ms,
                         session_date, created_at, updated_at
                     ) VALUES (1, ?, ?, ?, 1000, 500, 1000, ?, ?, ?)
                     """,
-                    (
-                        self.base.isoformat(),
-                        self.base.isoformat(),
-                        self.base.isoformat(),
-                        self.base.date().isoformat(),
-                        self.base.isoformat(),
-                        self.base.isoformat(),
-                    ),
-                )
+                (
+                    self.base.isoformat(),
+                    self.base.isoformat(),
+                    self.base.isoformat(),
+                    self.base.date().isoformat(),
+                    self.base.isoformat(),
+                    self.base.isoformat(),
+                ),
+            )
 
 
 if __name__ == "__main__":

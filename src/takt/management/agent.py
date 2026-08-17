@@ -501,10 +501,8 @@ class TaktAgent:
         recovery_payload = None
         if self._recovery_error:
             phase = "unknown"
-            try:
+            with contextlib.suppress(Exception):
                 phase = str((self._load_update_journal() or {}).get("phase") or "unknown")[:64]
-            except Exception:
-                pass
             recovery_payload = {
                 "stuck": True,
                 "error": self._recovery_error,
