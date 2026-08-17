@@ -122,7 +122,6 @@ class SQLiteRunRepository:
             inserted_primary_key = result.inserted_primary_key
             assert inserted_primary_key is not None
             run_id = inserted_primary_key[0]
-        assert run_id is not None
         return Run(
             id=run_id,
             run_number=run_number,
