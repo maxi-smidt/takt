@@ -576,6 +576,33 @@ Tailscale-/WireGuard-Netz vorzuziehen. Hinter einem HTTPS-Reverse-Proxy muss
 Pi-`agent.toml` `ca_bundle = "/pfad/ca.pem"` gesetzt werden; `verify_tls = false`
 ist nur für eine kurzzeitige Diagnose gedacht.
 
+#### Vereinzelte 401-Antworten hinter einem Reverse-Proxy
+
+Die Registry läuft bewusst als ein einzelner Prozess pro Datenverzeichnis
+(eine Datei-Sperre verhindert einen zweiten Prozess auf demselben Verzeichnis).
+Werden aber mehrere Registry-Container mit **getrennten** Datenverzeichnissen
+hinter einem Load Balancer betrieben, hat jeder Container eigene
+Sitzungen; Anfragen, die abwechselnd an unterschiedliche Container gehen,
+scheitern dann unvorhersehbar mit `401`. Für einen Reverse-Proxy vor der
+Registry (z. B. nginx, SWAG, Nginx Proxy Manager auf Unraid) gilt deshalb:
+
+- Nur **ein** Registry-Container/-Prozess als Upstream-Ziel verwenden.
+- Den `Cookie`-Header unverändert an die Registry durchreichen (kein
+  Entfernen, Umschreiben oder Cachen der Antwort für `/api/*`-Pfade).
+- Bei Verdacht auf ein Proxy-Problem probeweise auf HTTP/1.1 oder HTTP/2
+  zurückschalten, um HTTP/3-spezifische Cookie-Weiterleitung als
+  Fehlerquelle auszuschließen.
+
+Zur Diagnose schreibt die Registry bei jeder gescheiterten Sitzungsprüfung
+eine Zeile mit `session_verify_failed reason=...`
+(`missing_cookie`, `unknown_token`, `expired`, `revoked` oder
+`disabled_user`) sowie beim eigentlichen `401` eine Zeile
+`session_verify_401 path=... cookie_present=...` in die Container-Logs
+(`docker compose logs registry`). `cookie_present=False` zu den
+Zeitpunkten der gemeldeten Fehler zeigt zuverlässig, dass der Proxy den
+`Cookie`-Header nicht durchreicht; `cookie_present=True` mit einem anderen
+`reason` deutet dagegen auf eine echte, serverseitige Ursache hin.
+
 Die Registry installiert derzeit TAKT-Anwendungsversionen. Vollständige,
 ausfallsichere Raspberry-Pi-OS-Abbilder mit A/B-Rollback sind ein eigener
 Update-Typ und nicht Bestandteil dieses ersten Registry-Stands.

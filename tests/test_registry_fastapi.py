@@ -329,9 +329,12 @@ class FastApiRegistryTests(unittest.TestCase):
                     client.cookies.set(COOKIE_NAME, "not-a-real-session-token")
                     expired_status = client.get("/api/session")
                     self.assertFalse(expired_status.json()["authenticated"])
-                    expired_devices = client.get("/api/devices")
+                    with self.assertLogs("takt.registry.fastapi_app", level="WARNING") as logs:
+                        expired_devices = client.get("/api/devices")
                     self.assertEqual(expired_devices.status_code, 401)
                     self.assertEqual(expired_devices.text, "Login required.")
+                    self.assertIn("session_verify_401", logs.output[0])
+                    self.assertIn("cookie_present=True", logs.output[0])
             finally:
                 store.close()
 
@@ -360,9 +363,18 @@ class FastApiRegistryTests(unittest.TestCase):
                     client.cookies.set(COOKIE_NAME, "not-a-real-session-token")
                     expired_status = client.get("/api/session")
                     self.assertFalse(expired_status.json()["authenticated"])
-                    expired_devices = client.get("/api/devices")
+                    with self.assertLogs("takt.registry.fastapi_app", level="WARNING") as logs:
+                        expired_devices = client.get("/api/devices")
                     self.assertEqual(expired_devices.status_code, 401)
                     self.assertEqual(expired_devices.text, "Login required.")
+                    self.assertIn("session_verify_401", logs.output[0])
+                    self.assertIn("cookie_present=True", logs.output[0])
+
+                    client.cookies.delete(COOKIE_NAME)
+                    with self.assertLogs("takt.registry.fastapi_app", level="WARNING") as logs:
+                        missing_cookie = client.get("/api/devices")
+                    self.assertEqual(missing_cookie.status_code, 401)
+                    self.assertIn("cookie_present=False", logs.output[0])
             finally:
                 store.close()
 

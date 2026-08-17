@@ -4,12 +4,15 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import sqlite3
 import unicodedata
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
 PASSWORD_MIN_LENGTH = 12
@@ -360,6 +363,7 @@ class AccountStore:
 
     def verify_session(self, token: str) -> dict[str, Any] | None:
         if not token:
+            LOGGER.info("session_verify_failed reason=missing_cookie")
             return None
         row = self.connection.execute(
             """
@@ -371,9 +375,21 @@ class AccountStore:
             """,
             (hashlib.sha256(token.encode()).hexdigest(),),
         ).fetchone()
-        if row is None or row["revoked_at"] is not None or row["disabled_at"] is not None:
+        if row is None:
+            LOGGER.info("session_verify_failed reason=unknown_token")
+            return None
+        if row["revoked_at"] is not None:
+            LOGGER.info("session_verify_failed reason=revoked user_id=%s", row["user_id"])
+            return None
+        if row["disabled_at"] is not None:
+            LOGGER.info("session_verify_failed reason=disabled_user user_id=%s", row["user_id"])
             return None
         if datetime.fromisoformat(row["expires_at"]) <= datetime.now(UTC):
+            LOGGER.info(
+                "session_verify_failed reason=expired user_id=%s expires_at=%s",
+                row["user_id"],
+                row["expires_at"],
+            )
             return None
         with self.connection:
             self.connection.execute(
