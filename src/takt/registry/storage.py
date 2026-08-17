@@ -78,6 +78,7 @@ class RegistryStore(
         self.database_path.chmod(0o600)
         self._job_secret_cipher: JobSecretCipher | None = None
         self.bundled_release_status: dict[str, Any] = {"status": "absent"}
+        self.bundled_release_directory: Path | None = None
         if previous_version > SCHEMA_VERSION:
             raise RuntimeError(
                 f"Registry database schema {previous_version} is newer than this "

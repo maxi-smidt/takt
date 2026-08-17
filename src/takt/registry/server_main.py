@@ -70,8 +70,11 @@ def main(argv: list[str] | None = None) -> int:
     lock_handle = _acquire_instance_lock(data_directory)
     store = RegistryStore(data_directory, allow_thread_handoff=True)
     bundled_release_directory = os.environ.get("TAKT_BUNDLED_RELEASE_DIR")
+    store.bundled_release_directory = (
+        Path(bundled_release_directory) if bundled_release_directory else None
+    )
     store.bundled_release_status = import_bundled_release(
-        store, Path(bundled_release_directory) if bundled_release_directory else None
+        store, store.bundled_release_directory
     )
     LOGGER.info("bundled_release_import status=%s", store.bundled_release_status)
     if args.admin_username and len(password) < PASSWORD_MIN_LENGTH:

@@ -10,7 +10,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from takt import __version__
-from takt.registry.bundled_release import _stage_and_call, import_bundled_release
+from takt.registry.bundled_release import (
+    ReleaseUnavailableError,
+    _stage_and_call,
+    ensure_release_cached,
+    import_bundled_release,
+)
 from takt.registry.storage import RegistryStore
 
 
@@ -421,6 +426,116 @@ class BundledReleaseImportTests(unittest.TestCase):
                 self.assertEqual(status["reason"], "corrupt")
                 self.assertEqual(store.list_releases(), [])
                 self.assertTrue(store.health()["ok"])
+            finally:
+                store.close()
+
+
+class EnsureReleaseCachedTests(unittest.TestCase):
+    def test_returns_existing_path_without_touching_the_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = RegistryStore(root / "data")
+            try:
+                source = root / "release.tar.gz"
+                source.write_bytes(b"release")
+                release = store.add_release(
+                    version="0.2.0",
+                    filename="release.tar.gz",
+                    sha256=hashlib.sha256(b"release").hexdigest(),
+                    size=7,
+                    source=source,
+                )
+                store.bundled_release_directory = None
+                path = ensure_release_cached(store, release)
+                self.assertTrue(path.is_file())
+                self.assertEqual(path, store.release_path(release["id"]))
+            finally:
+                store.close()
+
+    def test_uninstalled_bundled_release_is_restored_on_demand(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            data_directory = root / "data"
+            bundle_directory = root / "bundle"
+            bundle_directory.mkdir()
+            _write_bundle(bundle_directory, version=__version__)
+
+            store = RegistryStore(data_directory)
+            store.bundled_release_directory = bundle_directory
+            try:
+                import_bundled_release(store, bundle_directory)
+                release = store.list_releases()[0]
+
+                uninstalled = store.uninstall_release(release["id"])
+                self.assertFalse(uninstalled["installed"])
+                self.assertFalse(store.release_path(release["id"]).is_file())
+
+                path = ensure_release_cached(store, release)
+                self.assertTrue(path.is_file())
+                self.assertEqual(path, store.release_path(release["id"]))
+            finally:
+                store.close()
+
+    def test_uninstalled_uploaded_release_without_a_bundle_match_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = RegistryStore(root / "data")
+            try:
+                source = root / "release.tar.gz"
+                source.write_bytes(b"release")
+                release = store.add_release(
+                    version="0.2.0",
+                    filename="release.tar.gz",
+                    sha256=hashlib.sha256(b"release").hexdigest(),
+                    size=7,
+                    source=source,
+                )
+                store.uninstall_release(release["id"])
+                with self.assertRaises(ReleaseUnavailableError):
+                    ensure_release_cached(store, release)
+            finally:
+                store.close()
+
+
+class UninstallReleaseTests(unittest.TestCase):
+    def test_uninstall_removes_the_blob_but_keeps_the_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = RegistryStore(root / "data")
+            try:
+                source = root / "release.tar.gz"
+                source.write_bytes(b"release")
+                release = store.add_release(
+                    version="0.2.0",
+                    filename="release.tar.gz",
+                    sha256=hashlib.sha256(b"release").hexdigest(),
+                    size=7,
+                    source=source,
+                )
+                self.assertTrue(release["installed"])
+
+                uninstalled = store.uninstall_release(release["id"])
+                self.assertFalse(uninstalled["installed"])
+                self.assertEqual(uninstalled["version"], "0.2.0")
+                self.assertFalse(store.release_path(release["id"]).is_file())
+
+                fetched = store.get_release(release["id"])
+                assert fetched is not None
+                self.assertFalse(fetched["installed"])
+                self.assertEqual(fetched["version"], "0.2.0")
+
+                # Idempotent: uninstalling again is a no-op, not an error.
+                again = store.uninstall_release(release["id"])
+                self.assertFalse(again["installed"])
+            finally:
+                store.close()
+
+    def test_uninstalling_an_unknown_release_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            store = RegistryStore(Path(temporary_directory) / "data")
+            try:
+                with self.assertRaises(LookupError):
+                    store.uninstall_release("missing")
             finally:
                 store.close()
 

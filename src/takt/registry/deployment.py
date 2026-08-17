@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import asyncssh
 
 from takt.protocol import PROTOCOL_VERSION
+from takt.registry.bundled_release import ensure_release_cached
 from takt.registry.storage import RegistryStore
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
@@ -510,6 +511,7 @@ class DeploymentManager:
         release = self.store.get_release(deployment["release_id"])
         if release is None:
             raise ValueError("Release no longer exists.")
+        release_path = await asyncio.to_thread(ensure_release_cached, self.store, release)
         quoted_dir = shlex.quote(remote_dir)
         stdout, stderr, exit_status = await self._command(
             connection,
@@ -536,7 +538,7 @@ class DeploymentManager:
         try:
             async with connection.start_sftp_client() as sftp:
                 await asyncio.wait_for(
-                    sftp.put(str(self.store.release_path(release["id"])), archive),
+                    sftp.put(str(release_path), archive),
                     timeout=TRANSFER_TIMEOUT,
                 )
                 await asyncio.wait_for(

@@ -56,19 +56,50 @@ class ReleasesMixin(_Base):
 
     def list_releases(self) -> list[dict[str, Any]]:
         with self._read() as conn:
-            return [
+            rows = [
                 dict(row)
                 for row in conn.exec_driver_sql(
                     "SELECT * FROM releases ORDER BY created_at DESC"
                 ).mappings().all()
             ]
+        for row in rows:
+            row["installed"] = self.release_path(row["id"]).is_file()
+        return rows
 
     def get_release(self, release_id: str) -> dict[str, Any] | None:
         with self._read() as conn:
             row = conn.exec_driver_sql(
                 "SELECT * FROM releases WHERE id = ?", (release_id,)
             ).mappings().fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        release = dict(row)
+        release["installed"] = self.release_path(release_id).is_file()
+        return release
+
+    def uninstall_release(self, release_id: str) -> dict[str, Any]:
+        """Delete the locally cached archive for a release, keeping its row.
+
+        The release stays visible with its full history; only the on-disk
+        `.tar.gz` blob is removed. A later job that needs the bytes will
+        transparently repair them from the bundled image artifact (see
+        `bundled_release.ensure_release_cached`) if it still matches, or
+        fail clearly if it doesn't.
+        """
+        release = self.get_release(release_id)
+        if release is None:
+            raise LookupError("Release does not exist.")
+        path = self.release_path(release_id)
+        if path.is_file():
+            path.unlink()
+            with self._transaction():
+                self._audit(
+                    "release_uninstalled",
+                    details={"version": release["version"], "sha256": release["sha256"]},
+                )
+        updated = self.get_release(release_id)
+        assert updated is not None
+        return updated
 
     def get_release_by_version(self, version: str) -> dict[str, Any] | None:
         with self._read() as conn:

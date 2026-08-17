@@ -119,6 +119,23 @@ export function useFleetDashboard({ session, refreshSession }) {
     }
   };
 
+  const uninstallRelease = async (release) => {
+    if (!window.confirm(
+      `Uninstall release ${release.version}? The cached archive is deleted; the version `
+      + "stays listed and can be redownloaded on demand.",
+    )) return;
+    try {
+      await request(
+        `/api/releases/${release.id}/uninstall`,
+        { method: "POST", body: JSON.stringify({}) },
+        session.csrf_token,
+      );
+      await load();
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+
   const revokeDevice = async (device) => {
     if (!window.confirm(`${device.name}: permanently revoke this device credential?`)) return;
     try {
@@ -160,6 +177,7 @@ export function useFleetDashboard({ session, refreshSession }) {
     forceClearJob,
     acknowledgeRecovery,
     revokeDevice,
+    uninstallRelease,
     logout,
   };
 }

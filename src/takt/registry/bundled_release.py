@@ -36,6 +36,10 @@ class ReleaseValidationError(Exception):
     """A release archive failed structural or version validation."""
 
 
+class ReleaseUnavailableError(Exception):
+    """A release's locally cached archive is missing and can't be restored."""
+
+
 def validate_release_archive(path: Path, expected_version: str) -> None:
     """Validate that ``path`` is a well-formed TAKT release archive.
 
@@ -227,6 +231,27 @@ def import_bundled_release(store: RegistryStore, directory: Path | None) -> dict
         ),
         version=version,
         sha256=actual_sha256,
+    )
+
+
+def ensure_release_cached(store: RegistryStore, release: dict[str, Any]) -> Path:
+    """Return the on-disk archive path for ``release``, repairing it first if needed.
+
+    An uninstalled release keeps its database row but not its `.tar.gz` blob
+    (see ``RegistryStore.uninstall_release``). If this image still bundles the
+    exact same release, re-running the bundled-release import restores it
+    on demand; otherwise there is nothing to redownload from and we raise.
+    """
+    path = store.release_path(release["id"])
+    if path.is_file():
+        return path
+    if store.bundled_release_directory is not None:
+        import_bundled_release(store, store.bundled_release_directory)
+        if path.is_file():
+            return path
+    raise ReleaseUnavailableError(
+        f"Release {release['version']} was uninstalled and this image can no "
+        "longer restore it automatically; re-upload it to install this version."
     )
 
 
