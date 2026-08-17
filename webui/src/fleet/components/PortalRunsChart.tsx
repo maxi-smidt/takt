@@ -94,8 +94,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
             name="Ist-Zeit"
             stackId="run-time"
             stroke="var(--green)"
-            fill="var(--green)"
-            fillOpacity={0.28}
+            fill="none"
             strokeWidth={2}
             dot={{ r: 3 }}
           />
