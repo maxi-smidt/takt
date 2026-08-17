@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useState } from "react";
 import {
   Archive,
@@ -14,16 +13,23 @@ import {
   WifiOff,
   Zap,
 } from "lucide-react";
+import type { Device } from "../../shared/contracts";
+import { Button, Callout, IconButton } from "../../shared/ui";
 import { useFleetDashboard } from "../hooks/useFleetDashboard";
-import { DeviceCard } from "./DeviceCard";
-import { JobRow } from "./JobRow";
-import { EnrollmentModal } from "./EnrollmentModal";
-import { ReleaseModal } from "./ReleaseModal";
-import { WifiModal } from "./WifiModal";
 import { ConfirmModal } from "./ConfirmModal";
+import { DeviceCard } from "./DeviceCard";
+import { EnrollmentModal } from "./EnrollmentModal";
+import { JobRow } from "./JobRow";
+import { ReleaseModal } from "./ReleaseModal";
 import { UserAdminPanel } from "./UserAdminPanel";
+import { WifiModal } from "./WifiModal";
 
-export function Dashboard({ session, refreshSession }) {
+interface DashboardProps {
+  session: { csrf_token: string };
+  refreshSession: () => Promise<void>;
+}
+
+export function Dashboard({ session, refreshSession }: DashboardProps) {
   const {
     devices,
     releases,
@@ -45,13 +51,13 @@ export function Dashboard({ session, refreshSession }) {
     uninstallRelease,
     logout,
   } = useFleetDashboard({ session, refreshSession });
-  const [modal, setModal] = useState(null);
-  const [wifiDevice, setWifiDevice] = useState(null);
-  const [confirmation, setConfirmation] = useState(null);
+  const [modal, setModal] = useState<"enroll" | "release" | null>(null);
+  const [wifiDevice, setWifiDevice] = useState<Device | null>(null);
+  const [confirmation, setConfirmation] = useState<{ device: Device; action: string } | null>(null);
 
   // Maintenance actions always go through the confirmation dialog, which is
   // also where an override for a busy timer is granted.
-  const confirmMaintenance = async (override) => {
+  const confirmMaintenance = async (override: boolean) => {
     const pending = confirmation;
     setConfirmation(null);
     if (pending) await submitJob(pending.device, pending.action, {}, override);
@@ -63,9 +69,9 @@ export function Dashboard({ session, refreshSession }) {
         <div className="brand"><div className="brand-mark"><Zap size={18} /></div><strong>TAKT <em>FLEET</em></strong></div>
         <div className="registry-state"><Radio size={14} /><span>REGISTRY ACTIVE</span></div>
         <div className="top-actions">
-          <button onClick={() => setModal("enroll")}><Plus size={15} /> ENROLL DEVICE</button>
-          <button onClick={() => setModal("release")}><Upload size={15} /> ADD RELEASE</button>
-          <button className="icon-button" onClick={logout} title="Log out"><LogOut size={17} /></button>
+          <Button variant="secondary" onClick={() => setModal("enroll")}><Plus size={15} /> ENROLL DEVICE</Button>
+          <Button variant="secondary" onClick={() => setModal("release")}><Upload size={15} /> ADD RELEASE</Button>
+          <IconButton variant="secondary" icon={<LogOut size={17} />} onClick={logout} aria-label="Log out" title="Log out" />
         </div>
       </header>
       <main>
@@ -77,13 +83,28 @@ export function Dashboard({ session, refreshSession }) {
             <div><Archive size={18} /><strong>{mirroredRuns}</strong><span>MIRRORED RUNS</span></div>
           </div>
         </section>
-        {insecureLan && <div className="security-warning"><WifiOff size={16} /><span><strong>UNENCRYPTED REGISTRY</strong> Use HTTPS or a private Tailscale/WireGuard network before installing releases or operating outside an isolated LAN.</span></div>}
-        {bundledRelease?.status === "error" && <div className="security-warning is-danger"><TriangleAlert size={16} /><span><strong>BUNDLED RELEASE UNAVAILABLE</strong> {bundledRelease.detail || `Reason: ${bundledRelease.reason}`}. Upload a release manually until this image is rebuilt.</span></div>}
-        {error && <div className="global-error"><WifiOff size={16} />{error}</div>}
-        <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><button onClick={load}><RefreshCw size={14} /> REFRESH</button></section>
+        {insecureLan && (
+          <Callout tone="warning">
+            <strong>UNENCRYPTED REGISTRY</strong> Use HTTPS or a private Tailscale/WireGuard network before installing releases or operating outside an isolated LAN.
+          </Callout>
+        )}
+        {bundledRelease?.status === "error" && (
+          <Callout tone="danger">
+            <strong>BUNDLED RELEASE UNAVAILABLE</strong> {bundledRelease.detail || `Reason: ${bundledRelease.reason}`}. Upload a release manually until this image is rebuilt.
+          </Callout>
+        )}
+        {error && <Callout tone="danger">{error}</Callout>}
+        <section className="section-heading"><div><span>01 · APPLIANCES</span><h2>RASPBERRY PI FLEET</h2></div><Button variant="secondary" onClick={load}><RefreshCw size={14} /> REFRESH</Button></section>
         <section className="device-grid">
           {devices.map((device) => <DeviceCard key={device.id} device={device} releases={releases} job={jobs.find((job) => job.device_id === device.id && job.action === "install_release")} diagnostics={diagnostics[device.id]} onJob={createJob} onCancel={cancelJob} onRetry={retryJob} onForceClear={forceClearJob} onRevoke={revokeDevice} onWifi={setWifiDevice} onMaintenance={(target, action) => setConfirmation({ device: target, action })} onAcknowledgeRecovery={acknowledgeRecovery} />)}
-          {!devices.length && <div className="empty-card"><Server size={28} /><h3>NO DEVICES ENROLLED</h3><p>Start a guided deployment to connect the first Raspberry Pi.</p><button className="primary-button" onClick={() => setModal("enroll")}>ENROLL FIRST DEVICE</button></div>}
+          {!devices.length && (
+            <div className="empty-card">
+              <Server size={28} />
+              <h3>NO DEVICES ENROLLED</h3>
+              <p>Start a guided deployment to connect the first Raspberry Pi.</p>
+              <Button variant="primary" onClick={() => setModal("enroll")}>ENROLL FIRST DEVICE</Button>
+            </div>
+          )}
         </section>
         <section className="operations">
           <div className="section-heading"><div><span>02 · ACTIVITY</span><h2>DEPLOYMENT JOBS</h2></div></div>

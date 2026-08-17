@@ -1,8 +1,9 @@
-// @ts-nocheck
 import { Check, LogOut, RefreshCw, Zap } from "lucide-react";
-import { usePortalRuns } from "../hooks/usePortalRuns";
-import { formatDate, formatDateTime, formatStopwatch, mirrorStateLabel } from "../formatters";
+import type { SessionResponse } from "../../shared/contracts";
+import { Button, Callout, IconButton } from "../../shared/ui";
 import { formatIsoDate } from "../dateInput";
+import { formatDate, formatDateTime, formatStopwatch, mirrorStateLabel } from "../formatters";
+import { type PortalRun, usePortalRuns } from "../hooks/usePortalRuns";
 import { DateField } from "./DateField";
 import { PortalRunsChart } from "./PortalRunsChart";
 
@@ -12,7 +13,7 @@ const TIMEFRAMES = [
   { id: "all", label: "GESAMT" },
 ];
 
-function activeTimeframe(from, to) {
+function activeTimeframe(from: string, to: string) {
   const today = formatIsoDate(new Date());
   const yearStart = formatIsoDate(new Date(new Date().getFullYear(), 0, 1));
   if (from === today && to === today) return "day";
@@ -21,7 +22,12 @@ function activeTimeframe(from, to) {
   return null;
 }
 
-export function Portal({ session, refreshSession }) {
+interface PortalProps {
+  session: SessionResponse;
+  refreshSession: () => Promise<void>;
+}
+
+export function Portal({ session, refreshSession }: PortalProps) {
   const {
     devices,
     deviceId,
@@ -37,7 +43,7 @@ export function Portal({ session, refreshSession }) {
     command,
   } = usePortalRuns({ session, refreshSession });
 
-  const applyTimeframe = (preset) => {
+  const applyTimeframe = (preset: string) => {
     const today = new Date();
     if (preset === "day") {
       const iso = formatIsoDate(today);
@@ -61,7 +67,7 @@ export function Portal({ session, refreshSession }) {
         <div className="brand"><div className="brand-mark"><Zap size={18} /></div><strong>TAKT <em>LÄUFE</em></strong></div>
         <div className="top-actions">
           <span className="portal-username">{session.user?.username}</span>
-          <button className="icon-button" onClick={logout} title="Abmelden"><LogOut size={17} /></button>
+          <IconButton variant="secondary" icon={<LogOut size={17} />} onClick={logout} aria-label="Abmelden" title="Abmelden" />
         </div>
       </header>
       <main>
@@ -72,10 +78,10 @@ export function Portal({ session, refreshSession }) {
             <p>Hier findest du die gespeicherten Läufe deiner Buzzer. Sie werden automatisch aktuell gehalten.</p>
           </div>
         </section>
-        {error && <div className="global-error">{error}</div>}
+        {error && <Callout tone="danger">{error}</Callout>}
         <section className="section-heading">
           <div><span>GERÄTE</span><h2>IHRE TAKT-GERÄTE</h2></div>
-          <button onClick={loadDevices}><RefreshCw size={14} /> AKTUALISIEREN</button>
+          <Button variant="secondary" onClick={loadDevices}><RefreshCw size={14} /> AKTUALISIEREN</Button>
         </section>
         <section className="device-grid">
           {devices.map((device) => (
@@ -107,13 +113,14 @@ export function Portal({ session, refreshSession }) {
             <div className="portal-filters">
               <div className="timeframe-group">
                 {TIMEFRAMES.map((timeframe) => (
-                  <button
+                  <Button
                     key={timeframe.id}
-                    className={"timeframe-button" + (currentTimeframe === timeframe.id ? " is-active" : "")}
+                    variant={currentTimeframe === timeframe.id ? "primary" : "ghost"}
+                    className="timeframe-toggle"
                     onClick={() => applyTimeframe(timeframe.id)}
                   >
                     {timeframe.label}
-                  </button>
+                  </Button>
                 ))}
               </div>
               <div className="portal-date-fields">
@@ -142,7 +149,7 @@ export function Portal({ session, refreshSession }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {runs.runs.map((run) => (
+                  {runs.runs.map((run: PortalRun) => (
                     <tr key={run.id}>
                       <td>{run.run_number}</td>
                       <td>{formatDate(run.session_date)}</td>
@@ -152,8 +159,8 @@ export function Portal({ session, refreshSession }) {
                       {canWrite && (
                         <td className="runs-actions">
                           <div className="runs-actions-buttons">
-                            <button className="secondary-button" onClick={() => command(run, "adjust_added_time", Math.max(0, run.added_time_ms + 5000))}>+5 s</button>
-                            <button className="secondary-button" onClick={() => command(run, "delete")}>LÖSCHEN</button>
+                            <Button variant="secondary" size="sm" onClick={() => command(run, "adjust_added_time", Math.max(0, run.added_time_ms + 5000))}>+5 s</Button>
+                            <Button variant="secondary" size="sm" onClick={() => command(run, "delete")}>LÖSCHEN</Button>
                           </div>
                         </td>
                       )}

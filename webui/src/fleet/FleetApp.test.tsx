@@ -5,6 +5,23 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import App from "./FleetApp";
 
+// jsdom's DOM lib types claim these exist, but jsdom doesn't implement them at
+// runtime — Radix Select (used by AccessModal) calls them when its listbox
+// opens/positions/closes.
+Element.prototype.hasPointerCapture = () => false;
+Element.prototype.releasePointerCapture = () => {};
+Element.prototype.scrollIntoView = () => {};
+if (typeof window.PointerEvent === "undefined") {
+  class PointerEventPolyfill extends MouseEvent {
+    pointerType: string;
+    constructor(type: string, params: PointerEventInit = {}) {
+      super(type, params);
+      this.pointerType = params.pointerType ?? "mouse";
+    }
+  }
+  window.PointerEvent = PointerEventPolyfill as unknown as typeof PointerEvent;
+}
+
 async function flush(times = 25) {
   for (let i = 0; i < times; i += 1) {
     await Promise.resolve();
@@ -140,20 +157,36 @@ describe("UserAdminPanel device access", () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   }
 
-  function setSelectValue(select: HTMLSelectElement, value: string) {
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLSelectElement.prototype,
-      "value",
-    )?.set;
-    setter?.call(select, value);
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+  function dispatchPointer(el: Element, type: string) {
+    el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId: 1 }));
   }
 
   function findAccessRow(deviceName: string) {
     const rows = Array.from(document.querySelectorAll(".access-row"));
     const row = rows.find((candidate) => candidate.textContent?.includes(deviceName));
     if (!row) throw new Error(`Access row not found for ${deviceName}`);
-    return row.querySelector("select") as HTMLSelectElement;
+    return row as HTMLElement;
+  }
+
+  // AccessModal's access-level control is a Radix Select (role="combobox" trigger
+  // + a portalled role="listbox"), not a native <select> — drive the same pointer
+  // sequence a real click would produce instead of setting .value directly.
+  async function chooseAccessLevel(deviceName: string, label: string) {
+    const trigger = findAccessRow(deviceName).querySelector("[role='combobox']") as HTMLElement;
+    await act(async () => {
+      dispatchPointer(trigger, "pointerdown");
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    const option = Array.from(document.querySelectorAll("[role='option']")).find(
+      (candidate) => candidate.textContent?.trim() === label,
+    ) as HTMLElement | undefined;
+    if (!option) throw new Error(`Option not found: ${label}`);
+    await act(async () => {
+      dispatchPointer(option, "pointerup");
+      option.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
   }
 
   it("grants several devices, changes an access level, and revokes access", async () => {
@@ -216,14 +249,8 @@ describe("UserAdminPanel device access", () => {
     });
 
     // Grant read access to Bahn 1 and write access to Bahn 2.
-    await act(async () => {
-      setSelectValue(findAccessRow("Bahn 1"), "read");
-      await flush();
-    });
-    await act(async () => {
-      setSelectValue(findAccessRow("Bahn 2"), "write");
-      await flush();
-    });
+    await chooseAccessLevel("Bahn 1", "READ");
+    await chooseAccessLevel("Bahn 2", "WRITE");
 
     const summaryText = () => document.querySelector(".access-summary")?.textContent ?? "";
 
@@ -233,18 +260,12 @@ describe("UserAdminPanel device access", () => {
     expect(summaryText()).toContain("Bahn 2 · WRITE");
 
     // Change Bahn 1's level from read to write.
-    await act(async () => {
-      setSelectValue(findAccessRow("Bahn 1"), "write");
-      await flush();
-    });
+    await chooseAccessLevel("Bahn 1", "WRITE");
     expect(grantCalls).toContainEqual({ deviceId: "d1", access: "write" });
     expect(summaryText()).toContain("Bahn 1 · WRITE");
 
     // Revoke Bahn 2 entirely.
-    await act(async () => {
-      setSelectValue(findAccessRow("Bahn 2"), "none");
-      await flush();
-    });
+    await chooseAccessLevel("Bahn 2", "NO ACCESS");
     expect(revokeCalls).toContain("d2");
     expect(summaryText()).not.toContain("Bahn 2");
     expect(summaryText()).toContain("Bahn 1 · WRITE");

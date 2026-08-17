@@ -12,13 +12,15 @@ import {
 } from "recharts";
 import { formatDate, formatStopwatch } from "../formatters";
 
-interface PortalRun {
+export interface PortalRun {
   id: number;
+  run_number: number;
   session_date: string;
   started_at: string;
   actual_time_ms: number;
   added_time_ms: number;
   total_time_ms: number;
+  updated_at?: string;
 }
 
 interface PortalRunsChartProps {
