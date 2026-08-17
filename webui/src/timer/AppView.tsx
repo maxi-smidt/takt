@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Button, IconButton, Select } from "../shared/ui";
 import { useScreenAwake } from "../useScreenAwake";
 import { useTaktServer } from "../useTaktServer";
 
@@ -146,15 +147,14 @@ function Header({ connection, dateText, onOpenSettings, settingsDisabled }) {
           <CalendarDays size={14} />
           <span>{dateText}</span>
         </div>
-        <button
+        <IconButton
+          variant="secondary"
           className="icon-button settings-trigger"
-          type="button"
+          icon={<Settings size={18} />}
           onClick={onOpenSettings}
           disabled={settingsDisabled}
           aria-label="Einstellungen öffnen"
-        >
-          <Settings size={18} />
-        </button>
+        />
       </div>
     </header>
   );
@@ -188,10 +188,10 @@ function StopwatchValue({ value, hero = false }) {
 
 function ActionButton({ icon: Icon, children, className = "", ...props }) {
   return (
-    <button type="button" className={`action-button ${className}`} {...props}>
+    <Button variant="secondary" className={`action-button ${className}`} {...props}>
       {Icon && <Icon size={16} strokeWidth={2.4} />}
       <span>{children}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -508,16 +508,16 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
   const switcher = (
     <div className="period-switch">
       {PERIODS.map(([value, label]) => (
-        <button
+        <Button
           key={value}
-          type="button"
+          variant="secondary"
           data-short={value === "all" ? "ALLE" : value}
           aria-pressed={chartDays === value}
           className={chartDays === value ? "is-active" : ""}
           onClick={() => onPeriodChange(value)}
         >
           {label}
-        </button>
+        </Button>
       ))}
     </div>
   );
@@ -763,15 +763,15 @@ function AudioSettingsPanel({ audio, onRequest }) {
             ["aux", Cable, "AUX"],
             ["bluetooth", Bluetooth, "BLUETOOTH"],
           ].map(([value, Icon, label]) => (
-            <button
+            <Button
               key={value}
-              type="button"
+              variant="secondary"
               className={draft.output === value ? "is-active" : ""}
               aria-pressed={draft.output === value}
               onClick={() => setDraft((current) => ({ ...current, output: value }))}
             >
               <Icon size={16} />{label}
-            </button>
+            </Button>
           ))}
         </div>
         <label className="audio-delay">
@@ -816,48 +816,45 @@ function AudioSettingsPanel({ audio, onRequest }) {
         {draft.output === "bluetooth" && (
           <div className="bluetooth-controls">
             <div className="bluetooth-device-row">
-              <select
+              <Select
+                className="bluetooth-select"
                 value={selectedAddress}
-                onChange={(event) => setSelectedAddress(event.target.value)}
-                disabled={!audio.bluetooth_available || busy}
+                onValueChange={setSelectedAddress}
+                disabled={!audio.bluetooth_available || Boolean(busy)}
                 aria-label="Bluetooth-Lautsprecher"
-              >
-                <option value="">Lautsprecher auswählen …</option>
-                {selectedAddress
-                  && !audio.devices.some((device) => device.address === selectedAddress) && (
-                    <option value={selectedAddress}>
-                      {draft.device_name || selectedAddress}
-                    </option>
-                )}
-                {audio.devices.map((device) => (
-                  <option key={device.address} value={device.address}>
-                    {device.name}
-                    {device.connected ? " · verbunden" : device.paired ? " · gekoppelt" : ""}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
+                placeholder="Lautsprecher auswählen …"
+                options={[
+                  ...(selectedAddress && !audio.devices.some((device) => device.address === selectedAddress)
+                    ? [{ value: selectedAddress, label: draft.device_name || selectedAddress }]
+                    : []),
+                  ...audio.devices.map((device) => ({
+                    value: device.address,
+                    label: device.name + (device.connected ? " · verbunden" : device.paired ? " · gekoppelt" : ""),
+                  })),
+                ]}
+              />
+              <Button
+                variant="secondary"
                 disabled={!audio.bluetooth_available || Boolean(busy)}
                 onClick={() => request("scan", {}, "Bluetooth-Suche abgeschlossen.").catch(() => {})}
               >
                 <RefreshCw size={14} />{scanning ? "SUCHE …" : "SUCHEN"}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="secondary"
                 disabled={!selectedAddress || Boolean(busy)}
                 onClick={connect}
               >
                 <Bluetooth size={14} />{busy === "connect" ? "VERBINDE …" : "VERBINDEN"}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="danger"
                 className="bluetooth-forget"
                 disabled={!selectedAddress || Boolean(busy)}
                 onClick={forget}
               >
                 <Trash2 size={14} />{busy === "forget" ? "ENTFERNE …" : "ENTFERNEN"}
-              </button>
+              </Button>
             </div>
             {audio.scanning && (
               <div className="audio-note">
@@ -882,16 +879,16 @@ function AudioSettingsPanel({ audio, onRequest }) {
         )}
         <div className="audio-settings-footer">
           <div className="audio-feedback">{message}</div>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
             onClick={test}
             disabled={draft.output === "off" || !audio.playback_available || Boolean(busy)}
           >
             <Volume2 size={14} />{busy === "test" ? "SPIELE …" : "TESTTON"}
-          </button>
-          <button type="button" className="audio-save" onClick={save} disabled={Boolean(busy)}>
+          </Button>
+          <Button variant="primary" className="audio-save" onClick={save} disabled={Boolean(busy)}>
             <Save size={14} />ÜBERNEHMEN
-          </button>
+          </Button>
         </div>
       </section>
     </>
@@ -942,29 +939,27 @@ function SettingsModal({
             <span>KONFIGURATION</span>
             <h2 id="settings-title">EINSTELLUNGEN</h2>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Schließen">
-            <X size={19} />
-          </button>
+          <IconButton variant="secondary" className="icon-button" icon={<X size={19} />} onClick={onClose} aria-label="Schließen" />
         </header>
         <div className="settings-system-grid">
           <div className="system-tile">
             <MonitorUp size={18} />
             <div><span>ANZEIGE</span><strong>Browser auf diesem Gerät</strong></div>
-            <button type="button" onClick={toggleFullscreen}>
+            <Button variant="secondary" onClick={toggleFullscreen}>
               <Expand size={14} />{fullscreen ? "VOLLBILD BEENDEN" : "VOLLBILD"}
-            </button>
+            </Button>
           </div>
           <div className="system-tile">
             <CirclePower size={18} />
             <div><span>SYSTEM</span><strong>{system.model || "Lokaler TAKT-Server"}</strong></div>
-            <button
-              type="button"
+            <Button
+              variant="danger"
               className="shutdown-control"
               disabled={!system.shutdown_available || pending.confirmation}
               onClick={() => onPrepare("shutdown")}
             >
               HERUNTERFAHREN
-            </button>
+            </Button>
           </div>
           <div className="system-tile export-tile">
             <Download size={18} />
@@ -973,20 +968,20 @@ function SettingsModal({
               <strong>DB oder CSV herunterladen</strong>
             </div>
             <div className="export-actions">
-              <button
-                type="button"
+              <Button
+                variant="secondary"
                 disabled={Boolean(exportBusy) || pending.export}
                 onClick={() => onExport("db")}
               >
                 <Download size={14} />{exportBusy === "db" ? "LÄDT …" : "DATENBANK (.DB)"}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="secondary"
                 disabled={Boolean(exportBusy) || pending.export}
                 onClick={() => onExport("csv")}
               >
                 <Download size={14} />{exportBusy === "csv" ? "LÄDT …" : "LÄUFE (.CSV)"}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -1040,26 +1035,26 @@ function SettingsModal({
             <span>AUSGEWÄHLTEN ZUSCHLAG</span>
             <div className="curation-buttons">
               {[-10000, -5000, 5000, 10000].map((delta) => (
-                <button
+                <Button
                   key={delta}
-                  type="button"
+                  variant="secondary"
                   disabled={!selectedRunId || pending.confirmation}
                   onClick={() => onPrepare("adjust", selectedRunId, delta)}
                 >
                   {delta > 0 ? <Plus size={12} /> : <Minus size={12} />}
                   {Math.abs(delta / 1000)} SEK
-                </button>
+                </Button>
               ))}
             </div>
           </div>
-          <button
+          <Button
+            variant="danger"
             className="delete-control"
-            type="button"
             disabled={!selectedRunId || pending.confirmation}
             onClick={() => onPrepare("delete", selectedRunId)}
           >
             <Trash2 size={15} />LAUF LÖSCHEN
-          </button>
+          </Button>
         </div>
         <div className="settings-feedback" role="status" aria-live="polite">{feedback}</div>
       </section>
@@ -1098,15 +1093,15 @@ function ConfirmationModal({ confirmation, busy, onCancel, onConfirm }) {
         )}
         {confirmation.warning && <div className="confirmation-warning">{confirmation.warning}</div>}
         <div className="confirmation-actions">
-          <button type="button" onClick={onCancel}>ABBRECHEN</button>
-          <button
-            type="button"
+          <Button variant="secondary" onClick={onCancel}>ABBRECHEN</Button>
+          <Button
+            variant={destructive ? "danger" : "primary"}
             className={destructive ? "is-danger" : "is-confirm"}
             onClick={onConfirm}
             disabled={busy}
           >
             {busy ? "BITTE WARTEN …" : confirmation.confirm_label}
-          </button>
+          </Button>
         </div>
       </section>
     </div>
