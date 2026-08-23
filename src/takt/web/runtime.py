@@ -101,6 +101,8 @@ class WebRuntime:
         self._refresh_task: asyncio.Task[None] | None = None
         self._start_task: asyncio.Task[None] | None = None
         self._sound_task: asyncio.Task[None] | None = None
+        self._run_signal_task: asyncio.Task[None] | None = None
+        self._last_run_signal: str | None = None
         self._broadcast_tasks: set[asyncio.Task[None]] = set()
         self._gesture_deadline_handle: asyncio.TimerHandle | None = None
         self._gesture_monotonic = gesture_monotonic
@@ -133,6 +135,9 @@ class WebRuntime:
         if self._sound_task is not None:
             self._sound_task.cancel()
             await asyncio.gather(self._sound_task, return_exceptions=True)
+        if self._run_signal_task is not None:
+            self._run_signal_task.cancel()
+            await asyncio.gather(self._run_signal_task, return_exceptions=True)
         if self._broadcast_tasks:
             await asyncio.gather(*self._broadcast_tasks, return_exceptions=True)
         if self._gesture_deadline_handle is not None:
@@ -186,6 +191,7 @@ class WebRuntime:
     def _start_or_sequence(self, source: str) -> bool:
         if self._maintenance_active():
             return False
+        self._stop_run_signal_sound()
         self._start_error = None
         if not self.audio_service.enabled:
             return self.controller.start(source)
@@ -227,9 +233,38 @@ class WebRuntime:
         if run is None:
             return False
         LOGGER.info("physical_save source=%s run_id=%s", source, run.id)
+        self._last_run_signal = self._classify_run_signal(run.id)
+        self._schedule_run_signal(self._last_run_signal)
         self.history_revision += 1
+        self._schedule_state_broadcast()
         self._schedule_history_broadcast()
         return True
+
+    def _classify_run_signal(self, run_id: int | None) -> str | None:
+        if run_id is None:
+            return None
+        best_runs = self.repository.get_best_runs(5)
+        if best_runs and best_runs[0].id == run_id:
+            return "best_run_signal"
+        if any(run.id == run_id for run in best_runs):
+            return "top_five_run_signal"
+        if any(run.id == run_id for run in self.repository.get_worst_runs(10)):
+            return "worst_ten_run_signal"
+        return None
+
+    def _schedule_run_signal(self, signal: str | None) -> None:
+        if signal is None or not self.audio_service.run_signals_enabled:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._stop_run_signal_sound()
+        task = loop.create_task(self.audio_service.play_run_signal(signal))
+        self._run_signal_task = task
+        task.add_done_callback(
+            lambda completed: self._on_run_signal_finished(signal, completed)
+        )
 
     def _gesture_mode(self) -> GestureMode:
         if self._maintenance_active():
@@ -390,6 +425,14 @@ class WebRuntime:
             "error": self._start_error,
         }
         payload["sound_playing"] = self._sound_task is not None and not self._sound_task.done()
+        payload["sound_playing"] = payload["sound_playing"] or (
+            self._run_signal_task is not None and not self._run_signal_task.done()
+        )
+        payload["run_signal"] = (
+            self._last_run_signal
+            if self.controller.state is TimerState.SAVED_CONFIRMATION
+            else None
+        )
         payload["maintenance"] = self.maintenance_status()
         return payload
 
@@ -429,6 +472,7 @@ class WebRuntime:
         delay_milliseconds: int,
         device_address: str | None,
         device_name: str | None,
+        run_signals_enabled: bool | None = None,
     ) -> dict[str, object]:
         self.audio_service.update_settings(
             enabled=enabled,
@@ -436,6 +480,7 @@ class WebRuntime:
             delay_milliseconds=delay_milliseconds,
             device_address=device_address,
             device_name=device_name,
+            run_signals_enabled=run_signals_enabled,
         )
         return self.system_payload()
 
@@ -676,6 +721,12 @@ class WebRuntime:
             task.cancel()
         self._sound_task = None
 
+    def _stop_run_signal_sound(self) -> None:
+        task = self._run_signal_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._run_signal_task = None
+
     def _maintenance_active(self) -> bool:
         self._expire_maintenance()
         return self._maintenance_lease is not None or self._persistent_maintenance_active()
@@ -791,6 +842,17 @@ class WebRuntime:
                 exc_info=(type(error), error, error.__traceback__),
             )
             self._start_error = str(error)
+        self._schedule_state_broadcast()
+
+    def _on_run_signal_finished(self, signal: str, task: asyncio.Task[None]) -> None:
+        if self._run_signal_task is task:
+            self._run_signal_task = None
+        if not task.cancelled() and (error := task.exception()) is not None:
+            LOGGER.error(
+                "run_signal_ended_with_error signal=%s",
+                signal,
+                exc_info=(type(error), error, error.__traceback__),
+            )
         self._schedule_state_broadcast()
 
     def _schedule_state_broadcast(self) -> None:

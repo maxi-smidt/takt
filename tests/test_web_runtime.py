@@ -6,11 +6,13 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from takt.application.timer_controller import TimerController
 from takt.config import Config
+from takt.domain.duration import Duration
 from takt.domain.timer_state import TimerState
 from takt.persistence.run_repository import SQLiteRunRepository
 from takt.web.runtime import MaintenanceLeaseMismatch, MaintenanceUnavailable, WebRuntime
@@ -62,6 +64,24 @@ class DelayedAudioService:
             "delay_milliseconds": 10,
             "clip_duration_milliseconds": 1_000,
         }
+
+    async def close(self) -> None:
+        pass
+
+
+class RecordingRunSignalAudioService:
+    enabled = False
+    delay_seconds = 0.0
+
+    def __init__(self, *, run_signals_enabled: bool = True) -> None:
+        self.run_signals_enabled = run_signals_enabled
+        self.signals: list[str] = []
+
+    async def play_run_signal(self, signal: str) -> None:
+        self.signals.append(signal)
+
+    def payload(self) -> dict[str, object]:
+        return {}
 
     async def close(self) -> None:
         pass
@@ -193,6 +213,66 @@ class WebRuntimeTests(unittest.TestCase):
         self.gesture_time = 2.0
         self.runtime._on_gesture_deadline()
         self.assertEqual(len(self.repository.get_all_runs()), 1)
+
+    def test_new_best_run_signal_is_shown_and_played(self) -> None:
+        asyncio.run(self._exercise_run_signal("best_run_signal"))
+
+    def test_top_five_signal_has_priority_over_worst_ten(self) -> None:
+        self._seed_runs([10_000, 20_000, 30_000, 40_000, 60_000, 70_000, 80_000])
+        asyncio.run(self._exercise_run_signal("top_five_run_signal", duration_ms=50_000))
+
+    def test_worst_ten_signal_is_used_outside_top_five(self) -> None:
+        self._seed_runs([value * 10_000 for value in range(1, 13) if value != 6])
+        asyncio.run(self._exercise_run_signal("worst_ten_run_signal", duration_ms=60_000))
+
+    def test_disabled_run_signals_are_still_shown_but_not_played(self) -> None:
+        asyncio.run(
+            self._exercise_run_signal(
+                "best_run_signal",
+                run_signals_enabled=False,
+                expected_playback=False,
+            )
+        )
+
+    def test_unranked_run_has_no_signal(self) -> None:
+        self._seed_runs([value * 10_000 for value in range(1, 17) if value != 6])
+        asyncio.run(self._exercise_run_signal(None, duration_ms=60_000))
+
+    def _seed_runs(self, durations: list[int]) -> None:
+        for index, duration_ms in enumerate(durations, start=1):
+            started_at = self.clock.now() + timedelta(minutes=index)
+            self.repository.create_and_save(
+                started_at=started_at,
+                stopped_at=started_at + timedelta(milliseconds=duration_ms),
+                saved_at=started_at + timedelta(milliseconds=duration_ms + 100),
+                actual_time=Duration(duration_ms),
+                added_time=Duration(),
+            )
+
+    async def _exercise_run_signal(
+        self,
+        expected_signal: str | None,
+        *,
+        duration_ms: int = 50_000,
+        run_signals_enabled: bool = True,
+        expected_playback: bool = True,
+    ) -> None:
+        audio = RecordingRunSignalAudioService(
+            run_signals_enabled=run_signals_enabled,
+        )
+        self.runtime.audio_service = audio  # type: ignore[assignment]
+        self.controller.start()
+        self.clock.advance_ms(duration_ms)
+        self.controller.stop()
+
+        self.assertTrue(self.runtime.dispatch_action("save"))
+        await asyncio.sleep(0)
+
+        self.assertEqual(self.runtime.state_payload()["run_signal"], expected_signal)
+        self.assertEqual(
+            audio.signals,
+            [expected_signal] if expected_playback and expected_signal else [],
+        )
 
     def test_physical_double_press_discards_and_starts_next_run(self) -> None:
         self.assertTrue(self.runtime.button_press())

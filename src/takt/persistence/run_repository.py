@@ -156,6 +156,19 @@ class SQLiteRunRepository:
             ).fetchall()
         return [self._row_to_run(row) for row in rows]
 
+    def get_worst_runs(self, limit: int = 10) -> list[Run]:
+        with self._read() as conn:
+            rows = conn.execute(
+                select(runs)
+                .order_by(
+                    runs.c.total_time_ms.desc(),
+                    runs.c.actual_time_ms.desc(),
+                    runs.c.saved_at.asc(),
+                )
+                .limit(limit)
+            ).fetchall()
+        return [self._row_to_run(row) for row in rows]
+
     def get_all_runs(self) -> list[Run]:
         with self._read() as conn:
             rows = conn.execute(

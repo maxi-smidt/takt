@@ -42,6 +42,7 @@ class AudioSettings:
     delay_milliseconds: int = 3_000
     device_address: str | None = None
     device_name: str | None = None
+    run_signals_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +111,14 @@ class AudioService:
         self._scan_process_runner = scan_process_runner or self._default_scan_process
         self._sleep = sleep
         self._sound_path = Path(__file__).resolve().parent.parent / "assets" / "start_signal.wav"
+        self._run_signal_paths = {
+            name: self._sound_path.with_name(f"{name}.wav")
+            for name in (
+                "best_run_signal",
+                "top_five_run_signal",
+                "worst_ten_run_signal",
+            )
+        }
         self.clip_duration_milliseconds = self._read_clip_duration_milliseconds()
         self.settings = self._load_settings(
             AudioSettings(
@@ -135,6 +144,10 @@ class AudioService:
     def delay_seconds(self) -> float:
         return self.settings.delay_milliseconds / 1000
 
+    @property
+    def run_signals_enabled(self) -> bool:
+        return self.enabled and self.settings.run_signals_enabled
+
     def payload(self) -> dict[str, object]:
         player = self._player()
         return {
@@ -156,6 +169,7 @@ class AudioService:
         delay_milliseconds: int,
         device_address: str | None,
         device_name: str | None,
+        run_signals_enabled: bool | None = None,
     ) -> dict[str, object]:
         if output not in {"off", "aux", "bluetooth"}:
             raise ValueError("Ungültiger Audio-Ausgang.")
@@ -172,6 +186,11 @@ class AudioService:
             delay_milliseconds=delay_milliseconds,
             device_address=device_address or None,
             device_name=device_name or None,
+            run_signals_enabled=(
+                self.settings.run_signals_enabled
+                if run_signals_enabled is None
+                else bool(run_signals_enabled)
+            ),
         )
         self._save_settings()
         return self.payload()
@@ -225,9 +244,47 @@ class AudioService:
         self,
         on_playback_started: Callable[[], None] | None = None,
     ) -> None:
+        await self._play_sound(
+            self._sound_path,
+            duration_milliseconds=self.clip_duration_milliseconds,
+            missing_message="Die Startsignal-Datei wurde nicht gefunden.",
+            failure_message="Das Startsignal konnte nicht abgespielt werden.",
+            failure_event="start_sound_failed",
+            on_playback_started=on_playback_started,
+        )
+
+    async def play_run_signal(self, signal: str) -> None:
+        sound_path = self._run_signal_paths.get(signal)
+        if sound_path is None:
+            raise ValueError("Unbekanntes Ergebnissignal.")
+        if not sound_path.exists():
+            raise RuntimeError(f"Die Datei für {signal} wurde nicht gefunden.")
+        await self._play_sound(
+            sound_path,
+            duration_milliseconds=self._read_sound_duration_milliseconds(
+                sound_path,
+                metadata_error_event=f"{signal}_metadata_failed",
+            ),
+            missing_message=f"Die Datei für {signal} wurde nicht gefunden.",
+            failure_message="Das Ergebnissignal konnte nicht abgespielt werden.",
+            failure_event=f"{signal}_failed",
+        )
+
+    async def _play_sound(
+        self,
+        sound_path: Path,
+        *,
+        duration_milliseconds: int,
+        missing_message: str,
+        failure_message: str,
+        failure_event: str,
+        on_playback_started: Callable[[], None] | None = None,
+    ) -> None:
         player = self._player()
         if player is None:
             raise RuntimeError("Kein Audioplayer ist installiert.")
+        if not sound_path.exists():
+            raise RuntimeError(missing_message)
         sink: str | None = None
         if self.settings.output == "bluetooth":
             if not self.settings.device_address:
@@ -241,14 +298,12 @@ class AudioService:
                 )
         elif self.settings.output == "aux":
             sink = await self._select_aux_sink()
-        if not self._sound_path.exists():
-            raise RuntimeError("Die Startsignal-Datei wurde nicht gefunden.")
-        command = self._play_command(player, self._sound_path, sink)
-        timeout = self.clip_duration_milliseconds / 1000 + 10
+        command = self._play_command(player, sound_path, sink)
+        timeout = duration_milliseconds / 1000 + 10
         code, output = await self._runner(command, timeout, on_playback_started)
         if code:
-            LOGGER.warning("start_sound_failed command=%s output=%s", command[0], output)
-            raise RuntimeError("Das Startsignal konnte nicht abgespielt werden.")
+            LOGGER.warning("%s command=%s output=%s", failure_event, command[0], output)
+            raise RuntimeError(failure_message)
 
     async def test_sound(self) -> dict[str, object]:
         await self.play_start_sound()
@@ -653,6 +708,9 @@ class AudioService:
                 ),
                 device_address=raw.get("device_address") or None,
                 device_name=raw.get("device_name") or None,
+                run_signals_enabled=bool(
+                    raw.get("run_signals_enabled", defaults.run_signals_enabled)
+                ),
             )
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return defaults
@@ -667,11 +725,22 @@ class AudioService:
         temporary.replace(self.settings_path)
 
     def _read_clip_duration_milliseconds(self) -> int:
+        return self._read_sound_duration_milliseconds(
+            self._sound_path,
+            metadata_error_event="start_sound_metadata_failed",
+        )
+
+    @staticmethod
+    def _read_sound_duration_milliseconds(
+        sound_path: Path,
+        *,
+        metadata_error_event: str,
+    ) -> int:
         try:
-            with wave.open(str(self._sound_path), "rb") as recording:
+            with wave.open(str(sound_path), "rb") as recording:
                 return round(recording.getnframes() / recording.getframerate() * 1000)
         except (OSError, EOFError, wave.Error, ZeroDivisionError):
-            LOGGER.exception("start_sound_metadata_failed")
+            LOGGER.exception(metadata_error_event)
             return 0
 
     # -- Error translation --------------------------------------------------

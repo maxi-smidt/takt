@@ -38,6 +38,7 @@ export interface TimerStatePayload {
   history_revision: number;
   signal_revision: number;
   signal: string | null;
+  run_signal: string | null;
   sound_playing?: boolean;
   start_sequence: {
     active: boolean;
@@ -67,6 +68,7 @@ export interface AudioSettings {
   playback_available: boolean;
   bluetooth_available: boolean;
   sound: string;
+  run_signals_enabled: boolean;
   devices: AudioDevice[];
   player?: string | null;
   scanning?: boolean;
@@ -286,6 +288,10 @@ export function parseState(value: unknown): TimerStatePayload {
     history_revision: finite(item.history_revision, "state.history_revision"),
     signal_revision: finite(item.signal_revision, "state.signal_revision"),
     signal: nullableText(item.signal, "state.signal"),
+    run_signal:
+      item.run_signal === undefined
+        ? null
+        : nullableText(item.run_signal, "state.run_signal"),
     ...(typeof item.sound_playing === "boolean"
       ? { sound_playing: item.sound_playing }
       : {}),
@@ -335,6 +341,10 @@ function parseAudio(value: unknown): AudioSettings {
       "audio.bluetooth_available",
     ),
     sound: text(item.sound, "audio.sound"),
+    run_signals_enabled:
+      item.run_signals_enabled === undefined
+        ? true
+        : flag(item.run_signals_enabled, "audio.run_signals_enabled"),
     devices: list(item.devices, "audio.devices", (entry) => {
       const device = object(entry, "audio device");
       return {

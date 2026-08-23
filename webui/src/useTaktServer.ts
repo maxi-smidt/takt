@@ -31,6 +31,7 @@ const EMPTY_STATE: TimerStatePayload = {
   history_revision: 0,
   signal_revision: 0,
   signal: null,
+  run_signal: null,
   sound_playing: false,
   start_sequence: { active: false, phase: null, remaining_ms: 0, error: null },
   maintenance: { held: false, reason: null, expires_in_seconds: null },
@@ -58,6 +59,7 @@ const EMPTY_SYSTEM: SystemPayload = {
     playback_available: false,
     bluetooth_available: false,
     sound: "TAKT Startsignal",
+    run_signals_enabled: true,
     devices: [],
   },
 };
