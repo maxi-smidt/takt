@@ -233,12 +233,19 @@ class WebRuntime:
         if run is None:
             return False
         LOGGER.info("physical_save source=%s run_id=%s", source, run.id)
-        self._last_run_signal = self._classify_run_signal(run.id)
-        self._schedule_run_signal(self._last_run_signal)
         self.history_revision += 1
         self._schedule_state_broadcast()
         self._schedule_history_broadcast()
         return True
+
+    def _update_run_signal(self, run_id: int | None) -> None:
+        try:
+            signal = self._classify_run_signal(run_id)
+        except Exception:
+            LOGGER.exception("run_signal_classification_failed run_id=%s", run_id)
+            signal = None
+        self._last_run_signal = signal
+        self._schedule_run_signal(signal)
 
     def _classify_run_signal(self, run_id: int | None) -> str | None:
         if run_id is None:
@@ -635,6 +642,8 @@ class WebRuntime:
                 self.signal_revision += 1
                 self.buzzer.signal(event)
             if state is TimerState.SAVED_CONFIRMATION:
+                run_id = snapshot.last_saved_run.id if snapshot.last_saved_run else None
+                self._update_run_signal(run_id)
                 self._confirmation_deadline = (
                     time.monotonic() + self.config.application.saved_confirmation_seconds
                 )

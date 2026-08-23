@@ -238,6 +238,52 @@ class WebRuntimeTests(unittest.TestCase):
         self._seed_runs([value * 10_000 for value in range(1, 17) if value != 6])
         asyncio.run(self._exercise_run_signal(None, duration_ms=60_000))
 
+    def test_saved_state_broadcast_uses_the_current_run_signal(self) -> None:
+        self._seed_runs([40_000])
+        self.runtime._last_run_signal = "best_run_signal"
+        self.controller.start()
+        self.clock.advance_ms(50_000)
+        self.controller.stop()
+        payloads: list[dict[str, object]] = []
+
+        with patch.object(
+            self.runtime,
+            "_schedule_state_broadcast",
+            side_effect=lambda: payloads.append(self.runtime.state_payload()),
+        ):
+            self.assertTrue(self.runtime.dispatch_action("save"))
+
+        saved_signals = [
+            payload["run_signal"]
+            for payload in payloads
+            if payload["state"] == "saved_confirmation"
+        ]
+        self.assertTrue(saved_signals)
+        self.assertEqual(set(saved_signals), {"top_five_run_signal"})
+
+    def test_ranking_failure_does_not_fail_the_committed_save(self) -> None:
+        self.controller.start()
+        self.clock.advance_ms(50_000)
+        self.controller.stop()
+
+        with (
+            patch.object(
+                self.repository,
+                "get_best_runs",
+                side_effect=RuntimeError("read failed"),
+            ),
+            self.assertLogs("takt.web.runtime", level="ERROR") as logs,
+        ):
+            self.assertTrue(self.runtime.dispatch_action("save"))
+
+        self.assertEqual(self.controller.state, TimerState.SAVED_CONFIRMATION)
+        self.assertEqual(len(self.repository.get_all_runs()), 1)
+        self.assertEqual(self.runtime.history_revision, 1)
+        self.assertIsNone(self.runtime.state_payload()["run_signal"])
+        self.assertTrue(
+            any("run_signal_classification_failed" in message for message in logs.output)
+        )
+
     def _seed_runs(self, durations: list[int]) -> None:
         for index, duration_ms in enumerate(durations, start=1):
             started_at = self.clock.now() + timedelta(minutes=index)
