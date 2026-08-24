@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Archive,
   Box,
+  Flag,
   LogOut,
   Plus,
   Radio,
@@ -27,6 +28,7 @@ import { WifiModal } from "./WifiModal";
 interface DashboardProps {
   session: { csrf_token: string };
   refreshSession: () => Promise<void>;
+  onSwitchToRuns?: () => void;
 }
 
 const ACTIVE_JOB_STATUSES = new Set(["queued", "claimed", "running"]);
@@ -40,7 +42,7 @@ function sortJobsActiveFirst(jobs: Job[]): Job[] {
   );
 }
 
-export function Dashboard({ session, refreshSession }: DashboardProps) {
+export function Dashboard({ session, refreshSession, onSwitchToRuns }: DashboardProps) {
   const {
     devices,
     releases,
@@ -84,6 +86,9 @@ export function Dashboard({ session, refreshSession }: DashboardProps) {
         <div className="top-actions">
           <Button variant="secondary" onClick={() => setModal("enroll")}><Plus size={15} /> ENROLL DEVICE</Button>
           <Button variant="secondary" onClick={() => setModal("release")}><Upload size={15} /> ADD RELEASE</Button>
+          {onSwitchToRuns && (
+            <Button variant="secondary" onClick={onSwitchToRuns}><Flag size={15} /> VIEW RUNS</Button>
+          )}
           <IconButton variant="secondary" icon={<LogOut size={17} />} onClick={logout} aria-label="Log out" title="Log out" />
         </div>
       </header>

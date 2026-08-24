@@ -1,4 +1,4 @@
-import { Check, LogOut, RefreshCw, Zap } from "lucide-react";
+import { Check, LogOut, RefreshCw, Shield, Zap } from "lucide-react";
 import type { SessionResponse } from "../../shared/contracts";
 import { Button, Callout, IconButton } from "../../shared/ui";
 import { formatIsoDate } from "../dateInput";
@@ -26,9 +26,10 @@ function activeTimeframe(from: string, to: string) {
 interface PortalProps {
   session: SessionResponse;
   refreshSession: () => Promise<void>;
+  onSwitchToAdmin?: () => void;
 }
 
-export function Portal({ session, refreshSession }: PortalProps) {
+export function Portal({ session, refreshSession, onSwitchToAdmin }: PortalProps) {
   const {
     devices,
     deviceId,
@@ -71,6 +72,15 @@ export function Portal({ session, refreshSession }: PortalProps) {
         <div className="brand"><div className="brand-mark"><Zap size={18} /></div><strong>TAKT <em>LÄUFE</em></strong></div>
         <div className="top-actions">
           <span className="portal-username">{session.user?.username}</span>
+          {onSwitchToAdmin && (
+            <IconButton
+              variant="secondary"
+              icon={<Shield size={17} />}
+              onClick={onSwitchToAdmin}
+              aria-label="Zur Admin-Ansicht wechseln"
+              title="Zur Admin-Ansicht wechseln"
+            />
+          )}
           <IconButton variant="secondary" icon={<LogOut size={17} />} onClick={logout} aria-label="Abmelden" title="Abmelden" />
         </div>
       </header>
