@@ -1,9 +1,10 @@
 // @ts-nocheck
 import {
   Area,
-  AreaChart,
   CartesianGrid,
+  ComposedChart,
   Legend,
+  Line,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -58,6 +59,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
       actualMs: run.actual_time_ms,
       addedMs: run.added_time_ms,
       totalMs: run.total_time_ms,
+      errorRange: [run.actual_time_ms / 1000, (run.actual_time_ms + run.added_time_ms) / 1000],
     }));
 
   if (!points.length) {
@@ -74,7 +76,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
   return (
     <div className="portal-chart">
       <ResponsiveContainer width="100%" height={260}>
-        <AreaChart data={points} margin={{ top: 10, right: 18, bottom: 0, left: 0 }}>
+        <ComposedChart data={points} margin={{ top: 10, right: 18, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="var(--line)" vertical={false} />
           <XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={{ stroke: "var(--line)" }} tickLine={false} />
           <YAxis
@@ -93,24 +95,22 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
             iconType="circle"
             formatter={(value: string) => <span style={{ color: "var(--muted)" }}>{value}</span>}
           />
-          {/* Stacked so "Fehler" sits on top of "Ist-Zeit" instead of being plotted
-              from zero — the amber band is then exactly the added time, not a
-              second series competing with the actual-time line. */}
-          <Area
+          <Line
             type="monotone"
             dataKey="actualSeconds"
             name="Ist-Zeit"
-            stackId="run-time"
             stroke="var(--green)"
-            fill="none"
             strokeWidth={2}
             dot={{ r: 3 }}
           />
+          {/* errorRange is [actualSeconds, totalSeconds] per point, so the amber
+              band sits exactly between the Ist-Zeit line and the total — not
+              from the y-axis floor, which an Area plotted by a single value
+              (even with fill="none") would still stroke a closed shape down to. */}
           <Area
             type="monotone"
-            dataKey="addedSeconds"
+            dataKey="errorRange"
             name="Fehler"
-            stackId="run-time"
             stroke="var(--amber)"
             fill="var(--amber)"
             fillOpacity={0.35}
@@ -125,7 +125,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
               label={{ value: `BESTZEIT ${formatStopwatch(bestTotalMs)}`, position: "insideTopRight", fill: "var(--green)", fontSize: 12 }}
             />
           )}
-        </AreaChart>
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
