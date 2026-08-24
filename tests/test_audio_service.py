@@ -263,15 +263,15 @@ class AudioServiceTests(unittest.TestCase):
             )
 
     def test_run_signal_uses_the_named_wav(self) -> None:
-        signal_path = Path(self.temporary_directory.name) / "top_five_run_signal.wav"
+        signal_path = Path(self.temporary_directory.name) / "daily_best_run_signal.wav"
         with wave.open(str(signal_path), "wb") as recording:
             recording.setnchannels(1)
             recording.setsampwidth(2)
             recording.setframerate(8_000)
             recording.writeframes(bytes(1_600))
-        self.service._run_signal_paths["top_five_run_signal"] = signal_path
+        self.service._run_signal_paths["daily_best_run_signal"] = signal_path
 
-        asyncio.run(self.service.play_run_signal("top_five_run_signal"))
+        asyncio.run(self.service.play_run_signal("daily_best_run_signal"))
 
         play_commands = [
             command for command in self.runner.commands if Path(command[0]).name == "paplay"

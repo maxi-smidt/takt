@@ -82,6 +82,7 @@ const PERIODS = [
 const RUN_SIGNAL_META = {
   best_run_signal: [Trophy, "NEUER BESTLAUF", "Schnellste Gesamtzeit aller Läufe"],
   top_five_run_signal: [Trophy, "TOP-5-LAUF", "Unter den fünf schnellsten Läufen"],
+  daily_best_run_signal: [CalendarDays, "TAGESBESTZEIT", "Schnellste Gesamtzeit des Tages"],
   worst_ten_run_signal: [Gauge, "UNTER DEN 10 LANGSAMSTEN", "Ergebnissignal für diesen Lauf"],
 };
 
@@ -835,7 +836,7 @@ function AudioSettingsPanel({ audio, onRequest }) {
         >
           <span>
             <strong>ERGEBNISSIGNALE</strong>
-            <small>Bestlauf, Top 5 und langsamste 10 automatisch abspielen</small>
+            <small>Bestlauf, Top 5, Tagesbestzeit und langsamste 10 automatisch abspielen</small>
           </span>
         </Checkbox>
         {draft.output === "aux" && (

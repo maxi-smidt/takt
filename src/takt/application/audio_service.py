@@ -116,6 +116,7 @@ class AudioService:
             for name in (
                 "best_run_signal",
                 "top_five_run_signal",
+                "daily_best_run_signal",
                 "worst_ten_run_signal",
             )
         }

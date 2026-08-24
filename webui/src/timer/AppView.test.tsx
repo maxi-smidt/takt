@@ -208,6 +208,27 @@ describe("AppView (shared/ui migration smoke test)", () => {
     expect(document.querySelector(".run-signal")?.textContent).toContain("NEUER BESTLAUF");
   });
 
+  it("shows a daily best time in the saved confirmation", async () => {
+    const payload = bootstrapPayload(2);
+    payload.state = {
+      ...statePayload(2),
+      state: "saved_confirmation",
+      state_label: "ZEIT GESPEICHERT!",
+      actual_ms: 70_000,
+      actual: "01:10.00",
+      total_ms: 70_000,
+      total: "01:10.00",
+      run_signal: "daily_best_run_signal",
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+
+    await mount();
+
+    expect(document.querySelector(".run-signal")?.textContent).toContain("TAGESBESTZEIT");
+  });
+
   it("opens the audio settings and shows the migrated bluetooth mode toggle", async () => {
     await mount();
     const settingsButton = document.querySelector(".settings-trigger") as HTMLButtonElement;

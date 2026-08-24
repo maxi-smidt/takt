@@ -255,6 +255,15 @@ class WebRuntime:
             return "best_run_signal"
         if any(run.id == run_id for run in best_runs):
             return "top_five_run_signal"
+        saved_run = self.repository.get_run(run_id)
+        if saved_run is None:
+            return None
+        daily_best = self.repository.get_best_runs_for_date(
+            saved_run.started_at.astimezone().date(),
+            limit=1,
+        )
+        if daily_best and daily_best[0].id == run_id:
+            return "daily_best_run_signal"
         if any(run.id == run_id for run in self.repository.get_worst_runs(10)):
             return "worst_ten_run_signal"
         return None

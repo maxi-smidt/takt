@@ -53,6 +53,15 @@ class RunRepositoryTests(unittest.TestCase):
         best = self.repository.get_best_runs(3)
         self.assertEqual([run.id for run in best], [third.id, second.id, 1])
 
+    def test_best_runs_for_date_only_rank_that_session_date(self) -> None:
+        self.save_run(self.base - timedelta(days=1), 60_000)
+        first_today = self.save_run(self.base, 70_000, 20_000)
+        second_today = self.save_run(self.base + timedelta(minutes=5), 81_000)
+
+        best_today = self.repository.get_best_runs_for_date(self.base.date(), 2)
+
+        self.assertEqual([run.id for run in best_today], [second_today.id, first_today.id])
+
     def test_worst_runs_use_total_then_actual_time(self) -> None:
         first = self.save_run(self.base, 70_000, 20_000)
         second = self.save_run(self.base + timedelta(minutes=5), 81_000, 0)

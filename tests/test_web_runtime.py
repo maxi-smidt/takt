@@ -6,7 +6,7 @@ import os
 import tempfile
 import time
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -221,6 +221,29 @@ class WebRuntimeTests(unittest.TestCase):
         self._seed_runs([10_000, 20_000, 30_000, 40_000, 60_000, 70_000, 80_000])
         asyncio.run(self._exercise_run_signal("top_five_run_signal", duration_ms=50_000))
 
+    def test_daily_best_signal_is_used_outside_all_time_top_five(self) -> None:
+        previous_day = self.clock.now() - timedelta(days=1)
+        self._seed_runs(
+            [10_000, 20_000, 30_000, 40_000, 50_000],
+            started_at=previous_day,
+        )
+        self._seed_runs([80_000])
+
+        asyncio.run(
+            self._exercise_run_signal("daily_best_run_signal", duration_ms=70_000)
+        )
+
+    def test_top_five_signal_has_priority_over_daily_best(self) -> None:
+        previous_day = self.clock.now() - timedelta(days=1)
+        self._seed_runs(
+            [10_000, 20_000, 30_000, 40_000, 60_000],
+            started_at=previous_day,
+        )
+
+        asyncio.run(
+            self._exercise_run_signal("top_five_run_signal", duration_ms=50_000)
+        )
+
     def test_worst_ten_signal_is_used_outside_top_five(self) -> None:
         self._seed_runs([value * 10_000 for value in range(1, 13) if value != 6])
         asyncio.run(self._exercise_run_signal("worst_ten_run_signal", duration_ms=60_000))
@@ -284,13 +307,19 @@ class WebRuntimeTests(unittest.TestCase):
             any("run_signal_classification_failed" in message for message in logs.output)
         )
 
-    def _seed_runs(self, durations: list[int]) -> None:
+    def _seed_runs(
+        self,
+        durations: list[int],
+        *,
+        started_at: datetime | None = None,
+    ) -> None:
+        base = started_at or self.clock.now()
         for index, duration_ms in enumerate(durations, start=1):
-            started_at = self.clock.now() + timedelta(minutes=index)
+            run_started_at = base + timedelta(minutes=index)
             self.repository.create_and_save(
-                started_at=started_at,
-                stopped_at=started_at + timedelta(milliseconds=duration_ms),
-                saved_at=started_at + timedelta(milliseconds=duration_ms + 100),
+                started_at=run_started_at,
+                stopped_at=run_started_at + timedelta(milliseconds=duration_ms),
+                saved_at=run_started_at + timedelta(milliseconds=duration_ms + 100),
                 actual_time=Duration(duration_ms),
                 added_time=Duration(),
             )
