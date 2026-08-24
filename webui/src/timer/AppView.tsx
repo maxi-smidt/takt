@@ -29,7 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, IconButton, Select } from "../shared/ui";
+import { Button, Checkbox, IconButton, Select } from "../shared/ui";
 import { useScreenAwake } from "../useScreenAwake";
 import { useTaktServer } from "../useTaktServer";
 
@@ -78,6 +78,13 @@ const PERIODS = [
   ["90", "90 TAGE"],
   ["all", "ALLE"],
 ];
+
+const RUN_SIGNAL_META = {
+  best_run_signal: [Trophy, "NEUER BESTLAUF", "Schnellste Gesamtzeit aller Läufe"],
+  top_five_run_signal: [Trophy, "TOP-5-LAUF", "Unter den fünf schnellsten Läufen"],
+  daily_best_run_signal: [CalendarDays, "TAGESBESTZEIT", "Schnellste Gesamtzeit des Tages"],
+  worst_ten_run_signal: [Gauge, "UNTER DEN 10 LANGSAMSTEN", "Ergebnissignal für diesen Lauf"],
+};
 
 const FOCUSABLE_SELECTOR = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
 
@@ -220,11 +227,22 @@ function ResultTimer({ state, onAction, pending }) {
   const isStopped = state.state === "stopped";
   const isDiscard = state.state === "discard_confirmation";
   const isSaved = state.state === "saved_confirmation";
+  const runSignal = isSaved ? RUN_SIGNAL_META[state.run_signal] : null;
+  const RunSignalIcon = runSignal?.[0];
   return (
     <div className="result-view">
       {isSaved && (
         <div className="saved-seal" aria-hidden="true">
           <Check size={25} strokeWidth={2.5} />
+        </div>
+      )}
+      {runSignal && (
+        <div className={`run-signal ${state.run_signal}`} role="status" aria-live="polite">
+          <RunSignalIcon size={20} />
+          <div>
+            <strong>{runSignal[1]}</strong>
+            <span>{runSignal[2]}</span>
+          </div>
         </div>
       )}
       <div className="result-total">
@@ -688,6 +706,7 @@ function AudioSettingsPanel({ audio, onRequest }) {
       || draft.device_name
       || null
     ),
+    run_signals_enabled: Boolean(draft.run_signals_enabled),
   };
 
   const save = async () => {
@@ -807,6 +826,19 @@ function AudioSettingsPanel({ audio, onRequest }) {
               : "Kein Audioplayer gefunden"}
           </small>
         </div>
+        <Checkbox
+          className="audio-run-signals"
+          checked={Boolean(draft.run_signals_enabled)}
+          onCheckedChange={(checked) => setDraft((current) => ({
+            ...current,
+            run_signals_enabled: checked,
+          }))}
+        >
+          <span>
+            <strong>ERGEBNISSIGNALE</strong>
+            <small>Bestlauf, Top 5, Tagesbestzeit und langsamste 10 automatisch abspielen</small>
+          </span>
+        </Checkbox>
         {draft.output === "aux" && (
           <div className="audio-note">
             <Cable size={17} />

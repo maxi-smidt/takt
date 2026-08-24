@@ -140,6 +140,7 @@ class WebApplicationTests(unittest.TestCase):
                             "delay_milliseconds": 2_500,
                             "device_address": None,
                             "device_name": None,
+                            "run_signals_enabled": False,
                         },
                     ) as response:
                         self.assertEqual(response.status, 200)
@@ -147,6 +148,9 @@ class WebApplicationTests(unittest.TestCase):
                         self.assertEqual(
                             audio_settings["system"]["audio"]["delay_milliseconds"],
                             2_500,
+                        )
+                        self.assertFalse(
+                            audio_settings["system"]["audio"]["run_signals_enabled"]
                         )
 
                     async with client.post(

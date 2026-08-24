@@ -551,6 +551,32 @@ tr {
   color: var(--green);
 }
 
+.run-signal {
+  min-height: 45px;
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgb(245 177 72 / 42%);
+  background: rgb(245 177 72 / 9%);
+  color: var(--amber);
+}
+
+.run-signal div {
+  display: grid;
+  gap: 2px;
+}
+
+.run-signal strong {
+  font-size: var(--fs-base);
+  letter-spacing: .06em;
+}
+
+.run-signal span {
+  color: var(--muted);
+  font-size: var(--fs-small);
+}
+
 .result-total {
   display: grid;
   justify-items: center;
@@ -1199,9 +1225,32 @@ kbd {
 }
 
 .audio-note,
+.audio-run-signals,
 .bluetooth-controls,
 .audio-settings-footer {
   grid-column: 1 / -1;
+}
+
+.audio-run-signals {
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  background: #0d1b23;
+}
+
+.audio-run-signals > span {
+  display: grid;
+  gap: 2px;
+}
+
+.audio-run-signals strong {
+  color: #d9e2e6;
+  font-size: var(--fs-small);
+  letter-spacing: .06em;
+}
+
+.audio-run-signals small {
+  color: var(--muted);
+  font-size: var(--fs-small);
 }
 
 .audio-note {

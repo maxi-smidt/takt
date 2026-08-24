@@ -37,6 +37,10 @@ required_files=(
   "src/takt/web/static/index.html"
   "src/takt/assets/start_signal.wav"
   "src/takt/assets/start_signal_source.mp3"
+  "src/takt/assets/best_run_signal.wav"
+  "src/takt/assets/top_five_run_signal.wav"
+  "src/takt/assets/daily_best_run_signal.wav"
+  "src/takt/assets/worst_ten_run_signal.wav"
 )
 
 for required_file in "${required_files[@]}"; do

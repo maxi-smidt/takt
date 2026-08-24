@@ -228,6 +228,7 @@ class AudioServiceTests(unittest.TestCase):
             delay_milliseconds=2_500,
             device_address=None,
             device_name=None,
+            run_signals_enabled=False,
         )
 
         restored = AudioService(
@@ -238,6 +239,7 @@ class AudioServiceTests(unittest.TestCase):
         self.assertTrue(restored.enabled)
         self.assertEqual(restored.settings.output, "aux")
         self.assertEqual(restored.settings.delay_milliseconds, 2_500)
+        self.assertFalse(restored.settings.run_signals_enabled)
         self.assertEqual(restored.delay_seconds, 2.5)
         self.assertEqual(restored.clip_duration_milliseconds, 17_512)
 
@@ -259,6 +261,48 @@ class AudioServiceTests(unittest.TestCase):
                 17.51,
                 places=1,
             )
+
+    def test_supplied_run_signals_are_packaged_wavs(self) -> None:
+        expected_durations = {
+            "best_run_signal": 2.03,
+            "top_five_run_signal": 2.80,
+            "daily_best_run_signal": 1.62,
+            "worst_ten_run_signal": 3.30,
+        }
+        self.assertEqual(set(self.service._run_signal_paths), set(expected_durations))
+        for name, expected_duration in expected_durations.items():
+            with self.subTest(name=name), wave.open(
+                str(self.service._run_signal_paths[name]),
+                "rb",
+            ) as recording:
+                self.assertEqual(recording.getnchannels(), 1)
+                self.assertEqual(recording.getsampwidth(), 2)
+                self.assertEqual(recording.getframerate(), 44_100)
+                self.assertAlmostEqual(
+                    recording.getnframes() / recording.getframerate(),
+                    expected_duration,
+                    places=1,
+                )
+
+    def test_run_signal_uses_the_named_wav(self) -> None:
+        signal_path = Path(self.temporary_directory.name) / "daily_best_run_signal.wav"
+        with wave.open(str(signal_path), "wb") as recording:
+            recording.setnchannels(1)
+            recording.setsampwidth(2)
+            recording.setframerate(8_000)
+            recording.writeframes(bytes(1_600))
+        self.service._run_signal_paths["daily_best_run_signal"] = signal_path
+
+        asyncio.run(self.service.play_run_signal("daily_best_run_signal"))
+
+        play_commands = [
+            command for command in self.runner.commands if Path(command[0]).name == "paplay"
+        ]
+        self.assertEqual(Path(play_commands[-1][-1]), signal_path)
+
+    def test_unknown_run_signal_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unbekanntes Ergebnissignal"):
+            asyncio.run(self.service.play_run_signal("unknown"))
 
     def test_bluetooth_scan_connect_and_sound(self) -> None:
         asyncio.run(self._exercise_bluetooth())

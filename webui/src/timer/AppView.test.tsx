@@ -20,6 +20,7 @@ function statePayload(revision: number) {
     history_revision: revision,
     signal_revision: 0,
     signal: null,
+    run_signal: null as string | null,
     sound_playing: false,
     start_sequence: { active: false, phase: null, remaining_ms: 0, error: null },
     maintenance: { held: false, reason: null, expires_in_seconds: null },
@@ -52,6 +53,7 @@ function bootstrapPayload(revision: number) {
         playback_available: false,
         bluetooth_available: true,
         sound: "TAKT Startsignal",
+        run_signals_enabled: true,
         devices: [],
       },
     },
@@ -185,6 +187,48 @@ describe("AppView (shared/ui migration smoke test)", () => {
     expect(ninetyDays?.getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("shows the run signal in the saved confirmation", async () => {
+    const payload = bootstrapPayload(2);
+    payload.state = {
+      ...statePayload(2),
+      state: "saved_confirmation",
+      state_label: "ZEIT GESPEICHERT!",
+      actual_ms: 50_000,
+      actual: "00:50.00",
+      total_ms: 50_000,
+      total: "00:50.00",
+      run_signal: "best_run_signal",
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+
+    await mount();
+
+    expect(document.querySelector(".run-signal")?.textContent).toContain("NEUER BESTLAUF");
+  });
+
+  it("shows a daily best time in the saved confirmation", async () => {
+    const payload = bootstrapPayload(2);
+    payload.state = {
+      ...statePayload(2),
+      state: "saved_confirmation",
+      state_label: "ZEIT GESPEICHERT!",
+      actual_ms: 70_000,
+      actual: "01:10.00",
+      total_ms: 70_000,
+      total: "01:10.00",
+      run_signal: "daily_best_run_signal",
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+
+    await mount();
+
+    expect(document.querySelector(".run-signal")?.textContent).toContain("TAGESBESTZEIT");
+  });
+
   it("opens the audio settings and shows the migrated bluetooth mode toggle", async () => {
     await mount();
     const settingsButton = document.querySelector(".settings-trigger") as HTMLButtonElement;
@@ -206,5 +250,6 @@ describe("AppView (shared/ui migration smoke test)", () => {
     const select = document.querySelector(".bluetooth-select");
     expect(select).not.toBeNull();
     expect(select?.getAttribute("role")).toBe("combobox");
+    expect(document.querySelector(".audio-run-signals [role='checkbox']")?.getAttribute("aria-checked")).toBe("true");
   });
 });
