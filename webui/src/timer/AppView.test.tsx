@@ -175,7 +175,7 @@ describe("AppView (shared/ui migration smoke test)", () => {
   it("toggles the migrated chart period-switch buttons", async () => {
     await mount();
     const buttons = Array.from(document.querySelectorAll(".period-switch button")) as HTMLButtonElement[];
-    expect(buttons).toHaveLength(4);
+    expect(buttons).toHaveLength(5);
     const ninetyDays = buttons.find((button) => button.textContent === "90 TAGE");
     expect(ninetyDays).toBeDefined();
     expect(ninetyDays?.getAttribute("aria-pressed")).toBe("false");
@@ -227,6 +227,36 @@ describe("AppView (shared/ui migration smoke test)", () => {
     await mount();
 
     expect(document.querySelector(".run-signal")?.textContent).toContain("TAGESBESTZEIT");
+  });
+
+  it("switches the chart to the current session only", async () => {
+    await mount();
+    const buttons = Array.from(document.querySelectorAll(".period-switch button")) as HTMLButtonElement[];
+    const sessionButton = buttons.find((button) => button.textContent === "SESSION");
+    const thirtyDays = buttons.find((button) => button.textContent === "30 TAGE");
+    expect(sessionButton).toBeDefined();
+    expect(thirtyDays).toBeDefined();
+
+    await act(async () => {
+      thirtyDays?.click();
+      await flush();
+    });
+    expect(sessionButton?.getAttribute("aria-pressed")).toBe("false");
+    expect(thirtyDays?.getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => {
+      sessionButton?.click();
+      await flush();
+    });
+    expect(sessionButton?.getAttribute("aria-pressed")).toBe("true");
+    expect(thirtyDays?.getAttribute("aria-pressed")).toBe("false");
+
+    await act(async () => {
+      thirtyDays?.click();
+      await flush();
+    });
+    expect(sessionButton?.getAttribute("aria-pressed")).toBe("false");
+    expect(thirtyDays?.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("opens the audio settings and shows the migrated bluetooth mode toggle", async () => {
