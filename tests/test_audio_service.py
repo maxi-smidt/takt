@@ -262,6 +262,28 @@ class AudioServiceTests(unittest.TestCase):
                 places=1,
             )
 
+    def test_supplied_run_signals_are_packaged_wavs(self) -> None:
+        expected_durations = {
+            "best_run_signal": 2.03,
+            "top_five_run_signal": 2.80,
+            "daily_best_run_signal": 1.62,
+            "worst_ten_run_signal": 3.30,
+        }
+        self.assertEqual(set(self.service._run_signal_paths), set(expected_durations))
+        for name, expected_duration in expected_durations.items():
+            with self.subTest(name=name), wave.open(
+                str(self.service._run_signal_paths[name]),
+                "rb",
+            ) as recording:
+                self.assertEqual(recording.getnchannels(), 1)
+                self.assertEqual(recording.getsampwidth(), 2)
+                self.assertEqual(recording.getframerate(), 44_100)
+                self.assertAlmostEqual(
+                    recording.getnframes() / recording.getframerate(),
+                    expected_duration,
+                    places=1,
+                )
+
     def test_run_signal_uses_the_named_wav(self) -> None:
         signal_path = Path(self.temporary_directory.name) / "daily_best_run_signal.wav"
         with wave.open(str(signal_path), "wb") as recording:
