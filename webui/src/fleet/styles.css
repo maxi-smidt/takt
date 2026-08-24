@@ -55,7 +55,7 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .password-field { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: #07100f; padding: 0 14px; }
 .password-field:focus-within { border-color: var(--green); }
 input, select { width: 100%; color: var(--text); border: 1px solid var(--line); background: #091311; padding: 12px 13px; font-size: var(--fs-base); outline: none; }
-.password-field input { border: 0; padding-inline: 0; }
+.password-field input { border: 0; padding-inline: 0; outline: none; }
 input:focus, select:focus { border-color: var(--green); }
 .full-width { width: 100%; }
 
