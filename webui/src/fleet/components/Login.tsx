@@ -40,6 +40,7 @@ export function Login({ onLogin }: LoginProps) {
             {(fieldProps) => (
               <TextInput
                 {...fieldProps}
+                name="username"
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 placeholder="Username"
@@ -54,6 +55,8 @@ export function Login({ onLogin }: LoginProps) {
                 <input
                   {...fieldProps}
                   type="password"
+                  name="current-password"
+                  autoComplete="current-password"
                   autoFocus
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
