@@ -477,12 +477,14 @@ function browserBeep() {
 }
 
 function ChartPanel({ history, chartDays, onPeriodChange }) {
+  const [sessionOnly, setSessionOnly] = useState(false);
+  const runs = sessionOnly ? history.today : history.chart;
   const data = useMemo(
-    () => history.chart.map((run) => ({
+    () => runs.map((run) => ({
       ...run,
       label: `${run.date_short} ${run.time.slice(0, 5)}`,
     })),
-    [history.chart],
+    [runs],
   );
   const chart = useMemo(() => {
     const width = 760;
@@ -490,11 +492,18 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
     const padding = { left: 56, right: 18, top: 16, bottom: 31 };
     const innerWidth = width - padding.left - padding.right;
     const innerHeight = height - padding.top - padding.bottom;
-    const maximum = Math.max(10000, ...data.map((run) => run.total_ms)) * 1.15;
+    // Zoom tightly around the runs actually shown: pad the lowest Ist-Zeit and
+    // highest Gesamtzeit by 1s instead of scaling from zero, so the curve's
+    // shape (not just its position under a huge headroom) is visible.
+    const lowest = data.length ? Math.min(...data.map((run) => run.actual_ms)) : 0;
+    const highest = data.length ? Math.max(...data.map((run) => run.total_ms)) : 10000;
+    const minimum = Math.max(0, lowest - 1000);
+    const maximum = highest + 1000;
+    const range = Math.max(1, maximum - minimum);
     const x = (index) => (
       padding.left + (data.length === 1 ? innerWidth / 2 : index * innerWidth / (data.length - 1))
     );
-    const y = (milliseconds) => padding.top + innerHeight - (milliseconds / maximum) * innerHeight;
+    const y = (milliseconds) => padding.top + innerHeight - ((milliseconds - minimum) / range) * innerHeight;
     const points = data.map((run, index) => ({
       ...run,
       x: x(index),
@@ -507,6 +516,7 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
       padding,
       innerWidth,
       innerHeight,
+      minimum,
       maximum,
       points,
     };
@@ -530,13 +540,25 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
           key={value}
           variant="secondary"
           data-short={value === "all" ? "ALLE" : value}
-          aria-pressed={chartDays === value}
-          className={chartDays === value ? "is-active" : ""}
-          onClick={() => onPeriodChange(value)}
+          aria-pressed={!sessionOnly && chartDays === value}
+          className={!sessionOnly && chartDays === value ? "is-active" : ""}
+          onClick={() => {
+            setSessionOnly(false);
+            onPeriodChange(value);
+          }}
         >
           {label}
         </Button>
       ))}
+      <Button
+        variant="secondary"
+        data-short="SESSION"
+        aria-pressed={sessionOnly}
+        className={sessionOnly ? "is-active" : ""}
+        onClick={() => setSessionOnly(true)}
+      >
+        SESSION
+      </Button>
     </div>
   );
   return (
@@ -552,7 +574,7 @@ function ChartPanel({ history, chartDays, onPeriodChange }) {
           >
             {[0, 1, 2, 3, 4].map((step) => {
               const lineY = chart.padding.top + (step * chart.innerHeight) / 4;
-              const value = chart.maximum * (1 - step / 4);
+              const value = chart.maximum - (step / 4) * (chart.maximum - chart.minimum);
               return (
                 <g key={step}>
                   <line

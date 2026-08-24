@@ -64,6 +64,13 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
     return <div className="chart-empty">Keine Läufe im gewählten Zeitraum.</div>;
   }
 
+  // Zoom tightly around the runs actually shown: pad the lowest Ist-Zeit and
+  // highest Gesamtzeit by 1s instead of letting the area scale from zero, so
+  // the curve's shape is visible instead of flattened by unused headroom.
+  const lowestActual = Math.min(...points.map((point) => point.actualSeconds));
+  const highestTotal = Math.max(...points.map((point) => point.actualSeconds + point.addedSeconds));
+  const yDomain: [number, number] = [Math.max(0, lowestActual - 1), highestTotal + 1];
+
   return (
     <div className="portal-chart">
       <ResponsiveContainer width="100%" height={260}>
@@ -71,6 +78,7 @@ export function PortalRunsChart({ runs, bestTotalMs }: PortalRunsChartProps) {
           <CartesianGrid stroke="var(--line)" vertical={false} />
           <XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={{ stroke: "var(--line)" }} tickLine={false} />
           <YAxis
+            domain={yDomain}
             tick={{ fill: "var(--muted)", fontSize: 12 }}
             axisLine={false}
             tickLine={false}
