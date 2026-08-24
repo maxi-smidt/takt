@@ -338,7 +338,9 @@ input:focus, select:focus { border-color: var(--green); }
 
 @media (max-width: 480px) {
   .login-card { padding: 32px 24px; }
-  .summary-grid > div { padding: 12px; }
+  .summary-grid { grid-template-columns: 1fr; }
+  .summary-grid > div { padding: 12px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .summary-grid > div:last-child { border-bottom: 0; }
   .device-grid { grid-template-columns: minmax(0, 1fr); }
   .device-card > header { padding-inline: 16px; }
   .update-control { grid-template-columns: 1fr; }
@@ -347,6 +349,12 @@ input:focus, select:focus { border-color: var(--green); }
   .maintenance-group { grid-template-columns: 1fr; gap: 6px; }
   .access-row { flex-wrap: wrap; }
   .access-select { width: 100%; }
+  .portal-filters { flex-direction: column; align-items: stretch; }
+  .portal-date-fields { flex-wrap: wrap; }
+  .date-field { flex: 1 1 100%; }
+  .date-field-input input { width: 100%; }
+  .date-field-popup { width: min(272px, calc(100vw - 40px)); }
+  .portal-chart-panel { padding: 12px 8px; }
 }
 
 /* Maps this app's palette onto the shared/ui component contract
